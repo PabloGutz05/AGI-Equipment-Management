@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AGI Vehicle Lease Management</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <a id="brandLink" class="brand" href="#" aria-label="Open AGI Process Menu">
+      <img id="agiLogo" src="assets/agi-logo.png" alt="AGI logo">
+      <h1>AGI Vehicle Lease Management</h1>
+    </a>
+    <div class="actions">
+      <button id="exportBtn">Export JSON</button>
+      <label class="file-label">
+        Import JSON
+        <input type="file" id="importInput" accept="application/json">
+      </label>
+      <button id="logoutBtn" style="display:none">Logout</button>
+    </div>
+  </header>
+
+  <!-- Login gate: shown before accessing the app -->
+  <div id="loginGate" class="login-gate">
+    <div class="login-card">
+      <form id="loginForm" class="login-form">
+        <h2 class="login-title">Sign in</h2>
+        <label class="login-label">Username
+          <input id="loginUsername" name="username" placeholder="Username" required>
+        </label>
+        <label class="login-label">Password
+          <input id="loginPassword" name="password" placeholder="Password" type="password" required>
+        </label>
+        <div class="form-actions">
+          <button type="submit">Sign in</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- AGI Process Menu: shown immediately after login to choose a process -->
+  <div id="agiProcessMenu" class="process-menu" style="display:none">
+    <div class="process-card">
+      <h2>AGI Process Menu</h2>
+      <p class="small-muted">Welcome — choose the process you'd like to work on.</p>
+      <div class="process-grid">
+        <button class="process-btn" id="procManagement">Management</button>
+        <button class="process-btn primary" id="procVehicleLease">Vehicle Leasing Management</button>
+        <button class="process-btn" id="procReports">Reports</button>
+        <button class="process-btn" id="procAccounting">Accounting</button>
+        <button class="process-btn" id="procSettings">Settings</button>
+      </div>
+      
+    </div>
+  </div>
+
+  <main id="appRoot" style="display:none">
+    <div class="layout">
+      <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="overview">
+        <span class="tab-title">Overview</span>
+        <span class="tab-desc">Summary & counts</span>
+      </button>
+      <button class="tab" data-tab="invoices">
+        <span class="tab-title">Invoices</span>
+        <span class="tab-desc">Create & manage</span>
+      </button>
+      <button class="tab" data-tab="unitControl">
+        <span class="tab-title">Unit Control</span>
+        <span class="tab-desc">Vehicles / units</span>
+      </button>
+      <button class="tab" data-tab="leaseControl">
+        <span class="tab-title">Lease Control</span>
+        <span class="tab-desc">Active leases</span>
+      </button>
+      <button class="tab" data-tab="users">
+        <span class="tab-title">Users</span>
+        <span class="tab-desc">User accounts</span>
+      </button>
+      <button class="tab" data-tab="developer">
+        <span class="tab-title">Developer</span>
+        <span class="tab-desc">Tools & debug</span>
+      </button>
+    </nav>
+
+      <div class="splitter" id="splitter" title="Drag to resize"></div>
+
+      <section id="content">
+      <div id="overview" class="tab-panel active">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <h2 style="margin:0">Overview</h2>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label class="small-muted" for="overviewYear" style="font-size:13px;margin-right:6px">Year</label>
+            <select id="overviewYear" aria-label="Select overview year"></select>
+          </div>
+        </div>
+        <div id="overviewSummary"></div>
+        <div id="overviewMonths" style="margin-top:12px"></div>
+        
+      </div>
+
+      <div id="invoices" class="tab-panel">
+        <h2>Invoices</h2>
+        <form id="invoiceForm" class="inline-form">
+          <select id="invoiceLease" name="invoiceLease"><option value="">(select lease)</option></select>
+          <input id="invoiceSupplier" name="invoiceSupplier" class="info-input" placeholder="Supplier" readonly>
+          <input id="invoiceCompany" name="invoiceCompany" class="info-input" placeholder="AGI Company" readonly>
+          <input id="invoiceArrangement" name="invoiceArrangement" class="info-input" placeholder="Arrangement" readonly>
+          <select id="invoiceCategory" name="invoiceCategory"><option value="">(select category)</option></select>
+          <select id="invoiceUnit" name="invoiceUnit"><option value="">(select unit)</option></select>
+          <input id="invoiceWD" name="invoiceWD" placeholder="WD Invoice Number">
+          <input id="invoiceDoc" name="invoiceDoc" placeholder="Doc Invoice Number">
+          <input id="invoiceAmount" name="invoiceAmount" placeholder="Amount">
+          <label class="date-label">From Date
+            <input id="invoicePeriodStart" name="invoicePeriodStart" type="date" placeholder="From Date">
+          </label>
+          <label class="date-label">To Date
+            <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date" placeholder="To Date">
+          </label>
+          <input id="invoiceSubmitted" name="invoiceSubmitted" type="date" placeholder="Submitted Date">
+          <textarea id="invoiceComment" name="invoiceComment" placeholder="Comment" rows="3" style="min-width:220px"></textarea>
+          <button type="submit">Add Invoice</button>
+          <button type="button" id="invoiceCancelBtn" style="display:none">Cancel</button>
+        </form>
+        <table id="invoiceTable" class="list table">
+          <thead>
+            <tr>
+              <th style="width:36px">#</th>
+              <th>Lease</th>
+              <th>Category</th>
+              <th>Unit</th>
+              <th>Invoice</th>
+              <th>Amount</th>
+              <th>Period</th>
+              <th>Submitted</th>
+              <th>Comment</th>
+              <th style="width:120px">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="invoiceList"></tbody>
+        </table>
+      </div>
+
+      <div id="unitControl" class="tab-panel">
+        <h2>Unit Control</h2>
+        <form id="unitForm" class="inline-form">
+          <select id="unitLease" name="unitLease"><option value="">(select lease)</option></select>
+          <input id="unitCompany" name="unitCompany" class="info-input" placeholder="AGI Company" readonly>
+          <input id="unitSupplier" name="unitSupplier" class="info-input" placeholder="Supplier" readonly>
+          <input id="unitArrangement" name="unitArrangement" class="info-input" placeholder="Arrangement" readonly>
+          <input id="unitIdInput" name="unitId" placeholder="Unit" required>
+          <input id="unitMonthly" name="unitMonthly" placeholder="Monthly Payment" class="money-input">
+          <input id="unitDesc" name="unitDesc" placeholder="Description">
+          <input id="unitNotes" name="unitNotes" placeholder="Notes">
+          <button type="submit">New</button>
+        </form>
+        <table id="unitTable" class="list table">
+          <thead>
+            <tr>
+              <th style="width:36px">#</th>
+              <th>Unit</th>
+              <th>Lease</th>
+              <th>Company</th>
+              <th>Supplier</th>
+              <th>Arrangement</th>
+              <th>Monthly</th>
+              <th>Description</th>
+              <th>Notes</th>
+              <th>Status</th>
+              <th style="width:140px">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="unitList"></tbody>
+        </table>
+      </div>
+
+      <div id="leaseControl" class="tab-panel">
+        <h2>Lease Control</h2>
+        <form id="leaseForm" class="inline-form">
+          <input id="leaseNumber" name="leaseNumber" placeholder="Lease Number" required>
+          <select id="leaseCompany" name="leaseCompany"><option value="">(select company)</option></select>
+          <select id="leaseSupplier" name="leaseSupplier"><option value="">(select supplier)</option></select>
+            <select id="leaseArrangement" name="leaseArrangement"><option value="">(select arrangement)</option></select>
+
+            <div id="leaseSeasonalDates" style="display:none;gap:8px;align-items:center">
+              <label class="date-label">From
+                <select id="leaseFromMonth" name="leaseFromMonth">
+                  <option value="">Month</option>
+                  <option value="01">Jan</option>
+                  <option value="02">Feb</option>
+                  <option value="03">Mar</option>
+                  <option value="04">Apr</option>
+                  <option value="05">May</option>
+                  <option value="06">Jun</option>
+                  <option value="07">Jul</option>
+                  <option value="08">Aug</option>
+                  <option value="09">Sep</option>
+                  <option value="10">Oct</option>
+                  <option value="11">Nov</option>
+                  <option value="12">Dec</option>
+                </select>
+                <select id="leaseFromDay" name="leaseFromDay">
+                  <option value="">Day</option>
+                  <option value="01">1</option>
+                  <option value="02">2</option>
+                  <option value="03">3</option>
+                  <option value="04">4</option>
+                  <option value="05">5</option>
+                  <option value="06">6</option>
+                  <option value="07">7</option>
+                  <option value="08">8</option>
+                  <option value="09">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                  <option value="13">13</option>
+                  <option value="14">14</option>
+                  <option value="15">15</option>
+                  <option value="16">16</option>
+                  <option value="17">17</option>
+                  <option value="18">18</option>
+                  <option value="19">19</option>
+                  <option value="20">20</option>
+                  <option value="21">21</option>
+                  <option value="22">22</option>
+                  <option value="23">23</option>
+                  <option value="24">24</option>
+                  <option value="25">25</option>
+                  <option value="26">26</option>
+                  <option value="27">27</option>
+                  <option value="28">28</option>
+                  <option value="29">29</option>
+                  <option value="30">30</option>
+                  <option value="31">31</option>
+                </select>
+              </label>
+              <label class="date-label">To
+                <select id="leaseToMonth" name="leaseToMonth">
+                  <option value="">Month</option>
+                  <option value="01">Jan</option>
+                  <option value="02">Feb</option>
+                  <option value="03">Mar</option>
+                  <option value="04">Apr</option>
+                  <option value="05">May</option>
+                  <option value="06">Jun</option>
+                  <option value="07">Jul</option>
+                  <option value="08">Aug</option>
+                  <option value="09">Sep</option>
+                  <option value="10">Oct</option>
+                  <option value="11">Nov</option>
+                  <option value="12">Dec</option>
+                </select>
+                <select id="leaseToDay" name="leaseToDay">
+                  <option value="">Day</option>
+                  <option value="01">1</option>
+                  <option value="02">2</option>
+                  <option value="03">3</option>
+                  <option value="04">4</option>
+                  <option value="05">5</option>
+                  <option value="06">6</option>
+                  <option value="07">7</option>
+                  <option value="08">8</option>
+                  <option value="09">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                  <option value="13">13</option>
+                  <option value="14">14</option>
+                  <option value="15">15</option>
+                  <option value="16">16</option>
+                  <option value="17">17</option>
+                  <option value="18">18</option>
+                  <option value="19">19</option>
+                  <option value="20">20</option>
+                  <option value="21">21</option>
+                  <option value="22">22</option>
+                  <option value="23">23</option>
+                  <option value="24">24</option>
+                  <option value="25">25</option>
+                  <option value="26">26</option>
+                  <option value="27">27</option>
+                  <option value="28">28</option>
+                  <option value="29">29</option>
+                  <option value="30">30</option>
+                  <option value="31">31</option>
+                </select>
+              </label>
+            </div>
+
+            <button type="submit">New</button>
+        </form>
+        <ol id="leaseList" class="list"></ol>
+      </div>
+
+      <div id="users" class="tab-panel">
+        <h2>Users</h2>
+        <form id="userForm" class="inline-form">
+          <input name="firstName" placeholder="First name" required>
+          <input name="lastName" placeholder="Last name" required>
+          <input name="username" placeholder="Username" required>
+          <input name="password" placeholder="Password" type="password">
+          <div class="role-group" role="radiogroup" aria-label="User role">
+            <input type="radio" id="role-operator" name="role" value="Operator" checked>
+            <label for="role-operator">Operator</label>
+            <input type="radio" id="role-manager" name="role" value="Manager">
+            <label for="role-manager">Manager</label>
+            <input type="radio" id="role-developer" name="role" value="Developer">
+            <label for="role-developer">Developer</label>
+          </div>
+          <button type="submit">Add User</button>
+          <button type="button" id="userCancelBtn" style="display:none">Cancel</button>
+        </form>
+
+        <table id="userTable" class="list">
+          <thead>
+            <tr><th style="width:40px">#</th><th>Name</th><th>Last Name</th><th>Username</th><th>Role</th><th style="width:160px">Actions</th></tr>
+          </thead>
+          <tbody id="userList"></tbody>
+        </table>
+      </div>
+      <div id="developer" class="tab-panel">
+        <h2>Developer</h2>
+        <div class="small-muted">Developer tools and debug output will appear here.</div>
+        <div class="dev-controls">
+          <label class="dev-label">AGI Company
+            <input id="devCompany" placeholder="Company Name">
+          </label>
+          <button id="saveDevCompany">New</button>
+        </div>
+        <ol id="devCompanyList" class="list" style="margin-top:8px"></ol>
+        <div class="dev-controls" style="margin-top:12px">
+          <label class="dev-label">Rental
+            <input id="devRentalInput" placeholder="Rental Type" type="text">
+          </label>
+          <button id="saveDevRental">new</button>
+        </div>
+        <ol id="devRentalList" class="list" style="margin-top:8px"></ol>
+        <div class="dev-controls" style="margin-top:12px">
+          <label class="dev-label">Supplier
+            <input id="devSupplierInput" placeholder="Supplier Name" type="text">
+          </label>
+          <button id="saveDevSupplier">new</button>
+        </div>
+        <ol id="devSupplierList" class="list" style="margin-top:8px"></ol>
+        <div class="dev-controls" style="margin-top:12px">
+          <label class="dev-label">Payment Arrangement
+            <input id="devPaymentInput" placeholder="Payment Arrangement" type="text">
+          </label>
+          <button id="saveDevPayment">new</button>
+        </div>
+        <ol id="devPaymentList" class="list" style="margin-top:8px"></ol>
+        <pre id="devOutput" style="background:#f8fafc;border:1px solid #eef2f7;padding:10px;border-radius:6px;min-height:120px;margin-top:8px"></pre>
+      </div>
+    </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
