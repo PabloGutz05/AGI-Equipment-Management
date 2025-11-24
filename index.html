@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AGI Vehicle Lease Management</title>
+  <link rel="icon" type="image/jpeg" href="AGILogo.jpg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <a id="brandLink" class="brand" href="#" aria-label="Open AGI Process Menu">
+      <img id="agiLogo" src="AGILogo.jpg" alt="AGI logo">
+      <h1>AGI Vehicle Lease Management</h1>
+    </a>
+    <div class="actions">
+      <button id="exportBtn">Export JSON</button>
+      <label class="file-label">
+        Import JSON
+        <input type="file" id="importInput" accept="application/json">
+      </label>
+      <button id="clearDataBtn" style="color: #dc2626;">Clear Data</button>
+      <button id="logoutBtn" style="display:none">Logout</button>
+    </div>
+  </header>
+
+  <!-- Login gate: shown before accessing the app -->
+  <div id="loginGate" class="login-gate">
+    <div class="login-card">
+      <form id="loginForm" class="login-form">
+        <h2 class="login-title">Sign in</h2>
+        <label class="login-label">Username
+          <input id="loginUsername" name="username" placeholder="Username" required>
+        </label>
+        <label class="login-label">Password
+          <input id="loginPassword" name="password" placeholder="Password" type="password" required>
+        </label>
+        <div class="form-actions">
+          <button type="submit">Sign in</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- AGI Process Menu: shown immediately after login to choose a process -->
+  <div id="agiProcessMenu" class="process-menu" style="display:none">
+    <div class="process-card">
+      <h2>AGI Process Menu</h2>
+      <p class="small-muted">Welcome — choose the process you'd like to work on.</p>
+      <div class="process-grid">
+        <button class="process-btn" id="procManagement">Management</button>
+        <button class="process-btn primary" id="procVehicleLease">Vehicle Leasing Management</button>
+        <button class="process-btn" id="procReports">Reports</button>
+        <button class="process-btn" id="procAccounting">Accounting</button>
+        <button class="process-btn" id="procSettings">Settings</button>
+      </div>
+      
+    </div>
+  </div>
+
+  <main id="appRoot" style="display:none">
+    <div class="layout">
+      <nav class="tabs" role="tablist">
+      <button class="tab" data-tab="overview">
+        <span class="tab-title">Overview</span>
+        <span class="tab-desc">Summary & counts</span>
+      </button>
+      <button class="tab active" data-tab="invoices">
+        <span class="tab-title">Invoices</span>
+        <span class="tab-desc">Create & manage</span>
+      </button>
+      <button class="tab" data-tab="unitControl">
+        <span class="tab-title">Unit Control</span>
+        <span class="tab-desc">Vehicles / units</span>
+      </button>
+      <button class="tab" data-tab="leaseControl">
+        <span class="tab-title">Lease Control</span>
+        <span class="tab-desc">Active leases</span>
+      </button>
+      <button class="tab" data-tab="users">
+        <span class="tab-title">Users</span>
+        <span class="tab-desc">User accounts</span>
+      </button>
+      <button class="tab" data-tab="developer">
+        <span class="tab-title">Developer</span>
+        <span class="tab-desc">Tools & debug</span>
+      </button>
+    </nav>
+
+      <div class="splitter" id="splitter" title="Drag to resize"></div>
+
+      <section id="content">
+      <div id="overview" class="tab-panel">
+        <h2>Overview</h2>
+        <div class="overview-tabs" style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button class="overview-tab active-sub" data-section="generalOverview">General Overview</button>
+          <button class="overview-tab" data-section="unitOverview">Unit Overview</button>
+          <button class="overview-tab" data-section="leaseOverview">Lease Overview</button>
+          <button class="overview-tab" data-section="report">Report</button>
+        </div>
+
+        <div id="generalOverview" style="margin-top:12px"></div>
+        <div id="unitOverview" style="display:none;margin-top:12px"></div>
+        <div id="leaseOverview" style="display:none;margin-top:12px"></div>
+        <div id="report" style="display:none;margin-top:12px"></div>
+      </div>
+
+  <div id="invoices" class="tab-panel active">
+        <h2>Invoices</h2>
+        <form id="invoiceForm" class="inline-form">
+          <input id="invoiceWD" name="invoiceWD" placeholder="WD Invoice Number">
+          <input id="invoiceDoc" name="invoiceDoc" placeholder="Doc Invoice Number">
+          <select id="invoiceLease" name="invoiceLease"><option value="">(select lease)</option></select>
+          <select id="invoiceCategory" name="invoiceCategory"><option value="">(select category)</option></select>
+          <!-- hidden comment input used by modal editor -->
+          <input type="hidden" id="invoiceComment" name="invoiceComment" value="">
+            <input id="invoiceSupplier" name="invoiceSupplier" placeholder="Supplier" readonly>
+            <input id="invoiceCompany" name="invoiceCompany" placeholder="AGI Company" readonly>
+            <input id="invoiceArrangement" name="invoiceArrangement" placeholder="Arrangement" readonly>
+            <input id="invoiceInvoicing" name="invoiceInvoicing" placeholder="Invoicing" readonly>
+            <input id="invoiceAmount" name="invoiceAmount" class="money-input" inputmode="decimal" placeholder="Amount">
+            <!-- Period: From / To placed before the submit button per user request -->
+            <input id="invoicePeriodStart" name="invoicePeriodStart" type="date" placeholder="From">
+            <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date" placeholder="To">
+            <!-- Submitted date: pre-filled to today's date (editable) -->
+            <input id="invoiceSubmitted" name="invoiceSubmitted" type="date">
+            <!-- Move Select units control right before the submit button -->
+            <div class="unit-dropdown">
+              <button type="button" id="invoiceUnitToggle" class="dropdown-toggle">Select units</button>
+              <div id="invoiceUnitPanel" class="dropdown-panel" style="display:none"></div>
+            </div>
+            <!-- Add Comment button (opens modal editor) -->
+            <button type="button" id="invoiceCommentBtn" class="btn-primary">Add Comment</button>
+            <button type="submit">Add Invoice</button>
+        </form>
+        <!-- Registry list: shows registrations of submitted invoices (grouped submissions) -->
+        <div id="registryList" class="list" style="margin-top:12px"></div>
+      </div>
+
+      <div id="unitControl" class="tab-panel">
+        <h2>Unit Control</h2>
+        <form id="unitForm" class="inline-form">
+          <select id="unitLease" name="unitLease"><option value="">(select lease)</option></select>
+          <input id="unitCompany" name="unitCompany" class="info-input" placeholder="AGI Company" readonly>
+          <input id="unitSupplier" name="unitSupplier" class="info-input" placeholder="Supplier" readonly>
+          <input id="unitArrangement" name="unitArrangement" class="info-input" placeholder="Arrangement" readonly>
+          <input id="unitInvoicing" name="unitInvoicing" class="info-input" placeholder="Invoicing" readonly>
+          <input id="unitIdInput" name="unitId" placeholder="Unit" required>
+          <input id="unitMonthly" name="unitMonthly" placeholder="Monthly Payment" class="money-input">
+          <input id="unitDesc" name="unitDesc" placeholder="Description">
+          <input id="unitNotes" name="unitNotes" placeholder="Notes">
+          <button type="submit">New</button>
+        </form>
+        <table id="unitTable" class="list table">
+          <thead>
+            <tr>
+              <th style="width:36px">#</th>
+              <th>Unit</th>
+              <th>Lease</th>
+              <th>Company</th>
+              <th>Supplier</th>
+              <th>Arrangement</th>
+              <th>Invoicing</th>
+              <th>Monthly</th>
+              <th>Description</th>
+              <th>Notes</th>
+              <th>Status</th>
+              <th>Last Comment</th>
+            </tr>
+          </thead>
+          <tbody id="unitList"></tbody>
+        </table>
+      </div>
+
+      <div id="leaseControl" class="tab-panel">
+        <h2>Lease Control</h2>
+        <form id="leaseForm" class="inline-form">
+          <input id="leaseNumber" name="leaseNumber" placeholder="Lease Number" required>
+          <select id="leaseCompany" name="leaseCompany"><option value="">(select company)</option></select>
+          <select id="leaseSupplier" name="leaseSupplier"><option value="">(select supplier)</option></select>
+            <select id="leaseArrangement" name="leaseArrangement"><option value="">(select arrangement)</option></select>
+            <select id="leaseInvoicing" name="leaseInvoicing"><option value="">(select invoicing)</option></select>
+
+            <div id="leaseSeasonalDates" style="display:none;gap:8px;align-items:center">
+              <label class="date-label">From
+                <select id="leaseFromMonth" name="leaseFromMonth">
+                  <option value="">Month</option>
+                  <option value="01">Jan</option>
+                  <option value="02">Feb</option>
+                  <option value="03">Mar</option>
+                  <option value="04">Apr</option>
+                  <option value="05">May</option>
+                  <option value="06">Jun</option>
+                  <option value="07">Jul</option>
+                  <option value="08">Aug</option>
+                  <option value="09">Sep</option>
+                  <option value="10">Oct</option>
+                  <option value="11">Nov</option>
+                  <option value="12">Dec</option>
+                </select>
+                <select id="leaseFromDay" name="leaseFromDay">
+                  <option value="">Day</option>
+                  <option value="01">1</option>
+                  <option value="02">2</option>
+                  <option value="03">3</option>
+                  <option value="04">4</option>
+                  <option value="05">5</option>
+                  <option value="06">6</option>
+                  <option value="07">7</option>
+                  <option value="08">8</option>
+                  <option value="09">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                  <option value="13">13</option>
+                  <option value="14">14</option>
+                  <option value="15">15</option>
+                  <option value="16">16</option>
+                  <option value="17">17</option>
+                  <option value="18">18</option>
+                  <option value="19">19</option>
+                  <option value="20">20</option>
+                  <option value="21">21</option>
+                  <option value="22">22</option>
+                  <option value="23">23</option>
+                  <option value="24">24</option>
+                  <option value="25">25</option>
+                  <option value="26">26</option>
+                  <option value="27">27</option>
+                  <option value="28">28</option>
+                  <option value="29">29</option>
+                  <option value="30">30</option>
+                  <option value="31">31</option>
+                </select>
+              </label>
+              <label class="date-label">To
+                <select id="leaseToMonth" name="leaseToMonth">
+                  <option value="">Month</option>
+                  <option value="01">Jan</option>
+                  <option value="02">Feb</option>
+                  <option value="03">Mar</option>
+                  <option value="04">Apr</option>
+                  <option value="05">May</option>
+                  <option value="06">Jun</option>
+                  <option value="07">Jul</option>
+                  <option value="08">Aug</option>
+                  <option value="09">Sep</option>
+                  <option value="10">Oct</option>
+                  <option value="11">Nov</option>
+                  <option value="12">Dec</option>
+                </select>
+                <select id="leaseToDay" name="leaseToDay">
+                  <option value="">Day</option>
+                  <option value="01">1</option>
+                  <option value="02">2</option>
+                  <option value="03">3</option>
+                  <option value="04">4</option>
+                  <option value="05">5</option>
+                  <option value="06">6</option>
+                  <option value="07">7</option>
+                  <option value="08">8</option>
+                  <option value="09">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                  <option value="13">13</option>
+                  <option value="14">14</option>
+                  <option value="15">15</option>
+                  <option value="16">16</option>
+                  <option value="17">17</option>
+                  <option value="18">18</option>
+                  <option value="19">19</option>
+                  <option value="20">20</option>
+                  <option value="21">21</option>
+                  <option value="22">22</option>
+                  <option value="23">23</option>
+                  <option value="24">24</option>
+                  <option value="25">25</option>
+                  <option value="26">26</option>
+                  <option value="27">27</option>
+                  <option value="28">28</option>
+                  <option value="29">29</option>
+                  <option value="30">30</option>
+                  <option value="31">31</option>
+                </select>
+              </label>
+            </div>
+
+            <button type="submit">New</button>
+        </form>
+        <ol id="leaseList" class="list"></ol>
+      </div>
+
+      <div id="users" class="tab-panel">
+        <h2>Users</h2>
+        <form id="userForm" class="inline-form">
+          <input name="firstName" placeholder="First name" required>
+          <input name="lastName" placeholder="Last name" required>
+          <input name="username" placeholder="Username" required>
+          <input name="password" placeholder="Password" type="password">
+          <div class="role-group" role="radiogroup" aria-label="User role">
+            <input type="radio" id="role-operator" name="role" value="Operator" checked>
+            <label for="role-operator">Operator</label>
+            <input type="radio" id="role-manager" name="role" value="Manager">
+            <label for="role-manager">Manager</label>
+            <input type="radio" id="role-developer" name="role" value="Developer">
+            <label for="role-developer">Developer</label>
+          </div>
+          <button type="submit">Add User</button>
+          <button type="button" id="userCancelBtn" style="display:none">Cancel</button>
+        </form>
+
+        <table id="userTable" class="list">
+          <thead>
+            <tr><th style="width:40px">#</th><th>Name</th><th>Last Name</th><th>Username</th><th>Role</th><th style="width:160px">Actions</th></tr>
+          </thead>
+          <tbody id="userList"></tbody>
+        </table>
+      </div>
+      <div id="developer" class="tab-panel">
+        <h2>Developer</h2>
+        <div class="small-muted" style="margin-bottom:20px;">Upload data directly to each tab using the buttons below.</div>
+        
+        <!-- Download All Data Button -->
+        <div style="background:#10b981;color:#fff;border:1px solid #059669;padding:16px;border-radius:8px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <h3 style="margin:0 0 4px 0;font-size:16px;color:#fff;">Export All Data</h3>
+            <div style="font-size:13px;opacity:0.9;">Download all system data as separate CSV files for backup or migration</div>
+          </div>
+          <button id="downloadAllDataBtn" style="background:#fff;color:#10b981;padding:10px 24px;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;font-size:14px;">
+            Download All
+          </button>
+        </div>
+        
+        <!-- Invoices Upload -->
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;padding:16px;border-radius:8px;margin-bottom:16px;">
+          <h3 style="margin-top:0;margin-bottom:12px;font-size:16px;">Invoices</h3>
+          <div style="display:flex;gap:12px;">
+            <label style="flex:1;">
+              <input type="file" id="uploadInvoicesFile" accept=".csv,.json" style="width:100%;padding:8px;border:1px solid #e5e7eb;border-radius:6px;">
+            </label>
+            <button id="formatInvoicesBtn" style="background:#0b74de;color:#fff;padding:8px 24px;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;">
+              Format Invoices
+            </button>
+          </div>
+          <div id="statusInvoices" style="margin-top:12px;padding:10px;border-radius:6px;display:none;"></div>
+        </div>
+        
+        <!-- Units Upload -->
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;padding:16px;border-radius:8px;margin-bottom:16px;">
+          <h3 style="margin-top:0;margin-bottom:12px;font-size:16px;">Units</h3>
+          <div style="display:flex;gap:12px;">
+            <label style="flex:1;">
+              <input type="file" id="uploadUnitsFile" accept=".csv,.json" style="width:100%;padding:8px;border:1px solid #e5e7eb;border-radius:6px;">
+            </label>
+            <button id="formatUnitsBtn" style="background:#0b74de;color:#fff;padding:8px 24px;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;">
+              Format Units
+            </button>
+          </div>
+          <div id="statusUnits" style="margin-top:12px;padding:10px;border-radius:6px;display:none;"></div>
+        </div>
+        
+        <!-- Leases Upload -->
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;padding:16px;border-radius:8px;margin-bottom:16px;">
+          <h3 style="margin-top:0;margin-bottom:12px;font-size:16px;">Leases</h3>
+          <div style="display:flex;gap:12px;">
+            <label style="flex:1;">
+              <input type="file" id="uploadLeasesFile" accept=".csv,.json" style="width:100%;padding:8px;border:1px solid #e5e7eb;border-radius:6px;">
+            </label>
+            <button id="formatLeasesBtn" style="background:#0b74de;color:#fff;padding:8px 24px;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;">
+              Format Leases
+            </button>
+          </div>
+          <div id="statusLeases" style="margin-top:12px;padding:10px;border-radius:6px;display:none;"></div>
+        </div>
+        
+        <!-- Users Upload -->
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;padding:16px;border-radius:8px;margin-bottom:16px;">
+          <h3 style="margin-top:0;margin-bottom:12px;font-size:16px;">Users</h3>
+          <div style="display:flex;gap:12px;">
+            <label style="flex:1;">
+              <input type="file" id="uploadUsersFile" accept=".csv,.json" style="width:100%;padding:8px;border:1px solid #e5e7eb;border-radius:6px;">
+            </label>
+            <button id="formatUsersBtn" style="background:#0b74de;color:#fff;padding:8px 24px;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;">
+              Format Users
+            </button>
+          </div>
+          <div id="statusUsers" style="margin-top:12px;padding:10px;border-radius:6px;display:none;"></div>
+        </div>
+
+        <!-- Developer Configuration Controls -->
+        <div style="margin-top:32px;border-top:2px solid #e5e7eb;padding-top:24px;">
+          <h3 style="margin-bottom:16px;">Configuration Management</h3>
+          
+          <div class="dev-controls">
+            <label class="dev-label">AGI Company
+              <input id="devCompany" placeholder="Company Name">
+            </label>
+            <button id="saveDevCompany">New</button>
+          </div>
+          <ol id="devCompanyList" class="list" style="margin-top:8px"></ol>
+          
+          <div class="dev-controls" style="margin-top:12px">
+            <label class="dev-label">Category
+              <input id="devRentalInput" placeholder="Category Type" type="text">
+            </label>
+            <button id="saveDevRental">new</button>
+          </div>
+          <ol id="devRentalList" class="list" style="margin-top:8px"></ol>
+          
+          <div class="dev-controls" style="margin-top:12px">
+            <label class="dev-label">Supplier
+              <input id="devSupplierInput" placeholder="Supplier Name" type="text">
+            </label>
+            <button id="saveDevSupplier">new</button>
+          </div>
+          <ol id="devSupplierList" class="list" style="margin-top:8px"></ol>
+          
+          <div class="dev-controls" style="margin-top:12px">
+            <label class="dev-label">Invoicing
+              <input id="devPaymentInput" placeholder="Invoicing" type="text">
+            </label>
+            <button id="saveDevPayment">new</button>
+          </div>
+          <ol id="devPaymentList" class="list" style="margin-top:8px"></ol>
+          
+          <div class="dev-controls" style="margin-top:12px">
+            <label class="dev-label">Arrangement
+              <input id="devArrangementInput" placeholder="Arrangement" type="text">
+            </label>
+            <button id="saveDevArrangement">new</button>
+          </div>
+          <ol id="devArrangementList" class="list" style="margin-top:8px"></ol>
+          
+          <pre id="devOutput" style="background:#f8fafc;border:1px solid #eef2f7;padding:10px;border-radius:6px;min-height:120px;margin-top:8px"></pre>
+        </div>
+        
+      </div>
+    </section>
+    </div>
+  </main>
+
+  <!-- Comment modal (in-page modal editor used by the Add Comment button) -->
+  <div id="commentModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document">
+      <h3>Comment</h3>
+      <textarea id="commentModalTextarea" style="width:100%;height:180px;padding:8px;border:1px solid #e6e6e6;border-radius:6px"></textarea>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+        <button type="button" id="commentCancelBtn">Cancel</button>
+        <button type="button" id="commentSaveBtn" class="btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Registry Edit modal -->
+  <div id="registryEditModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document" style="max-width:600px;">
+      <h3>Edit Registry</h3>
+      <form id="registryEditForm" style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
+        <input type="hidden" id="editRegistryId" />
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">WD Number</span>
+          <input id="editRegistryWD" type="text" placeholder="WD Number" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Doc Number</span>
+          <input id="editRegistryDoc" type="text" placeholder="Doc Number" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Total Amount</span>
+          <input id="editRegistryAmount" type="text" placeholder="Total Amount" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Lease</span>
+          <select id="editRegistryLease" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+            <option value="">Select Lease</option>
+          </select>
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Category</span>
+          <select id="editRegistryCategory" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+            <option value="">Select Category</option>
+          </select>
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Units</span>
+          <div id="editRegistryUnits" style="max-height:120px;overflow-y:auto;border:1px solid #e6e6e6;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px;">
+            <!-- Checkboxes will be dynamically generated -->
+          </div>
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Period Start</span>
+          <input id="editRegistryPeriodStart" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Period End</span>
+          <input id="editRegistryPeriodEnd" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Submitted Date</span>
+          <input id="editRegistrySubmitted" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button type="button" id="registryEditCancelBtn">Cancel</button>
+          <button type="button" id="registryEditSaveBtn" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Unit Edit Modal -->
+  <div id="unitEditModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document" style="max-width:600px;width:90%">
+      <h3 style="margin-top:0">Edit Unit</h3>
+      <form id="unitEditForm" style="display:flex;flex-direction:column;gap:12px;">
+        <input type="hidden" id="editUnitId" />
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Lease Number</span>
+          <select id="editUnitLease" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+            <option value="">(select lease)</option>
+          </select>
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">AGI Company</span>
+          <input id="editUnitCompany" type="text" readonly style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;background:#f5f5f5;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Supplier</span>
+          <input id="editUnitSupplier" type="text" readonly style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;background:#f5f5f5;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Arrangement</span>
+          <input id="editUnitArrangement" type="text" readonly style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;background:#f5f5f5;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Invoicing</span>
+          <input id="editUnitInvoicing" type="text" readonly style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;background:#f5f5f5;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Unit ID</span>
+          <input id="editUnitIdInput" type="text" required style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Monthly Payment</span>
+          <input id="editUnitMonthly" type="text" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Description</span>
+          <input id="editUnitDesc" type="text" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Notes</span>
+          <input id="editUnitNotes" type="text" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+        </label>
+        
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Status</span>
+          <select id="editUnitStatus" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+            <option value="Operational">Operational</option>
+            <option value="Disabled">Disabled</option>
+          </select>
+        </label>
+        
+        <div id="editUnitDisabledDateContainer" style="display:none;">
+          <label style="display:flex;flex-direction:column;gap:4px;">
+            <span style="font-weight:600;font-size:13px;">Disabled Date</span>
+            <input id="editUnitDisabledDate" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+          </label>
+        </div>
+        
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button type="button" id="unitEditCancelBtn">Cancel</button>
+          <button type="button" id="unitEditSaveBtn" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Unit Comments Modal -->
+  <div id="unitCommentsModal" class="modal" style="display:none">
+    <div class="modal-dialog" style="max-width:600px;width:90%;">
+      <div class="modal-content" style="position:relative;">
+        <button type="button" id="closeUnitCommentsBtn" class="close-btn" style="position:absolute;top:10px;right:10px;background:#dc2626;color:#fff;border:none;font-size:18px;width:30px;height:30px;border-radius:50%;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;font-weight:bold;line-height:1;">&times;</button>
+        <div class="modal-header">
+          <h3 id="unitCommentsTitle" style="margin:0;font-size:18px;font-weight:600;">Unit Comments</h3>
+        </div>
+        <div class="modal-body" style="max-height:400px;overflow-y:auto;">
+          <div id="unitCommentsList" style="margin-bottom:16px;"></div>
+          <div style="display:flex;flex-direction:column;gap:8px;border-top:1px solid #e6e6e6;padding-top:16px;">
+            <label style="font-weight:600;font-size:13px;">Add Comment</label>
+            <textarea id="newUnitComment" rows="3" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;font-size:13px;resize:vertical;" placeholder="Enter your comment..."></textarea>
+            <button type="button" id="addUnitCommentBtn" class="btn-primary" style="align-self:flex-start;">Add Comment</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WD Numbers Modal -->
+  <div id="unitWdNumbersModal" class="modal" style="display:none">
+    <div class="modal-dialog" style="max-width:500px;width:90%;">
+      <div class="modal-content" style="position:relative;">
+        <button id="closeUnitWdNumbersBtn" class="close-btn" 
+                style="position:absolute;top:10px;right:10px;
+                       background:#fff;color:#6b7280;border:1px solid #e5e7eb;
+                       font-size:18px;width:30px;height:30px;
+                       border-radius:50%;cursor:pointer;
+                       display:flex;align-items:center;justify-content:center;
+                       padding:0;line-height:1;">
+          &times;
+        </button>
+        <div class="modal-header">
+          <h3 id="unitWdNumbersTitle">WD Numbers</h3>
+        </div>
+        <div class="modal-body">
+          <div id="unitWdNumbersList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
