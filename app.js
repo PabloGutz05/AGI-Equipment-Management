@@ -2080,8 +2080,10 @@ qs('#importInput').addEventListener('change', async e=>{
   e.target.value = '';
 });
 
-// Login page import button
+// Login page import button and drag-and-drop
 const loginImportInput = qs('#loginImportInput');
+const loginGate = qs('#loginGate');
+
 if (loginImportInput) {
   loginImportInput.addEventListener('change', async e => {
     const file = e.target.files[0];
@@ -2099,6 +2101,62 @@ if (loginImportInput) {
       alert('Failed to import: ' + err.message);
     }
     e.target.value = '';
+  });
+}
+
+// Add drag-and-drop functionality to login page
+if (loginGate) {
+  let dragCounter = 0;
+  
+  loginGate.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragCounter++;
+    if (dragCounter === 1) {
+      loginGate.style.backgroundColor = '#e0f2fe';
+      loginGate.style.border = '2px dashed #0b74de';
+    }
+  });
+  
+  loginGate.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter === 0) {
+      loginGate.style.backgroundColor = '';
+      loginGate.style.border = '';
+    }
+  });
+  
+  loginGate.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+  
+  loginGate.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dragCounter = 0;
+    loginGate.style.backgroundColor = '';
+    loginGate.style.border = '';
+    
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    
+    const file = files[0];
+    if (!file.name.endsWith('.json')) {
+      alert('Please drop a JSON file');
+      return;
+    }
+    
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!confirm('Importing will replace current local data. Continue?')) return;
+      // basic validation
+      if (typeof parsed !== 'object') throw new Error('Invalid JSON root');
+      state = Object.assign(JSON.parse(JSON.stringify(defaultData)), parsed);
+      saveState();
+      alert('Import successful! You can now log in.');
+    } catch (err) {
+      alert('Failed to import: ' + err.message);
+    }
   });
 }
 
