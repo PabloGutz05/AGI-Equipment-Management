@@ -2080,6 +2080,28 @@ qs('#importInput').addEventListener('change', async e=>{
   e.target.value = '';
 });
 
+// Login page import button
+const loginImportInput = qs('#loginImportInput');
+if (loginImportInput) {
+  loginImportInput.addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!confirm('Importing will replace current local data. Continue?')) return;
+      // basic validation
+      if (typeof parsed !== 'object') throw new Error('Invalid JSON root');
+      state = Object.assign(JSON.parse(JSON.stringify(defaultData)), parsed);
+      saveState();
+      alert('Import successful! You can now log in.');
+    } catch (err) {
+      alert('Failed to import: ' + err.message);
+    }
+    e.target.value = '';
+  });
+}
+
 // Clear data button removed by user request
 
 function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); }
