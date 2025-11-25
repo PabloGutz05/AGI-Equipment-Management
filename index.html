@@ -117,7 +117,10 @@
         <form id="invoiceForm" class="inline-form">
           <input id="invoiceWD" name="invoiceWD" placeholder="WD Invoice Number">
           <input id="invoiceDoc" name="invoiceDoc" placeholder="Doc Invoice Number">
-          <select id="invoiceLease" name="invoiceLease"><option value="">(select lease)</option></select>
+          <div class="searchable-select-wrapper" style="position:relative;display:inline-block;">
+            <input type="text" id="invoiceLease" name="invoiceLease" placeholder="(select lease)" readonly style="cursor:pointer;">
+            <div id="invoiceLeaseDropdown" class="searchable-dropdown" style="display:none;"></div>
+          </div>
           <select id="invoiceCategory" name="invoiceCategory"><option value="">(select category)</option></select>
           <!-- hidden comment input used by modal editor -->
           <input type="hidden" id="invoiceComment" name="invoiceComment" value="">
@@ -147,7 +150,10 @@
       <div id="unitControl" class="tab-panel">
         <h2>Unit Control</h2>
         <form id="unitForm" class="inline-form">
-          <select id="unitLease" name="unitLease"><option value="">(select lease)</option></select>
+          <div class="searchable-select-wrapper" style="position:relative;display:inline-block;">
+            <input type="text" id="unitLease" name="unitLease" placeholder="(select lease)" readonly style="cursor:pointer;">
+            <div id="unitLeaseDropdown" class="searchable-dropdown" style="display:none;"></div>
+          </div>
           <input id="unitCompany" name="unitCompany" class="info-input" placeholder="AGI Company" readonly>
           <input id="unitSupplier" name="unitSupplier" class="info-input" placeholder="Supplier" readonly>
           <input id="unitArrangement" name="unitArrangement" class="info-input" placeholder="Arrangement" readonly>
@@ -295,7 +301,21 @@
 
             <button type="submit">New</button>
         </form>
-        <ol id="leaseList" class="list"></ol>
+        <table id="leaseTable" class="list table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Lease Number</th>
+              <th>Company</th>
+              <th>Supplier</th>
+              <th>Arrangement</th>
+              <th>Invoicing</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="leaseList"></tbody>
+        </table>
       </div>
 
       <div id="users" class="tab-panel">

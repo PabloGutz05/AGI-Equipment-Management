@@ -371,6 +371,20 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice';
     const invCancel = qs('#invoiceCancelBtn'); if(invCancel) invCancel.style.display = 'none';
     const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+    
+    // Reset unit selection toggle button
+    const unitToggle = qs('#invoiceUnitToggle');
+    if(unitToggle) unitToggle.textContent = 'Select units';
+    
+    // Reset comment button
+    const commentHiddenInput = qs('#invoiceComment');
+    if(commentHiddenInput) commentHiddenInput.value = '';
+    const commentBtn = qs('#invoiceCommentBtn');
+    if(commentBtn){
+      commentBtn.textContent = 'Add Comment';
+      commentBtn.title = '';
+      try{ commentBtn.classList.remove('btn-warning'); commentBtn.classList.add('btn-primary'); }catch(e){}
+    }
   } else {
     // New registration: collect multiple units via FormData.getAll when available
     let units = [];
@@ -430,6 +444,34 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     if(createdIds.length > 0){
       state.meta = state.meta || {};
       state.meta.registrySeq = (state.meta.registrySeq || 0) + 1;
+      
+      // Prepare comments array with invoice comment if provided
+      const comments = [];
+      const invoiceComment = (baseInvoice.comment || '').toString().trim();
+      if(invoiceComment){
+        // Get current user's first and last name from session
+        const session = currentSession();
+        let userName = 'Unknown User';
+        if(session){
+          if(session.user === 'Master'){
+            userName = 'Master';
+          } else {
+            const u = (state.users||[]).find(x=> x.username === session.user);
+            if(u){
+              userName = (u.firstName || '') + ' ' + (u.lastName || '');
+              userName = userName.trim() || u.username || 'Unknown User';
+            } else {
+              userName = session.user || 'Unknown User';
+            }
+          }
+        }
+        comments.push({
+          text: invoiceComment,
+          user: userName,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
       const registry = {
         id: id(),
         seq: state.meta.registrySeq,
@@ -442,18 +484,42 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         periodEnd: baseInvoice.periodEnd || '',
         submittedDate: baseInvoice.submittedDate || (new Date().toISOString().slice(0,10)),
         createdAt: new Date().toISOString(),
-        comments: [],
+        comments: comments,
         lease: baseInvoice.lease || ''
       };
       state.registries = state.registries || [];
       state.registries.push(registry);
+      
+      // Save the registry ID to keep it expanded after rendering
+      window.__newlyCreatedRegistryId = registry.id;
     }
 
-    saveState(); renderInvoices(); renderRegistries();
+    saveState(); renderInvoices(); 
+    // Keep the newly created registry expanded
+    if(window.__newlyCreatedRegistryId){
+      renderRegistries(window.__newlyCreatedRegistryId);
+      delete window.__newlyCreatedRegistryId;
+    } else {
+      renderRegistries();
+    }
     renderUnitOverview(); renderLeaseOverview(); renderOverview();
     form.reset(); const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice';
     const invCancel = qs('#invoiceCancelBtn'); if(invCancel) invCancel.style.display = 'none';
     const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+    
+    // Reset unit selection toggle button
+    const unitToggle = qs('#invoiceUnitToggle');
+    if(unitToggle) unitToggle.textContent = 'Select units';
+    
+    // Reset comment button
+    const commentHiddenInput = qs('#invoiceComment');
+    if(commentHiddenInput) commentHiddenInput.value = '';
+    const commentBtn = qs('#invoiceCommentBtn');
+    if(commentBtn){
+      commentBtn.textContent = 'Add Comment';
+      commentBtn.title = '';
+      try{ commentBtn.classList.remove('btn-warning'); commentBtn.classList.add('btn-primary'); }catch(e){}
+    }
 
     if(skipped.length && createdIds.length){ alert('Some units were skipped because a matching registry already exists: ' + skipped.join(', ')); }
     else if(skipped.length && createdIds.length===0){ alert('No invoices were created — all provided units already have an invoice with the same Lease, Category and WD number.'); }
@@ -463,17 +529,134 @@ qs('#invoiceForm').addEventListener('submit', e=>{
 
 // sync invoice selects
 function syncInvoiceLeaseOptions(){
-  const sel = qs('#invoiceLease'); if(!sel) return;
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">(select lease)</option>';
-  // Show all operational leases (Enabled status or no status set)
-  (state.leases || []).forEach(l=>{
+  const input = qs('#invoiceLease'); 
+  const dropdown = qs('#invoiceLeaseDropdown');
+  if(!input || !dropdown) return;
+  
+  const currentValue = input.value;
+  
+  // Build searchable dropdown
+  dropdown.innerHTML = '';
+  
+  // Add search box
+  const searchBox = document.createElement('input');
+  searchBox.type = 'text';
+  searchBox.placeholder = 'Search leases...';
+  searchBox.style.cssText = 'width:100%;padding:8px;border:none;border-bottom:1px solid #e6e9ee;box-sizing:border-box;';
+  dropdown.appendChild(searchBox);
+  
+  // Options container
+  const optionsContainer = document.createElement('div');
+  optionsContainer.style.cssText = 'max-height:200px;overflow-y:auto;';
+  dropdown.appendChild(optionsContainer);
+  
+  // Get operational leases
+  const leases = (state.leases || []).filter(l => {
     const status = (l.status || 'Enabled').toString().toLowerCase();
-    // Include all leases except explicitly disabled ones
-    if(status === 'disabled') return;
-    const opt = document.createElement('option'); opt.value = l.leaseNumber || l.id; opt.textContent = l.leaseNumber || l.id; sel.appendChild(opt);
+    return status !== 'disabled';
   });
-  if(cur) sel.value = cur;
+  
+  // Render options
+  const renderOptions = (filterText = '') => {
+    optionsContainer.innerHTML = '';
+    const filtered = leases.filter(l => {
+      const leaseNum = (l.leaseNumber || l.id || '').toLowerCase();
+      return leaseNum.includes(filterText.toLowerCase());
+    });
+    
+    if(filtered.length === 0){
+      const noResult = document.createElement('div');
+      noResult.textContent = 'No leases found';
+      noResult.style.cssText = 'padding:8px;color:#6b7280;font-size:13px;';
+      optionsContainer.appendChild(noResult);
+      return;
+    }
+    
+    filtered.forEach(l => {
+      const opt = document.createElement('div');
+      opt.textContent = l.leaseNumber || l.id;
+      opt.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:14px;';
+      opt.dataset.value = l.leaseNumber || l.id;
+      
+      opt.addEventListener('mouseenter', () => {
+        opt.style.background = '#f3f4f6';
+      });
+      opt.addEventListener('mouseleave', () => {
+        opt.style.background = '';
+      });
+      opt.addEventListener('click', () => {
+        input.value = opt.dataset.value;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        dropdown.style.display = 'none';
+      });
+      
+      optionsContainer.appendChild(opt);
+    });
+  };
+  
+  renderOptions();
+  
+  searchBox.addEventListener('input', () => {
+    renderOptions(searchBox.value);
+  });
+  
+  // Set up click handler only if not already set
+  if(!input.dataset.dropdownInitialized){
+    input.dataset.dropdownInitialized = 'true';
+    
+    // Toggle dropdown on input click
+    input.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isVisible = dropdown.style.display === 'block';
+      
+      // Close all other dropdowns first
+      document.querySelectorAll('.searchable-dropdown').forEach(d => {
+        if(d !== dropdown) d.style.display = 'none';
+      });
+      
+      dropdown.style.display = isVisible ? 'none' : 'block';
+      
+      if(dropdown.style.display === 'block'){
+        const search = dropdown.querySelector('input[type="text"]');
+        if(search){
+          search.value = '';
+          // Re-render options when opening
+          const container = dropdown.querySelector('div');
+          if(container){
+            container.innerHTML = '';
+            const allLeases = (state.leases || []).filter(l => {
+              const status = (l.status || 'Enabled').toString().toLowerCase();
+              return status !== 'disabled';
+            });
+            allLeases.forEach(l => {
+              const opt = document.createElement('div');
+              opt.textContent = l.leaseNumber || l.id;
+              opt.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:14px;';
+              opt.dataset.value = l.leaseNumber || l.id;
+              opt.addEventListener('mouseenter', () => { opt.style.background = '#f3f4f6'; });
+              opt.addEventListener('mouseleave', () => { opt.style.background = ''; });
+              opt.addEventListener('click', () => {
+                input.value = opt.dataset.value;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                dropdown.style.display = 'none';
+              });
+              container.appendChild(opt);
+            });
+          }
+          setTimeout(() => search.focus(), 10);
+        }
+      }
+    });
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if(!input.contains(e.target) && !dropdown.contains(e.target)){
+        dropdown.style.display = 'none';
+      }
+    });
+  }
+  
+  if(currentValue) input.value = currentValue;
 }
 function syncInvoiceCompanyOptions(){ const sel = qs('#invoiceCompany'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select company)</option>'; (state.meta.devCompanies||[]).forEach(c=>{ const opt = document.createElement('option'); opt.value = c; opt.textContent = c; sel.appendChild(opt); }); if(cur) sel.value = cur; }
 function syncInvoiceArrangementOptions(){ const sel = qs('#invoiceArrangement'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select arrangement)</option>'; (state.meta.devPayments||[]).forEach(p=>{ const opt = document.createElement('option'); opt.value = p; opt.textContent = p; sel.appendChild(opt); }); if(cur) sel.value = cur; }
@@ -1616,7 +1799,163 @@ function renderRegistries(keepOpenRegistryId){
 
 function renderUnits(){
   const tbody = qs('#unitList'); if(!tbody) return; tbody.innerHTML = '';
-  state.units.forEach((u, i)=>{
+  
+  // Initialize meta for search and sorting
+  state.meta = state.meta || {};
+  state.meta.unitSearch = state.meta.unitSearch || '';
+  state.meta.unitSort = state.meta.unitSort || { column: 'unitId', ascending: true };
+  
+  // Get or create search box
+  let searchContainer = qs('#unitSearchContainer');
+  if(!searchContainer){
+    const table = tbody.closest('table');
+    if(table && table.parentNode){
+      searchContainer = document.createElement('div');
+      searchContainer.id = 'unitSearchContainer';
+      searchContainer.style.marginBottom = '12px';
+      searchContainer.style.display = 'flex';
+      searchContainer.style.gap = '8px';
+      searchContainer.style.alignItems = 'center';
+      
+      const searchLabel = document.createElement('label');
+      searchLabel.style.fontWeight = '600';
+      searchLabel.textContent = 'Search:';
+      
+      const searchInput = document.createElement('input');
+      searchInput.type = 'text';
+      searchInput.id = 'unitSearchInput';
+      searchInput.placeholder = 'Filter by unit, lease, company, supplier...';
+      searchInput.style.padding = '6px 10px';
+      searchInput.style.border = '1px solid #e6e9ee';
+      searchInput.style.borderRadius = '6px';
+      searchInput.style.fontSize = '13px';
+      searchInput.style.flex = '1';
+      searchInput.value = state.meta.unitSearch;
+      
+      searchInput.addEventListener('input', () => {
+        if(searchInput.value === ''){
+          state.meta.unitSearch = '';
+          try{ saveState(); }catch(e){}
+          renderUnits();
+        }
+      });
+      
+      searchInput.addEventListener('keypress', (e) => {
+        if(e.key === 'Enter'){
+          state.meta.unitSearch = searchInput.value;
+          try{ saveState(); }catch(e){}
+          renderUnits();
+        }
+      });
+      
+      const searchBtn = document.createElement('button');
+      searchBtn.textContent = 'Search';
+      searchBtn.style.padding = '6px 16px';
+      searchBtn.style.borderRadius = '6px';
+      searchBtn.style.fontSize = '13px';
+      searchBtn.style.cursor = 'pointer';
+      searchBtn.addEventListener('click', () => {
+        state.meta.unitSearch = searchInput.value;
+        try{ saveState(); }catch(e){}
+        renderUnits();
+      });
+      
+      searchContainer.appendChild(searchLabel);
+      searchContainer.appendChild(searchInput);
+      searchContainer.appendChild(searchBtn);
+      table.parentNode.insertBefore(searchContainer, table);
+    }
+  }
+  
+  // Add click handlers to table headers for sorting
+  const thead = tbody.closest('table')?.querySelector('thead');
+  if(thead){
+    const headers = thead.querySelectorAll('th');
+    const sortableColumns = [
+      { index: 1, key: 'unitId', text: 'Unit' },
+      { index: 2, key: 'lease', text: 'Lease' },
+      { index: 3, key: 'company', text: 'Company' },
+      { index: 4, key: 'supplier', text: 'Supplier' },
+      { index: 5, key: 'arrangement', text: 'Arrangement' },
+      { index: 6, key: 'invoicing', text: 'Invoicing' },
+      { index: 7, key: 'monthly', text: 'Monthly' },
+      { index: 8, key: 'description', text: 'Description' },
+      { index: 9, key: 'notes', text: 'Notes' },
+      { index: 10, key: 'status', text: 'Status' }
+    ];
+    
+    sortableColumns.forEach(col => {
+      if(headers[col.index]){
+        headers[col.index].style.cursor = 'pointer';
+        headers[col.index].style.userSelect = 'none';
+        
+        // Update header text with sort indicator
+        let headerText = col.text;
+        if(state.meta.unitSort.column === col.key){
+          headerText += state.meta.unitSort.ascending ? ' ▲' : ' ▼';
+        }
+        headers[col.index].textContent = headerText;
+        
+        // Remove old listener and add new one
+        const newHeader = headers[col.index].cloneNode(true);
+        headers[col.index].parentNode.replaceChild(newHeader, headers[col.index]);
+        
+        newHeader.addEventListener('click', () => {
+          if(state.meta.unitSort.column === col.key){
+            state.meta.unitSort.ascending = !state.meta.unitSort.ascending;
+          } else {
+            state.meta.unitSort.column = col.key;
+            state.meta.unitSort.ascending = true;
+          }
+          try{ saveState(); }catch(e){}
+          renderUnits();
+        });
+      }
+    });
+  }
+  
+  // Filter units by search term
+  let units = state.units.slice();
+  const searchTerm = state.meta.unitSearch.toLowerCase().trim();
+  if(searchTerm){
+    units = units.filter(u => {
+      const unitId = (u.unitId || '').toString().toLowerCase();
+      const lease = (u.lease || '').toString().toLowerCase();
+      const company = (u.company || '').toString().toLowerCase();
+      const supplier = (u.supplier || '').toString().toLowerCase();
+      const arrangement = (u.arrangement || '').toString().toLowerCase();
+      const invoicing = (u.invoicing || '').toString().toLowerCase();
+      const description = (u.description || '').toString().toLowerCase();
+      const notes = (u.notes || '').toString().toLowerCase();
+      const status = (u.status || '').toString().toLowerCase();
+      
+      return unitId.includes(searchTerm) || lease.includes(searchTerm) || 
+             company.includes(searchTerm) || supplier.includes(searchTerm) || 
+             arrangement.includes(searchTerm) || invoicing.includes(searchTerm) ||
+             description.includes(searchTerm) || notes.includes(searchTerm) || 
+             status.includes(searchTerm);
+    });
+  }
+  
+  // Sort units
+  const sortCol = state.meta.unitSort.column;
+  const sortAsc = state.meta.unitSort.ascending;
+  units.sort((a, b) => {
+    let valA = (a[sortCol] || '').toString().toLowerCase();
+    let valB = (b[sortCol] || '').toString().toLowerCase();
+    
+    // Special handling for numeric monthly column
+    if(sortCol === 'monthly'){
+      valA = parseFloat(a[sortCol]) || 0;
+      valB = parseFloat(b[sortCol]) || 0;
+    }
+    
+    if(valA < valB) return sortAsc ? -1 : 1;
+    if(valA > valB) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  
+  units.forEach((u, i)=>{
     const tr = document.createElement('tr');
     const tdIndex = document.createElement('td'); tdIndex.textContent = i+1;
   const tdUnit = document.createElement('td'); tdUnit.innerHTML = `<strong>${escapeHtml(u.unitId || '')}</strong>`;
@@ -1771,9 +2110,124 @@ function renderUnits(){
 
 // sync selects used in unit form
 function syncUnitLeaseOptions(){
-  const sel = qs('#unitLease'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select lease)</option>';
-  state.leases.forEach(l=>{ const opt = document.createElement('option'); opt.value = l.leaseNumber || l.id; opt.textContent = l.leaseNumber || l.id; sel.appendChild(opt); });
-  if(cur) sel.value = cur;
+  const input = qs('#unitLease');
+  const dropdown = qs('#unitLeaseDropdown');
+  if(!input || !dropdown) return;
+  
+  const currentValue = input.value;
+  
+  // Build searchable dropdown
+  dropdown.innerHTML = '';
+  
+  // Add search box
+  const searchBox = document.createElement('input');
+  searchBox.type = 'text';
+  searchBox.placeholder = 'Search leases...';
+  searchBox.style.cssText = 'width:100%;padding:8px;border:none;border-bottom:1px solid #e6e9ee;box-sizing:border-box;';
+  dropdown.appendChild(searchBox);
+  
+  // Options container
+  const optionsContainer = document.createElement('div');
+  optionsContainer.style.cssText = 'max-height:200px;overflow-y:auto;';
+  dropdown.appendChild(optionsContainer);
+  
+  // Render options
+  const renderOptions = (filterText = '') => {
+    optionsContainer.innerHTML = '';
+    const filtered = state.leases.filter(l => {
+      const leaseNum = (l.leaseNumber || l.id || '').toLowerCase();
+      return leaseNum.includes(filterText.toLowerCase());
+    });
+    
+    if(filtered.length === 0){
+      const noResult = document.createElement('div');
+      noResult.textContent = 'No leases found';
+      noResult.style.cssText = 'padding:8px;color:#6b7280;font-size:13px;';
+      optionsContainer.appendChild(noResult);
+      return;
+    }
+    
+    filtered.forEach(l => {
+      const opt = document.createElement('div');
+      opt.textContent = l.leaseNumber || l.id;
+      opt.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:14px;';
+      opt.dataset.value = l.leaseNumber || l.id;
+      
+      opt.addEventListener('mouseenter', () => {
+        opt.style.background = '#f3f4f6';
+      });
+      opt.addEventListener('mouseleave', () => {
+        opt.style.background = '';
+      });
+      opt.addEventListener('click', () => {
+        input.value = opt.dataset.value;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        dropdown.style.display = 'none';
+      });
+      
+      optionsContainer.appendChild(opt);
+    });
+  };
+  
+  renderOptions();
+  
+  searchBox.addEventListener('input', () => {
+    renderOptions(searchBox.value);
+  });
+  
+  // Set up click handler only if not already set
+  if(!input.dataset.dropdownInitialized){
+    input.dataset.dropdownInitialized = 'true';
+    
+    // Toggle dropdown on input click
+    input.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isVisible = dropdown.style.display === 'block';
+      
+      // Close all other dropdowns first
+      document.querySelectorAll('.searchable-dropdown').forEach(d => {
+        if(d !== dropdown) d.style.display = 'none';
+      });
+      
+      dropdown.style.display = isVisible ? 'none' : 'block';
+      
+      if(dropdown.style.display === 'block'){
+        const search = dropdown.querySelector('input[type="text"]');
+        if(search){
+          search.value = '';
+          // Re-render options when opening
+          const container = dropdown.querySelector('div');
+          if(container){
+            container.innerHTML = '';
+            state.leases.forEach(l => {
+              const opt = document.createElement('div');
+              opt.textContent = l.leaseNumber || l.id;
+              opt.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:14px;';
+              opt.dataset.value = l.leaseNumber || l.id;
+              opt.addEventListener('mouseenter', () => { opt.style.background = '#f3f4f6'; });
+              opt.addEventListener('mouseleave', () => { opt.style.background = ''; });
+              opt.addEventListener('click', () => {
+                input.value = opt.dataset.value;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                dropdown.style.display = 'none';
+              });
+              container.appendChild(opt);
+            });
+          }
+          setTimeout(() => search.focus(), 10);
+        }
+      }
+    });
+    
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if(!input.contains(e.target) && !dropdown.contains(e.target)){
+        dropdown.style.display = 'none';
+      }
+    });
+  }
+  
+  if(currentValue) input.value = currentValue;
 }
 
 // when a lease is selected in the unit form, autofill company/supplier/arrangement
@@ -1813,47 +2267,221 @@ function syncUnitInvoicingOptions(){ const inp = qs('#unitInvoicing'); if(!inp) 
 syncUnitLeaseOptions(); syncUnitCompanyOptions(); syncUnitSupplierOptions(); syncUnitArrangementOptions(); syncUnitInvoicingOptions();
 
 function renderLeases(){
-  const ol = qs('#leaseList'); ol.innerHTML = '';
-  state.leases.forEach((l, i)=>{
-    const li = document.createElement('li');
-    const text = document.createElement('span');
-    // include seasonal dates when present (stored as MM-DD)
-    const formatMD = (md)=>{
-      if(!md) return '';
-      const parts = String(md).split('-'); if(parts.length!==2) return md;
-      const m = parts[0]; const d = parts[1].replace(/^0/,'');
-      const months = { '01':'Jan','02':'Feb','03':'Mar','04':'Apr','05':'May','06':'Jun','07':'Jul','08':'Aug','09':'Sep','10':'Oct','11':'Nov','12':'Dec' };
-      return (months[m] || m) + ' ' + d;
-    };
-    const datesHtml = (l.fromDate || l.toDate) ? `<div class='small-muted'>${escapeHtml(formatMD(l.fromDate)||'')} ${l.fromDate || l.toDate ? '&#8212;' : ''} ${escapeHtml(formatMD(l.toDate)||'')}</div>` : '';
-    text.innerHTML = `<strong>${escapeHtml(l.leaseNumber||'')}</strong><div class='small-muted'>${escapeHtml(l.company||'')} &#8212; ${escapeHtml(l.supplier||'')} &#8212; ${escapeHtml(l.arrangement||'')} &#8212; ${escapeHtml(l.invoicing||'')}</div>${datesHtml}`;
-    // informational lease entry plus actions
-    li.appendChild(text);
-  // actions container (Edit / Disable/Enable / Delete)
-  // NOTE: we keep the buttons for reuse by the compact 'more' menu, but
-  // do not append the visible actions container to the DOM so only the
-  // '⋯' menu is shown per lease (user requested removing the older visible buttons).
-  const actions = document.createElement('div'); actions.className = 'dev-actions';
-  const editBtn = document.createElement('button'); editBtn.textContent = 'Edit';
+  const tbody = qs('#leaseList'); 
+  if(!tbody) return;
+  
+  // Initialize meta for search and sorting
+  state.meta.leaseSearch = state.meta.leaseSearch || '';
+  state.meta.leaseSort = state.meta.leaseSort || { column: 'leaseNumber', ascending: true };
+  
+  const table = tbody.parentElement;
+  const thead = table.querySelector('thead');
+  
+  // Create search box if it doesn't exist
+  let searchContainer = table.parentElement.querySelector('.lease-search-container');
+  if(!searchContainer){
+    searchContainer = document.createElement('div');
+    searchContainer.className = 'lease-search-container';
+    searchContainer.style.cssText = 'margin-bottom:16px;display:flex;gap:8px;align-items:center;';
+    
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = 'Search leases...';
+    searchInput.value = state.meta.leaseSearch;
+    searchInput.style.cssText = 'flex:1;padding:8px;border:1px solid #ddd;border-radius:6px;';
+    
+    const searchBtn = document.createElement('button');
+    searchBtn.textContent = 'Search';
+    searchBtn.type = 'button';
+    searchBtn.style.cssText = 'padding:8px 16px;';
+    
+    const clearBtn = document.createElement('button');
+    clearBtn.textContent = 'Clear';
+    clearBtn.type = 'button';
+    clearBtn.style.cssText = 'padding:8px 16px;';
+    
+    searchBtn.addEventListener('click', ()=>{
+      state.meta.leaseSearch = searchInput.value.toLowerCase();
+      saveState();
+      renderLeases();
+    });
+    
+    clearBtn.addEventListener('click', ()=>{
+      searchInput.value = '';
+      state.meta.leaseSearch = '';
+      saveState();
+      renderLeases();
+    });
+    
+    searchInput.addEventListener('keypress', (e)=>{
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        searchBtn.click();
+      }
+    });
+    
+    searchContainer.appendChild(searchInput);
+    searchContainer.appendChild(searchBtn);
+    searchContainer.appendChild(clearBtn);
+    
+    table.parentElement.insertBefore(searchContainer, table);
+  }
+  
+  // Add sort handlers to table headers
+  if(thead){
+    const sortableColumns = [
+      { index: 1, key: 'leaseNumber', text: 'Lease Number' },
+      { index: 2, key: 'company', text: 'Company' },
+      { index: 3, key: 'supplier', text: 'Supplier' },
+      { index: 4, key: 'arrangement', text: 'Arrangement' },
+      { index: 5, key: 'invoicing', text: 'Invoicing' },
+      { index: 6, key: 'status', text: 'Status' }
+    ];
+    
+    const ths = thead.querySelectorAll('th');
+    sortableColumns.forEach(col => {
+      const th = ths[col.index];
+      if(th && !th.dataset.sortHandlerAdded){
+        th.dataset.sortHandlerAdded = 'true';
+        th.style.cursor = 'pointer';
+        th.style.userSelect = 'none';
+        th.title = 'Click to sort';
+        
+        th.addEventListener('click', ()=>{
+          if(state.meta.leaseSort.column === col.key){
+            state.meta.leaseSort.ascending = !state.meta.leaseSort.ascending;
+          } else {
+            state.meta.leaseSort = { column: col.key, ascending: true };
+          }
+          saveState();
+          renderLeases();
+        });
+      }
+      
+      // Update header text with sort indicator
+      if(th){
+        const baseText = col.text;
+        if(state.meta.leaseSort.column === col.key){
+          th.textContent = baseText + (state.meta.leaseSort.ascending ? ' ▲' : ' ▼');
+        } else {
+          th.textContent = baseText;
+        }
+      }
+    });
+  }
+  
+  // Filter leases by search term
+  const searchTerm = state.meta.leaseSearch.toLowerCase();
+  let leases = state.leases.filter(l => {
+    if(!searchTerm) return true;
+    const leaseNumber = (l.leaseNumber || '').toLowerCase();
+    const company = (l.company || '').toLowerCase();
+    const supplier = (l.supplier || '').toLowerCase();
+    const arrangement = (l.arrangement || '').toLowerCase();
+    const invoicing = (l.invoicing || '').toLowerCase();
+    const status = (l.status || '').toLowerCase();
+    
+    return leaseNumber.includes(searchTerm) || 
+           company.includes(searchTerm) || 
+           supplier.includes(searchTerm) || 
+           arrangement.includes(searchTerm) || 
+           invoicing.includes(searchTerm) ||
+           status.includes(searchTerm);
+  });
+  
+  // Sort leases
+  const sortCol = state.meta.leaseSort.column;
+  const ascending = state.meta.leaseSort.ascending;
+  
+  leases.sort((a, b) => {
+    let valA = (a[sortCol] || '').toString().toLowerCase();
+    let valB = (b[sortCol] || '').toString().toLowerCase();
+    
+    if(valA < valB) return ascending ? -1 : 1;
+    if(valA > valB) return ascending ? 1 : -1;
+    return 0;
+  });
+  
+  // Clear table body
+  tbody.innerHTML = '';
+  
+  // Render each lease as a table row
+  leases.forEach((l, i)=>{
+    const tr = document.createElement('tr');
+    
+    // Index column
+    const tdIndex = document.createElement('td');
+    tdIndex.textContent = (i + 1);
+    
+    // Lease Number column
+    const tdLease = document.createElement('td');
+    tdLease.innerHTML = `<strong>${escapeHtml(l.leaseNumber||'')}</strong>`;
+    
+    // Company column
+    const tdCompany = document.createElement('td');
+    tdCompany.textContent = l.company || '';
+    
+    // Supplier column
+    const tdSupplier = document.createElement('td');
+    tdSupplier.textContent = l.supplier || '';
+    
+    // Arrangement column
+    const tdArrangement = document.createElement('td');
+    tdArrangement.textContent = l.arrangement || '';
+    
+    // Invoicing column
+    const tdInvoicing = document.createElement('td');
+    tdInvoicing.textContent = l.invoicing || '';
+    
+    // Status column
+    const tdStatus = document.createElement('td');
+    tdStatus.textContent = l.status || 'Enabled';
+    if(l.status === 'Disabled'){
+      tdStatus.style.color = '#dc2626';
+      tdStatus.style.fontWeight = '600';
+    }
+    
+    // Actions column
+    const tdActions = document.createElement('td');
+    
+    // Create action buttons (for reuse in menu)
+    const editBtn = document.createElement('button'); 
+    editBtn.textContent = 'Edit';
     editBtn.addEventListener('click', ()=>{
-      // populate the lease form for editing
-      const form = qs('#leaseForm'); if(!form) return;
+      const form = qs('#leaseForm'); 
+      if(!form) return;
       form.leaseNumber.value = l.leaseNumber || '';
       form.leaseCompany.value = l.company || '';
       form.leaseSupplier.value = l.supplier || '';
       form.leaseArrangement.value = l.arrangement || '';
       form.leaseInvoicing.value = l.invoicing || '';
+      
       // populate seasonal fields if present
-      if(l.fromDate){ const parts = String(l.fromDate).split('-'); if(parts.length===2){ const fm = qs('#leaseFromMonth'); const fdsel = qs('#leaseFromDay'); if(fm) fm.value = parts[0]; if(fdsel) fdsel.value = parts[1]; } }
-      if(l.toDate){ const parts2 = String(l.toDate).split('-'); if(parts2.length===2){ const tm = qs('#leaseToMonth'); const tdsel = qs('#leaseToDay'); if(tm) tm.value = parts2[0]; if(tdsel) tdsel.value = parts2[1]; } }
+      if(l.fromDate){ 
+        const parts = String(l.fromDate).split('-'); 
+        if(parts.length===2){ 
+          const fm = qs('#leaseFromMonth'); 
+          const fdsel = qs('#leaseFromDay'); 
+          if(fm) fm.value = parts[0]; 
+          if(fdsel) fdsel.value = parts[1]; 
+        } 
+      }
+      if(l.toDate){ 
+        const parts2 = String(l.toDate).split('-'); 
+        if(parts2.length===2){ 
+          const tm = qs('#leaseToMonth'); 
+          const tdsel = qs('#leaseToDay'); 
+          if(tm) tm.value = parts2[0]; 
+          if(tdsel) tdsel.value = parts2[1]; 
+        } 
+      }
+      
       form.dataset.editing = l.id;
-      const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Save';
-      // switch to Lease Control tab so the user can edit
-      const leaseTab = Array.from(document.querySelectorAll('.tab')).find(t=>t.dataset.tab==='leaseControl'); if(leaseTab) leaseTab.click();
+      const submitBtn = form.querySelector('button[type="submit"]'); 
+      if(submitBtn) submitBtn.textContent = 'Save';
       form.leaseNumber.focus();
     });
 
-    // Enable/Disable toggle button
     const toggleBtn = document.createElement('button');
     toggleBtn.textContent = (l.status === 'Disabled') ? 'Enable' : 'Disable';
     toggleBtn.addEventListener('click', ()=>{
@@ -1869,68 +2497,111 @@ function renderLeases(){
       saveState(); renderLeases(); renderOverview();
     });
 
-    const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
+    const delBtn = document.createElement('button'); 
+    delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', ()=>{
       if(!confirm('Delete this lease? This will not delete units or invoices automatically.')) return;
-      // remove lease
       state.leases = state.leases.filter(x=>x.id !== l.id);
-      // also clear lease references from units and invoices that pointed to this leaseNumber (optional: keep integrity)
       state.units = (state.units || []).map(u => (u.lease === l.leaseNumber) ? Object.assign({}, u, { lease: '' }) : u);
       state.invoices = (state.invoices || []).map(inv => (inv.lease === l.leaseNumber) ? Object.assign({}, inv, { lease: '' }) : inv);
       saveState(); renderLeases(); renderUnits(); renderInvoices(); renderOverview();
     });
 
-  actions.appendChild(editBtn);
-  actions.appendChild(toggleBtn);
-  actions.appendChild(delBtn);
-  // do NOT append 'actions' into the lease row - the compact moreMenu will
-  // reuse these button handlers internally. This keeps the UI clean.
-
-    // small 'more' button next to lease text that opens a compact menu
+    // Create compact 'more' menu
     try{
-      const moreWrap = document.createElement('span'); moreWrap.style.position = 'relative'; moreWrap.style.display = 'inline-block'; moreWrap.style.marginLeft = '8px';
-  const moreBtn = document.createElement('button'); moreBtn.type = 'button'; moreBtn.textContent = '⋯'; moreBtn.title = 'Actions';
-  // apply CSS class so the button background matches the page and is
-  // visually inline with the lease number (no inline background color).
-  moreBtn.className = 'lease-more-btn';
-  moreWrap.appendChild(moreBtn);
+      const moreWrap = document.createElement('span'); 
+      moreWrap.style.position = 'relative'; 
+      moreWrap.style.display = 'inline-block';
+      
+      const moreBtn = document.createElement('button'); 
+      moreBtn.type = 'button'; 
+      moreBtn.textContent = '⋯'; 
+      moreBtn.title = 'Actions';
+      moreBtn.className = 'lease-more-btn';
+      moreWrap.appendChild(moreBtn);
 
-      const moreMenu = document.createElement('div'); moreMenu.className = 'lease-more-menu'; moreMenu.style.position = 'absolute'; moreMenu.style.display = 'none'; moreMenu.style.right = '0'; moreMenu.style.top = 'calc(100% + 6px)'; moreMenu.style.background = '#fff'; moreMenu.style.border = '1px solid #ddd'; moreMenu.style.boxShadow = '0 6px 18px rgba(0,0,0,0.08)'; moreMenu.style.padding = '6px'; moreMenu.style.borderRadius = '6px'; moreMenu.style.zIndex = 9999; moreMenu.style.minWidth = '120px';
-      const mEdit = document.createElement('button'); mEdit.type = 'button'; mEdit.textContent = 'Edit'; mEdit.style.display='block'; mEdit.style.width='100%'; mEdit.style.marginBottom='6px';
-      const mToggle = document.createElement('button'); mToggle.type = 'button'; mToggle.textContent = (l.status === 'Disabled') ? 'Enable' : 'Disable'; mToggle.style.display='block'; mToggle.style.width='100%'; mToggle.style.marginBottom='6px';
-      const mDel = document.createElement('button'); mDel.type = 'button'; mDel.textContent = 'Delete'; mDel.style.display='block'; mDel.style.width='100%';
-      moreMenu.appendChild(mEdit); moreMenu.appendChild(mToggle); moreMenu.appendChild(mDel);
+      const moreMenu = document.createElement('div'); 
+      moreMenu.className = 'lease-more-menu'; 
+      moreMenu.style.position = 'absolute'; 
+      moreMenu.style.display = 'none'; 
+      moreMenu.style.right = '0'; 
+      moreMenu.style.top = 'calc(100% + 6px)'; 
+      moreMenu.style.background = '#fff'; 
+      moreMenu.style.border = '1px solid #ddd'; 
+      moreMenu.style.boxShadow = '0 6px 18px rgba(0,0,0,0.08)'; 
+      moreMenu.style.padding = '6px'; 
+      moreMenu.style.borderRadius = '6px'; 
+      moreMenu.style.zIndex = 9999; 
+      moreMenu.style.minWidth = '120px';
+      
+      const mEdit = document.createElement('button'); 
+      mEdit.type = 'button'; 
+      mEdit.textContent = 'Edit'; 
+      mEdit.style.display='block'; 
+      mEdit.style.width='100%'; 
+      mEdit.style.marginBottom='6px';
+      
+      const mToggle = document.createElement('button'); 
+      mToggle.type = 'button'; 
+      mToggle.textContent = (l.status === 'Disabled') ? 'Enable' : 'Disable'; 
+      mToggle.style.display='block'; 
+      mToggle.style.width='100%'; 
+      mToggle.style.marginBottom='6px';
+      
+      const mDel = document.createElement('button'); 
+      mDel.type = 'button'; 
+      mDel.textContent = 'Delete'; 
+      mDel.style.display='block'; 
+      mDel.style.width='100%';
+      
+      moreMenu.appendChild(mEdit); 
+      moreMenu.appendChild(mToggle); 
+      moreMenu.appendChild(mDel);
       moreWrap.appendChild(moreMenu);
 
-      // wire menu actions to reuse existing handlers
-      moreBtn.addEventListener('click', (ev)=>{ ev.stopPropagation(); moreMenu.style.display = moreMenu.style.display === 'none' ? 'block' : 'none'; });
-      mEdit.addEventListener('click', ()=>{ try{ editBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-      mToggle.addEventListener('click', ()=>{ try{ toggleBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-      mDel.addEventListener('click', ()=>{ try{ delBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+      moreBtn.addEventListener('click', (ev)=>{ 
+        ev.stopPropagation(); 
+        moreMenu.style.display = moreMenu.style.display === 'none' ? 'block' : 'none'; 
+      });
+      
+      mEdit.addEventListener('click', ()=>{ 
+        try{ editBtn.click(); }catch(e){} 
+        moreMenu.style.display='none'; 
+      });
+      
+      mToggle.addEventListener('click', ()=>{ 
+        try{ toggleBtn.click(); }catch(e){} 
+        moreMenu.style.display='none'; 
+      });
+      
+      mDel.addEventListener('click', ()=>{ 
+        try{ delBtn.click(); }catch(e){} 
+        moreMenu.style.display='none'; 
+      });
 
-      // close on outside click
-      document.addEventListener('click', ()=>{ try{ moreMenu.style.display = 'none'; }catch(e){} });
+      document.addEventListener('click', ()=>{ 
+        try{ moreMenu.style.display = 'none'; }catch(e){} 
+      });
 
-      // append the more control into the lease text span, but place it
-      // inline with the lease number so it appears on the same row as
-      // the strong lease label (user requested relocation).
-      const strongEl = text.querySelector('strong');
-      if(strongEl){
-        // ensure the strong element can contain an inline control
-        try{ strongEl.style.display = 'inline-flex'; strongEl.style.alignItems = 'center'; }catch(e){}
-        strongEl.appendChild(moreWrap);
-      } else {
-        text.appendChild(moreWrap);
-      }
+      tdActions.appendChild(moreWrap);
     }catch(e){ /* non-fatal */ }
-    // actions intentionally not appended to the list item
-
-    // when user clicks the lease item in the Lease Control list, close any open popup window
-    text.addEventListener('click', ()=>{ try{ if(window.__agi_open_popup && !window.__agi_open_popup.closed) window.__agi_open_popup.close(); }catch(e){} });
-    ol.appendChild(li);
+    
+    tr.appendChild(tdIndex);
+    tr.appendChild(tdLease);
+    tr.appendChild(tdCompany);
+    tr.appendChild(tdSupplier);
+    tr.appendChild(tdArrangement);
+    tr.appendChild(tdInvoicing);
+    tr.appendChild(tdStatus);
+    tr.appendChild(tdActions);
+    
+    tbody.appendChild(tr);
   });
+  
   // ensure unit lease select is updated when leases change
   if(typeof syncUnitLeaseOptions === 'function') syncUnitLeaseOptions();
+  // ensure invoice lease select is updated when leases change
+  if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions();
 }
 
 // Open a new small window showing full invoice details for a row
