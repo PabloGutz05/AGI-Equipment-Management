@@ -6,7 +6,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';">
   <title>AGI Vehicle Lease Management</title>
   <link rel="icon" type="image/jpeg" href="AGILogo.jpg">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2.0">
 </head>
 <body>
   <header>
@@ -414,10 +414,27 @@
           </div>
           <div id="statusUsers" style="margin-top:12px;padding:10px;border-radius:6px;display:none;"></div>
         </div>
-
+        
         <!-- Developer Configuration Controls -->
         <div style="margin-top:32px;border-top:2px solid #e5e7eb;padding-top:24px;">
           <h3 style="margin-bottom:16px;">Configuration Management</h3>
+          
+          <!-- Upload/Download Controls -->
+          <div style="background:#f8fafc;border:1px solid #e5e7eb;padding:16px;border-radius:8px;margin-bottom:24px;">
+            <div style="font-size:13px;color:#64748b;margin-bottom:12px;">Download the template, fill it with your configuration data, then upload to populate all fields below</div>
+            <div style="display:flex;gap:12px;">
+              <button id="downloadConfigTemplateBtn" style="background:#10b981;color:#fff;padding:8px 24px;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;flex-shrink:0;">
+                Download Template
+              </button>
+              <label style="flex:1;">
+                <input type="file" id="uploadConfigFile" accept=".csv,.json" style="width:100%;padding:8px;border:1px solid #e5e7eb;border-radius:6px;">
+              </label>
+              <button id="uploadConfigBtn" style="background:#0b74de;color:#fff;padding:8px 24px;border:none;border-radius:6px;cursor:pointer;font-weight:600;white-space:nowrap;">
+                Upload
+              </button>
+            </div>
+            <div id="statusConfig" style="margin-top:12px;padding:10px;border-radius:6px;display:none;"></div>
+          </div>
           
           <div class="dev-controls">
             <label class="dev-label">AGI Company
@@ -668,6 +685,6 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2.0"></script>
 </body>
 </html>

@@ -309,7 +309,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
   // allow the registration. Editing the same invoice is allowed.
   try{
     // Use FormData.getAll when available to detect multiple selected units
-    const leaseVal = (fd.get('invoiceLease') || '').toString().trim();
+    const leaseVal = (qs('#invoiceLease') && qs('#invoiceLease').value) || (fd.get('invoiceLease') || '').toString().trim();
     const catVal = (fd.get('invoiceCategory') || '').toString().trim();
     const wdVal = (fd.get('invoiceWD') || '').toString().trim();
     const editingId = form.dataset.editing || null;
@@ -337,7 +337,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
   }catch(err){ /* on unexpected error, let submission proceed */ }
   // Build a base invoice object (unit will be replaced per-unit if multiple units provided)
   const baseInvoice = {
-    lease: fd.get('invoiceLease') || '',
+    lease: (qs('#invoiceLease') && qs('#invoiceLease').value) || fd.get('invoiceLease') || '',
     supplier: (qs('#invoiceSupplier') && qs('#invoiceSupplier').value) || fd.get('invoiceSupplier') || '',
     company: fd.get('invoiceCompany') || '',
     arrangement: fd.get('invoiceArrangement') || '',
@@ -422,16 +422,27 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     }catch(e){ perUnitAmounts = units.map(()=> baseInvoice.amount || ''); }
 
   units.forEach((uVal, ui) => {
-      // uniqueness check per unit
+      // uniqueness check per unit - only block if the invoice exists AND belongs to an active registry
       const clash = (state.invoices || []).find(inv => {
         const aLease = (inv.lease||'').toString().trim().toLowerCase();
         const aCat = (inv.category||'').toString().trim().toLowerCase();
         const aUnit = (inv.unit||'').toString().trim().toLowerCase();
         const aWd = (inv.wdNumber||'').toString().trim().toLowerCase();
-        return aLease === (baseInvoice.lease||'').toString().trim().toLowerCase()
+        const matches = aLease === (baseInvoice.lease||'').toString().trim().toLowerCase()
           && aCat === (baseInvoice.category||'').toString().trim().toLowerCase()
           && aUnit === uVal.toString().trim().toLowerCase()
           && aWd === (baseInvoice.wdNumber||'').toString().trim().toLowerCase();
+        
+        if(!matches) return false;
+        
+        // Check if this invoice belongs to an active registry
+        const belongsToRegistry = (state.registries || []).some(reg => {
+          const regWd = (reg.wdNumber || '').toString().trim().toLowerCase();
+          const regUnits = Array.isArray(reg.units) ? reg.units.map(u => (u||'').toString().trim().toLowerCase()) : [];
+          return regWd === aWd && regUnits.includes(aUnit);
+        });
+        
+        return belongsToRegistry;
       });
   if(clash){ skipped.push(uVal); return; }
       // assign per-unit amount if available
@@ -477,6 +488,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         seq: state.meta.registrySeq,
         wdNumber: baseInvoice.wdNumber || '',
         docNumber: baseInvoice.docNumber || '',
+        category: baseInvoice.category || '',
         totalAmount: baseInvoice.amount || '',
         unitCount: createdIds.length,
         units: createdUnits.slice(),
@@ -604,8 +616,19 @@ function syncInvoiceLeaseOptions(){
   if(!input.dataset.dropdownInitialized){
     input.dataset.dropdownInitialized = 'true';
     
+    // Prevent form submission when pressing Enter
+    input.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        e.stopPropagation();
+        // Trigger click to open dropdown
+        input.click();
+      }
+    });
+    
     // Toggle dropdown on input click
     input.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       const isVisible = dropdown.style.display === 'block';
       
@@ -1511,7 +1534,25 @@ function renderRegistries(keepOpenRegistryId){
       e.stopPropagation();
       menuPanel.style.display = 'none';
       if(confirm(`Delete registry ${r.seq}?`)){
+        // Delete the registry
         state.registries = state.registries.filter(reg => reg.id !== r.id);
+        
+        // Also delete all invoices associated with this registry (matching WD number and units)
+        const registryWdNumber = (r.wdNumber || '').toString().trim().toLowerCase();
+        const registryUnits = Array.isArray(r.units) ? r.units.map(u => (u||'').toString().trim().toLowerCase()) : [];
+        
+        state.invoices = (state.invoices || []).filter(inv => {
+          const invWd = (inv.wdNumber || '').toString().trim().toLowerCase();
+          const invUnit = (inv.unit || '').toString().trim().toLowerCase();
+          
+          // Remove invoice if it matches this registry's WD and is in the registry's units
+          const matchesWd = invWd === registryWdNumber;
+          const matchesUnit = registryUnits.includes(invUnit);
+          
+          // Keep invoice if it doesn't match both criteria
+          return !(matchesWd && matchesUnit);
+        });
+        
         saveState();
         renderRegistries();
         renderInvoices();
@@ -2179,8 +2220,19 @@ function syncUnitLeaseOptions(){
   if(!input.dataset.dropdownInitialized){
     input.dataset.dropdownInitialized = 'true';
     
+    // Prevent form submission when pressing Enter
+    input.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        e.stopPropagation();
+        // Trigger click to open dropdown
+        input.click();
+      }
+    });
+    
     // Toggle dropdown on input click
     input.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       const isVisible = dropdown.style.display === 'block';
       
@@ -5600,7 +5652,38 @@ function downloadAllData() {
   }));
   downloadCSV(convertToCSV(usersData, usersHeaders), `users_${timestamp}.csv`);
   
-  alert(`Downloaded 4 CSV files:\n- invoices_${timestamp}.csv\n- units_${timestamp}.csv\n- leases_${timestamp}.csv\n- users_${timestamp}.csv`);
+  // Download Configuration
+  const configHeaders = ['type', 'value'];
+  const configData = [];
+  
+  // Add companies
+  (state.meta.devCompanies || []).forEach(c => {
+    configData.push({ type: 'company', value: c });
+  });
+  
+  // Add categories
+  (state.meta.devRentals || []).forEach(r => {
+    configData.push({ type: 'category', value: r });
+  });
+  
+  // Add suppliers
+  (state.meta.devSuppliers || []).forEach(s => {
+    configData.push({ type: 'supplier', value: s });
+  });
+  
+  // Add arrangements
+  (state.meta.devArrangements || []).forEach(a => {
+    configData.push({ type: 'arrangement', value: a });
+  });
+  
+  // Add invoicing
+  (state.meta.devPayments || []).forEach(p => {
+    configData.push({ type: 'invoicing', value: p });
+  });
+  
+  downloadCSV(convertToCSV(configData, configHeaders), `configuration_${timestamp}.csv`);
+  
+  alert(`Downloaded 5 CSV files:\n- invoices_${timestamp}.csv\n- units_${timestamp}.csv\n- leases_${timestamp}.csv\n- users_${timestamp}.csv\n- configuration_${timestamp}.csv`);
 }
 
 function downloadCSV(csvContent, filename) {
@@ -5620,5 +5703,186 @@ function downloadCSV(csvContent, filename) {
 const downloadAllDataBtn = qs('#downloadAllDataBtn');
 if (downloadAllDataBtn) {
   downloadAllDataBtn.addEventListener('click', downloadAllData);
+}
+
+// Wire up the download configuration template button
+const downloadConfigTemplateBtn = qs('#downloadConfigTemplateBtn');
+if (downloadConfigTemplateBtn) {
+  downloadConfigTemplateBtn.addEventListener('click', () => {
+    // Create template with column headers and example data
+    const templateData = [
+      { 
+        'AGI Company': 'Example Company 1',
+        'Category': 'Vehicle Lease',
+        'Supplier': 'Supplier A',
+        'Invoicing': 'NET 30',
+        'Arrangement': 'Monthly'
+      },
+      { 
+        'AGI Company': 'Example Company 2',
+        'Category': 'Equipment Rental',
+        'Supplier': 'Supplier B',
+        'Invoicing': 'NET 60',
+        'Arrangement': 'Quarterly'
+      },
+      { 
+        'AGI Company': '',
+        'Category': '',
+        'Supplier': '',
+        'Invoicing': '',
+        'Arrangement': ''
+      }
+    ];
+    
+    const headers = ['AGI Company', 'Category', 'Supplier', 'Invoicing', 'Arrangement'];
+    const csvContent = convertToCSV(templateData, headers);
+    downloadCSV(csvContent, 'configuration_template.csv');
+  });
+}
+
+// Wire up the upload configuration button
+const uploadConfigBtn = qs('#uploadConfigBtn');
+const uploadConfigFile = qs('#uploadConfigFile');
+const statusConfig = qs('#statusConfig');
+
+if (uploadConfigBtn && uploadConfigFile && statusConfig) {
+  uploadConfigBtn.addEventListener('click', () => {
+    const file = uploadConfigFile.files[0];
+    if (!file) {
+      statusConfig.style.display = 'block';
+      statusConfig.style.background = '#fef2f2';
+      statusConfig.style.color = '#dc2626';
+      statusConfig.textContent = '⚠️ Please select a file first';
+      return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        let data = [];
+        const content = e.target.result;
+        
+        // Parse CSV or JSON
+        if (file.name.endsWith('.json')) {
+          data = JSON.parse(content);
+        } else {
+          // Parse CSV with proper handling of quoted fields
+          const lines = content.split('\n').filter(line => line.trim());
+          const headers = parseCSVLine(lines[0]);
+          
+          for (let i = 1; i < lines.length; i++) {
+            const values = parseCSVLine(lines[i]);
+            const obj = {};
+            headers.forEach((header, idx) => {
+              obj[header] = values[idx] || '';
+            });
+            data.push(obj);
+          }
+        }
+        
+        // Process configuration data by columns
+        let companiesAdded = 0, categoriesAdded = 0, suppliersAdded = 0, arrangementsAdded = 0, invoicingAdded = 0;
+        
+        data.forEach(row => {
+          // Process AGI Company column
+          const company = (row['AGI Company'] || '').trim();
+          if (company && !state.meta.devCompanies.includes(company)) {
+            state.meta.devCompanies.push(company);
+            companiesAdded++;
+          }
+          
+          // Process Category column
+          const category = (row['Category'] || '').trim();
+          if (category && !state.meta.devRentals.includes(category)) {
+            state.meta.devRentals.push(category);
+            categoriesAdded++;
+          }
+          
+          // Process Supplier column
+          const supplier = (row['Supplier'] || '').trim();
+          if (supplier && !state.meta.devSuppliers.includes(supplier)) {
+            state.meta.devSuppliers.push(supplier);
+            suppliersAdded++;
+          }
+          
+          // Process Invoicing column
+          const invoicing = (row['Invoicing'] || '').trim();
+          if (invoicing && !state.meta.devPayments.includes(invoicing)) {
+            state.meta.devPayments.push(invoicing);
+            invoicingAdded++;
+          }
+          
+          // Process Arrangement column
+          const arrangement = (row['Arrangement'] || '').trim();
+          if (arrangement && !state.meta.devArrangements.includes(arrangement)) {
+            state.meta.devArrangements.push(arrangement);
+            arrangementsAdded++;
+          }
+        });
+        
+        // Save and refresh all lists
+        saveState();
+        if (typeof renderCompanyList === 'function') renderCompanyList();
+        if (typeof renderRentalList === 'function') renderRentalList();
+        if (typeof renderSupplierList === 'function') renderSupplierList();
+        if (typeof renderArrangementList === 'function') renderArrangementList();
+        if (typeof renderPaymentList === 'function') renderPaymentList();
+        if (typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
+        
+        // Show success message
+        statusConfig.style.display = 'block';
+        statusConfig.style.background = '#f0fdf4';
+        statusConfig.style.color = '#16a34a';
+        statusConfig.textContent = `✅ Configuration loaded successfully!\n` +
+          `Companies: ${companiesAdded}, Categories: ${categoriesAdded}, Suppliers: ${suppliersAdded}, ` +
+          `Arrangements: ${arrangementsAdded}, Invoicing: ${invoicingAdded}`;
+        
+        // Clear file input
+        uploadConfigFile.value = '';
+        
+      } catch (error) {
+        statusConfig.style.display = 'block';
+        statusConfig.style.background = '#fef2f2';
+        statusConfig.style.color = '#dc2626';
+        statusConfig.textContent = `❌ Error: ${error.message}`;
+      }
+    };
+    
+    reader.readAsText(file);
+  });
+}
+
+// Helper function to parse CSV line with proper handling of quoted fields
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+    
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Handle escaped quote (two double quotes)
+        current += '"';
+        i++; // Skip next quote
+      } else {
+        // Toggle quote state
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      // Field separator (only when not in quotes)
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  
+  // Add the last field
+  result.push(current.trim());
+  
+  return result;
 }
 
