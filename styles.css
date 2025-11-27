@@ -6,10 +6,10 @@
 }
 *{box-sizing:border-box}
 body{font-family:Segoe UI, Roboto, Arial, sans-serif;background:var(--bg);color:#111;margin:0;padding:0}
-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:linear-gradient(90deg,#0b74de22,transparent);border-bottom:1px solid #e6e9ee}
+header{display:flex;align-items:center;justify-content:space-between;padding:20px;background:linear-gradient(90deg,#0b74de22,transparent);border-bottom:1px solid #e6e9ee}
 header h1{margin:0;font-size:18px}
 .brand{display:flex;align-items:center;gap:12px}
-.brand img#agiLogo{width:42px;height:42px;object-fit:contain;display:block}
+.brand img#agiLogo{width:60px;height:60px;object-fit:contain;display:block}
 .brand{text-decoration:none;color:inherit}
 .brand:focus, .brand:hover{outline:0;opacity:0.95}
 .brand:focus{box-shadow:0 0 0 3px rgba(11,116,222,0.12);border-radius:8px}

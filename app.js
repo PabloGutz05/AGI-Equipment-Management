@@ -73,6 +73,39 @@ function updateExportImportVisibility(menuVisible){
   else { if(exportBtn) exportBtn.style.display = 'inline-block'; if(importLabel) importLabel.style.display = 'inline-flex'; }
 }
 
+// --- Update user info display below header title ---
+function updateUserInfoDisplay(){
+  const userInfoEl = qs('#userInfo');
+  if(!userInfoEl) return;
+  
+  const session = currentSession();
+  if(!session){
+    userInfoEl.style.display = 'none';
+    return;
+  }
+  
+  // Check if we're on the main menu
+  const menu = qs('#agiProcessMenu');
+  const menuVisible = menu && menu.style.display !== 'none';
+  
+  // Hide user info on main menu
+  if(menuVisible){
+    userInfoEl.style.display = 'none';
+    return;
+  }
+  
+  const info = getCurrentUserInfo();
+  if(!info){
+    userInfoEl.style.display = 'none';
+    return;
+  }
+  
+  const fullName = (info.firstName || info.username) + (info.lastName ? ' ' + info.lastName : '');
+  const role = info.role || 'User';
+  userInfoEl.textContent = `${fullName} - ${role}`;
+  userInfoEl.style.display = 'block';
+}
+
 // --- Header title update for Process Menu ---
 function getCurrentUserInfo(){
   const session = currentSession(); if(!session) return null;
@@ -121,20 +154,20 @@ if(loginForm){
     // Master account (case-sensitive)
     if(username === 'Master' && password === 'Master'){
   sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
-  showApp(true); renderAll(); syncTabLabels(); updateHeaderTitleForMenu(true); updateExportImportVisibility(true); return;
+  showApp(true); renderAll(); syncTabLabels(); updateHeaderTitleForMenu(true); updateExportImportVisibility(true); updateUserInfoDisplay(); return;
     }
     // check users in state (password must match and case-sensitive)
     const u = (state.users||[]).find(x=> x.username === username && x.password === password);
-  if(u){ sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username})); showApp(true); renderAll(); syncTabLabels(); applyRoleRestrictions(); updateExportImportVisibility(true); return; }
+  if(u){ sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username})); showApp(true); renderAll(); syncTabLabels(); applyRoleRestrictions(); updateExportImportVisibility(true); updateUserInfoDisplay(); return; }
     alert('Invalid credentials');
   });
 }
 
 // logout
-const logoutBtn = qs('#logoutBtn'); if(logoutBtn){ logoutBtn.addEventListener('click', ()=>{ sessionStorage.removeItem(SESSION_KEY); showApp(false); }); }
+const logoutBtn = qs('#logoutBtn'); if(logoutBtn){ logoutBtn.addEventListener('click', ()=>{ sessionStorage.removeItem(SESSION_KEY); showApp(false); updateUserInfoDisplay(); }); }
 
 // On load decide whether to show the app
-document.addEventListener('DOMContentLoaded', ()=>{ showApp(isAuthenticated()); });
+document.addEventListener('DOMContentLoaded', ()=>{ showApp(isAuthenticated()); if(isAuthenticated()) updateUserInfoDisplay(); });
 
 // --- AGI Process Menu wiring ---
 const procMenu = qs('#agiProcessMenu');
@@ -144,7 +177,7 @@ const brandLink = qs('#brandLink');
 
 if(procVehicleBtn){ procVehicleBtn.addEventListener('click', ()=>{ // open Vehicle Leasing Management (existing appRoot)
   const root = qs('#appRoot'); if(root) root.style.display = 'block'; if(procMenu) procMenu.style.display = 'none'; // ensure tabs are synced
-  syncTabLabels(); renderAll(); applyRoleRestrictions(); updateHeaderTitleForMenu(false); updateExportImportVisibility(false);
+  syncTabLabels(); renderAll(); applyRoleRestrictions(); updateHeaderTitleForMenu(false); updateExportImportVisibility(false); updateUserInfoDisplay();
   // Switch to Overview tab (Unit Overview)
   const overviewTab = Array.from(document.querySelectorAll('.tab')).find(t=>t.dataset.tab==='overview'); 
   if(overviewTab) overviewTab.click();
@@ -162,6 +195,8 @@ if(brandLink){ brandLink.addEventListener('click', e=>{ e.preventDefault(); // d
   applyRoleRestrictions();
   // hide export/import
   updateExportImportVisibility(true);
+  // hide user info on main menu
+  updateUserInfoDisplay();
   // keep focus on the menu for keyboard users
   const firstBtn = qs('#procVehicleLease'); if(firstBtn) firstBtn.focus();
 });
@@ -1841,6 +1876,20 @@ function renderRegistries(keepOpenRegistryId){
 function renderUnits(){
   const tbody = qs('#unitList'); if(!tbody) return; tbody.innerHTML = '';
   
+  // Initialize all units with operational status history if they don't have one
+  (state.units || []).forEach(unit => {
+    if(!unit.statusHistory || unit.statusHistory.length === 0){
+      unit.statusHistory = [{
+        status: 'Operational',
+        date: '2025-01-01',
+        changedBy: 'System',
+        timestamp: '2025-01-01T00:00:00.000Z'
+      }];
+      if(!unit.status) unit.status = 'Operational';
+      if(!unit.enabledDate) unit.enabledDate = '2025-01-01';
+    }
+  });
+  
   // Initialize meta for search and sorting
   state.meta = state.meta || {};
   state.meta.unitSearch = state.meta.unitSearch || '';
@@ -2008,7 +2057,13 @@ function renderUnits(){
     const tdMonthly = document.createElement('td'); tdMonthly.textContent = formatCurrency(u.monthly || '') || '';
     const tdDesc = document.createElement('td'); tdDesc.textContent = u.description || '';
   const tdNotes = document.createElement('td'); tdNotes.textContent = u.notes || '';
-  const tdStatus = document.createElement('td'); tdStatus.textContent = u.status || 'Operational';
+  const tdStatus = document.createElement('td'); 
+  tdStatus.textContent = u.status || 'Operational';
+  // Style disabled status
+  if(u.status === 'Disabled'){
+    tdStatus.style.color = '#dc2626';
+    tdStatus.style.fontWeight = '600';
+  }
   const tdActions = document.createElement('td'); tdActions.className = 'dev-actions';
 
     const editBtn = document.createElement('button'); editBtn.textContent = 'Edit';
@@ -2020,9 +2075,34 @@ function renderUnits(){
     const renderDisabledDateFor = (index)=>{
       const unitObj = state.units[index] || {};
       // reset status text
+      tdStatus.innerHTML = '';
       tdStatus.textContent = unitObj.status || 'Operational';
-      // if disabled, show a small clickable date beneath the status
+      
+      // Apply styling for disabled status
       if(unitObj.status === 'Disabled'){
+        tdStatus.style.color = '#dc2626';
+        tdStatus.style.fontWeight = '600';
+      } else {
+        tdStatus.style.color = '#16a34a';
+        tdStatus.style.fontWeight = '600';
+      }
+      
+      // Show the last status change date for both disabled and operational units
+      const statusHistory = unitObj.statusHistory || [];
+      if(statusHistory.length > 0){
+        const lastChange = statusHistory[statusHistory.length - 1];
+        const dateSpan = document.createElement('div');
+        dateSpan.className = 'small-muted status-date';
+        dateSpan.textContent = lastChange.date || '';
+        dateSpan.style.cursor = 'pointer';
+        dateSpan.title = 'Click to view status history';
+        dateSpan.addEventListener('click', ()=>{
+          openUnitStatusHistoryModal(unitObj);
+        });
+        tdStatus.appendChild(document.createElement('br'));
+        tdStatus.appendChild(dateSpan);
+      } else if(unitObj.status === 'Disabled' && unitObj.disabledDate){
+        // Legacy support for units with disabledDate but no history
         const dateSpan = document.createElement('div');
         dateSpan.className = 'small-muted disabled-date';
         dateSpan.textContent = unitObj.disabledDate || '';
@@ -2031,12 +2111,18 @@ function renderUnits(){
         dateSpan.addEventListener('click', ()=>{
           // replace content with inline date input + save/cancel
           tdStatus.innerHTML = '';
-          tdStatus.appendChild(document.createTextNode(unitObj.status || 'Disabled'));
+          const statusText = document.createTextNode(unitObj.status || 'Disabled');
+          tdStatus.appendChild(statusText);
           tdStatus.appendChild(document.createElement('br'));
           const input = document.createElement('input'); input.type = 'date'; input.value = unitObj.disabledDate || new Date().toISOString().slice(0,10);
           const save = document.createElement('button'); save.textContent = 'Save';
           const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
           tdStatus.appendChild(input); tdStatus.appendChild(save); tdStatus.appendChild(cancel);
+          
+          // Keep the styling even in edit mode
+          tdStatus.style.color = '#dc2626';
+          tdStatus.style.fontWeight = '600';
+          
           save.addEventListener('click', ()=>{
             const v = input.value;
             if(v) state.units[index].disabledDate = v; else delete state.units[index].disabledDate;
@@ -2053,16 +2139,7 @@ function renderUnits(){
     toggleBtn.addEventListener('click', ()=>{
       const idx = state.units.findIndex(x=>x.id===u.id);
       if(idx === -1) return;
-      if(state.units[idx].status === 'Disabled'){
-        // re-enable
-        state.units[idx].status = 'Operational';
-        delete state.units[idx].disabledDate;
-      } else {
-        // disable and set today's date if not present
-        state.units[idx].status = 'Disabled';
-        if(!state.units[idx].disabledDate) state.units[idx].disabledDate = new Date().toISOString().slice(0,10);
-      }
-      saveState(); renderUnits(); renderOverview();
+      openUnitStatusChangeModal(state.units[idx], idx);
     });
 
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
@@ -2112,23 +2189,44 @@ function renderUnits(){
   try{
     const strongEl = tdUnit.querySelector('strong');
     if(strongEl){
+      // Get current user role for restrictions
+      const session = currentSession();
+      let userRole = null;
+      if(session && session.user === 'Master'){ 
+        userRole = 'Master'; 
+      } else if(session) {
+        const currentUser = (state.users||[]).find(x=> x.username === session.user);
+        userRole = currentUser ? (currentUser.role || null) : null;
+      }
+      
       const moreWrap = document.createElement('span'); moreWrap.style.position = 'relative'; moreWrap.style.display = 'inline-block'; moreWrap.style.marginLeft = '8px';
       const moreBtn = document.createElement('button'); moreBtn.type = 'button'; moreBtn.textContent = '⋯'; moreBtn.title = 'Actions'; moreBtn.className = 'lease-more-btn';
       moreWrap.appendChild(moreBtn);
 
       const moreMenu = document.createElement('div'); moreMenu.className = 'unit-more-menu'; moreMenu.style.position = 'absolute'; moreMenu.style.display = 'none'; moreMenu.style.right = '0'; moreMenu.style.top = 'calc(100% + 6px)'; moreMenu.style.background = '#fff'; moreMenu.style.border = '1px solid #ddd'; moreMenu.style.boxShadow = '0 6px 18px rgba(0,0,0,0.08)'; moreMenu.style.padding = '6px'; moreMenu.style.borderRadius = '6px'; moreMenu.style.zIndex = 9999; moreMenu.style.minWidth = '120px';
-      const mEdit = document.createElement('button'); mEdit.type = 'button'; mEdit.textContent = 'Edit'; mEdit.style.display='block'; mEdit.style.width='100%'; mEdit.style.marginBottom='6px';
-      const mComment = document.createElement('button'); mComment.type = 'button'; mComment.textContent = 'Comment'; mComment.style.display='block'; mComment.style.width='100%'; mComment.style.marginBottom='6px';
-      const mToggle = document.createElement('button'); mToggle.type = 'button'; mToggle.textContent = (u.status === 'Disabled' ? 'Enable' : 'Disable'); mToggle.style.display='block'; mToggle.style.width='100%'; mToggle.style.marginBottom='6px';
-      const mDel = document.createElement('button'); mDel.type = 'button'; mDel.textContent = 'Delete'; mDel.style.display='block'; mDel.style.width='100%';
-      moreMenu.appendChild(mEdit); moreMenu.appendChild(mComment); moreMenu.appendChild(mToggle); moreMenu.appendChild(mDel);
+      
+      // Operator role: only show Comment button
+      if(userRole === 'Operator'){
+        const mComment = document.createElement('button'); mComment.type = 'button'; mComment.textContent = 'Comment'; mComment.style.display='block'; mComment.style.width='100%';
+        moreMenu.appendChild(mComment);
+        mComment.addEventListener('click', ()=>{ openUnitCommentsModal(u); moreMenu.style.display='none'; });
+      } else {
+        // Manager, Developer, Master: show all options
+        const mEdit = document.createElement('button'); mEdit.type = 'button'; mEdit.textContent = 'Edit'; mEdit.style.display='block'; mEdit.style.width='100%'; mEdit.style.marginBottom='6px';
+        const mComment = document.createElement('button'); mComment.type = 'button'; mComment.textContent = 'Comment'; mComment.style.display='block'; mComment.style.width='100%'; mComment.style.marginBottom='6px';
+        const mToggle = document.createElement('button'); mToggle.type = 'button'; mToggle.textContent = (u.status === 'Disabled' ? 'Enable' : 'Disable'); mToggle.style.display='block'; mToggle.style.width='100%'; mToggle.style.marginBottom='6px';
+        const mDel = document.createElement('button'); mDel.type = 'button'; mDel.textContent = 'Delete'; mDel.style.display='block'; mDel.style.width='100%';
+        moreMenu.appendChild(mEdit); moreMenu.appendChild(mComment); moreMenu.appendChild(mToggle); moreMenu.appendChild(mDel);
+        
+        mEdit.addEventListener('click', ()=>{ try{ editBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+        mComment.addEventListener('click', ()=>{ openUnitCommentsModal(u); moreMenu.style.display='none'; });
+        mToggle.addEventListener('click', ()=>{ try{ toggleBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+        mDel.addEventListener('click', ()=>{ try{ delBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+      }
+      
       moreWrap.appendChild(moreMenu);
 
       moreBtn.addEventListener('click', (ev)=>{ ev.stopPropagation(); moreMenu.style.display = moreMenu.style.display === 'none' ? 'block' : 'none'; });
-      mEdit.addEventListener('click', ()=>{ try{ editBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-      mComment.addEventListener('click', ()=>{ openUnitCommentsModal(u); moreMenu.style.display='none'; });
-      mToggle.addEventListener('click', ()=>{ try{ toggleBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-      mDel.addEventListener('click', ()=>{ try{ delBtn.click(); }catch(e){} moreMenu.style.display='none'; });
 
       // close on outside click
       document.addEventListener('click', ()=>{ try{ moreMenu.style.display = 'none'; }catch(e){} });
@@ -2546,7 +2644,10 @@ function renderLeases(){
         state.leases[idx].status = 'Disabled';
         if(!state.leases[idx].disabledDate) state.leases[idx].disabledDate = new Date().toISOString().slice(0,10);
       }
-      saveState(); renderLeases(); renderOverview();
+      saveState(); 
+      renderLeases(); 
+      renderOverview();
+      syncLeaseOptions();
     });
 
     const delBtn = document.createElement('button'); 
@@ -2887,6 +2988,92 @@ if (loginGate) {
 
 function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); }
 
+// Helper function to format date from YYYY-MM-DD to MM/DD/YYYY
+function formatDateToUS(dateStr){
+  if(!dateStr) return '';
+  const parts = dateStr.split('-');
+  if(parts.length !== 3) return dateStr;
+  return `${parts[1]}/${parts[2]}/${parts[0]}`;
+}
+
+// Helper function to extract disabled periods from unit status history
+// Returns array of {fromDate, toDate} objects where toDate can be null if still disabled
+function getDisabledPeriods(unit){
+  const statusHistory = unit.statusHistory || [];
+  if(statusHistory.length === 0) return [];
+  
+  // Sort history by the actual date (not timestamp) to ensure chronological order
+  const sortedHistory = [...statusHistory].sort((a, b) => {
+    const dateA = a.date || a.timestamp;
+    const dateB = b.date || b.timestamp;
+    return new Date(dateA) - new Date(dateB);
+  });
+  
+  console.log(`Unit ${unit.unitId} status history:`, sortedHistory.map(h => `${h.date} - ${h.status}`));
+  
+  const disabledPeriods = [];
+  let currentDisabledStart = null;
+  
+  sortedHistory.forEach(entry => {
+    if(entry.status === 'Disabled'){
+      // Start of a disabled period
+      if(!currentDisabledStart){
+        currentDisabledStart = entry.date;
+        console.log(`  Disabled period starts: ${currentDisabledStart}`);
+      }
+    } else if(entry.status === 'Operational'){
+      // End of a disabled period (if one was active)
+      if(currentDisabledStart){
+        disabledPeriods.push({
+          fromDate: currentDisabledStart,
+          toDate: entry.date
+        });
+        console.log(`  Disabled period: ${currentDisabledStart} to ${entry.date}`);
+        currentDisabledStart = null;
+      }
+    }
+  });
+  
+  // If still disabled (no operational status after last disabled), add open-ended period
+  if(currentDisabledStart){
+    disabledPeriods.push({
+      fromDate: currentDisabledStart,
+      toDate: null // Open-ended period
+    });
+    console.log(`  Disabled period (open): ${currentDisabledStart} to present`);
+  }
+  
+  console.log(`Unit ${unit.unitId} disabled periods:`, disabledPeriods);
+  return disabledPeriods;
+}
+
+// Check if a specific date falls within any disabled period
+function isDateInDisabledPeriod(year, month, day, disabledPeriods){
+  if(disabledPeriods.length === 0) return false;
+  
+  // Create date string in YYYY-MM-DD format for comparison
+  const monthStr = String(month + 1).padStart(2, '0');
+  const dayStr = String(day).padStart(2, '0');
+  const checkDateStr = `${year}-${monthStr}-${dayStr}`;
+  
+  const result = disabledPeriods.some(period => {
+    // If toDate is null, period is open-ended (check if checkDate >= fromDate)
+    if(!period.toDate){
+      const isDisabled = checkDateStr >= period.fromDate;
+      if(isDisabled) console.log(`  ${checkDateStr} is disabled (open period from ${period.fromDate})`);
+      return isDisabled;
+    }
+    
+    // Disabled period is from fromDate (inclusive) to the day BEFORE toDate (exclusive)
+    // Because toDate is when the unit becomes operational again
+    const isDisabled = checkDateStr >= period.fromDate && checkDateStr < period.toDate;
+    if(isDisabled) console.log(`  ${checkDateStr} is disabled (${period.fromDate} to ${period.toDate})`);
+    return isDisabled;
+  });
+  
+  return result;
+}
+
 // Render the Unit Overview page: year/month selectors and per-unit day grid
 function renderUnitOverview(){
   const el = qs('#unitOverview'); if(!el) return;
@@ -3186,6 +3373,7 @@ function renderUnitOverview(){
 
       // Build map of days covered by registries for this unit (track count for overlap detection)
       const coveredDays = new Map();
+      const creditDays = new Set(); // Track days covered by credit category
       const registries = state.registries || [];
       const invoices = state.invoices || [];
       
@@ -3200,7 +3388,7 @@ function renderUnitOverview(){
           return regUnit === unitId || regUnit === unitIdAlt;
         });
         
-        // Check if registry or matching invoice has Rental category
+        // Check if registry or matching invoice has a category
         let category = '';
         
         // First, check if registry has a category
@@ -3219,8 +3407,9 @@ function renderUnitOverview(){
         }
         
         const hasRentalCategory = category === 'rental';
+        const hasCreditCategory = category === 'credit';
         
-        if(isInRegistry && hasRentalCategory && reg.periodStart && reg.periodEnd){
+        if(isInRegistry && reg.periodStart && reg.periodEnd){
           // Parse dates as local dates to avoid timezone issues
           const startParts = reg.periodStart.toString().trim().split('-');
           const endParts = reg.periodEnd.toString().trim().split('-');
@@ -3233,7 +3422,16 @@ function renderUnitOverview(){
             while(currentDate <= endDate){
               if(currentDate.getFullYear() === year && currentDate.getMonth() === month){
                 const day = currentDate.getDate();
-                coveredDays.set(day, (coveredDays.get(day) || 0) + 1);
+                
+                // Track rental coverage for count
+                if(hasRentalCategory){
+                  coveredDays.set(day, (coveredDays.get(day) || 0) + 1);
+                }
+                
+                // Track credit coverage separately
+                if(hasCreditCategory){
+                  creditDays.add(day);
+                }
               }
               currentDate.setDate(currentDate.getDate() + 1);
             }
@@ -3241,12 +3439,23 @@ function renderUnitOverview(){
         }
       });
 
+      // Get disabled periods for this unit
+      const disabledPeriods = getDisabledPeriods(u);
+
       // Day columns - create squares for each day with day numbers inside
       for(let d = 1; d <= daysInMonth; d++){
         const tdDay = document.createElement('td');
         tdDay.style.padding = '2px';
         tdDay.style.textAlign = 'center';
         tdDay.style.verticalAlign = 'middle';
+        
+        // Check if this day is in a disabled period
+        const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+        
+        // Apply red background to the cell if disabled
+        if(isDisabled){
+          tdDay.style.backgroundColor = '#dc2626';
+        }
 
         const square = document.createElement('div');
         square.style.width = '24px';
@@ -3259,9 +3468,31 @@ function renderUnitOverview(){
         square.style.fontSize = '11px';
         square.textContent = d;
         
+        // Check if this day has credit category coverage
+        const hasCredit = creditDays.has(d);
+        
         // Highlight based on coverage count
         const coverageCount = coveredDays.get(d) || 0;
-        if(coverageCount > 1){
+        
+        if(hasCredit){
+          // Yellow border and text for credit category (takes priority)
+          square.style.borderColor = '#eab308';
+          square.style.borderWidth = '2px';
+          square.style.color = '#eab308';
+          square.style.fontWeight = '700';
+          
+          // Keep background based on rental coverage
+          if(coverageCount > 1){
+            square.style.backgroundColor = '#fee2e2';
+            square.title = `Credit category | Overlap: ${coverageCount} rental registries`;
+          } else if(coverageCount === 1){
+            square.style.backgroundColor = '#dcfce7';
+            square.title = 'Credit category | Single rental coverage';
+          } else {
+            square.style.backgroundColor = '#fff';
+            square.title = 'Credit category';
+          }
+        } else if(coverageCount > 1){
           // Red for overlaps (2 or more registries covering the same day)
           square.style.backgroundColor = '#fee2e2';
           square.style.borderColor = '#dc2626';
@@ -3269,15 +3500,36 @@ function renderUnitOverview(){
           square.style.fontWeight = '600';
           square.title = `Overlap: ${coverageCount} registries cover this day`;
         } else if(coverageCount === 1){
-          // Green for single coverage
+          // Green for single coverage (even if disabled)
           square.style.backgroundColor = '#dcfce7';
           square.style.borderColor = '#16a34a';
           square.style.color = '#15803d';
+          square.style.fontWeight = '600';
+        } else if(isDisabled){
+          // White square on red background for disabled periods with no coverage
+          square.style.backgroundColor = '#ffffff';
+          square.style.borderColor = '#991b1b';
+          square.style.color = '#dc2626';
           square.style.fontWeight = '600';
         } else {
           // White for no coverage
           square.style.backgroundColor = '#fff';
           square.style.color = '#6b7280';
+        }
+        
+        // Add tooltip for disabled periods
+        if(isDisabled){
+          const matchingPeriod = disabledPeriods.find(p => isDateInDisabledPeriod(year, month, d, [p]));
+          if(matchingPeriod){
+            const fromDate = matchingPeriod.fromDate;
+            const toDate = matchingPeriod.toDate || 'Present';
+            const disabledMsg = `Unit Disabled: ${fromDate} to ${toDate}`;
+            if(square.title){
+              square.title += ` | ${disabledMsg}`;
+            } else {
+              square.title = disabledMsg;
+            }
+          }
         }
 
         tdDay.appendChild(square);
@@ -4910,6 +5162,307 @@ if(addUnitCommentBtn){
 //     }
 //   });
 // }
+
+// ==================== UNIT STATUS CHANGE MODAL ====================
+let currentUnitForStatusChange = null;
+let currentUnitIndexForStatusChange = null;
+
+function openUnitStatusChangeModal(unit, unitIndex){
+  currentUnitForStatusChange = unit;
+  currentUnitIndexForStatusChange = unitIndex;
+  
+  const modal = qs('#unitStatusChangeModal');
+  const title = qs('#statusChangeTitle');
+  const dateInput = qs('#statusChangeDate');
+  
+  if(!modal || !title || !dateInput) return;
+  
+  const newStatus = unit.status === 'Disabled' ? 'Operational' : 'Disabled';
+  title.textContent = `${newStatus === 'Disabled' ? 'Disable' : 'Enable'} Unit - ${unit.unitId || 'Unit'}`;
+  
+  // Set today's date
+  dateInput.value = new Date().toISOString().slice(0,10);
+  
+  modal.style.display = 'flex';
+}
+
+function closeUnitStatusChangeModal(){
+  const modal = qs('#unitStatusChangeModal');
+  if(modal) modal.style.display = 'none';
+  currentUnitForStatusChange = null;
+  currentUnitIndexForStatusChange = null;
+}
+
+// Status Change OK button
+const statusChangeOkBtn = qs('#statusChangeOkBtn');
+if(statusChangeOkBtn){
+  statusChangeOkBtn.addEventListener('click', () => {
+    console.log('Status change OK button clicked');
+    console.log('currentUnitIndexForStatusChange:', currentUnitIndexForStatusChange);
+    
+    if(currentUnitIndexForStatusChange === null) return;
+    
+    const dateInput = qs('#statusChangeDate');
+    const selectedDate = dateInput ? dateInput.value : new Date().toISOString().slice(0,10);
+    
+    console.log('Selected date:', selectedDate);
+    
+    if(!selectedDate){
+      alert('Please select a date');
+      return;
+    }
+    
+    const unit = state.units[currentUnitIndexForStatusChange];
+    if(!unit) {
+      console.log('Unit not found at index:', currentUnitIndexForStatusChange);
+      return;
+    }
+    
+    console.log('Unit before change:', {id: unit.id, unitId: unit.unitId, status: unit.status});
+    
+    // Get current user for history tracking
+    const session = currentSession();
+    const currentUser = session ? session.user : 'Unknown';
+    
+    // Initialize status history if not present
+    if(!unit.statusHistory) unit.statusHistory = [];
+    
+    // Toggle status
+    if(unit.status === 'Disabled'){
+      // Re-enable
+      unit.status = 'Operational';
+      unit.enabledDate = selectedDate;
+      delete unit.disabledDate;
+      console.log('Changed to Operational');
+    } else {
+      // Disable
+      unit.status = 'Disabled';
+      unit.disabledDate = selectedDate;
+      delete unit.enabledDate;
+      console.log('Changed to Disabled');
+    }
+    
+    // Add to history
+    unit.statusHistory.push({
+      status: unit.status,
+      date: selectedDate,
+      changedBy: currentUser,
+      timestamp: new Date().toISOString()
+    });
+    
+    console.log('Unit after change:', {id: unit.id, unitId: unit.unitId, status: unit.status});
+    console.log('Saving and rendering...');
+    
+    saveState();
+    renderUnits();
+    renderOverview();
+    if(typeof renderUnitOverview === 'function') renderUnitOverview();
+    closeUnitStatusChangeModal();
+  });
+}
+
+// Status Change Cancel button
+const statusChangeCancelBtn = qs('#statusChangeCancelBtn');
+if(statusChangeCancelBtn){
+  statusChangeCancelBtn.addEventListener('click', closeUnitStatusChangeModal);
+}
+
+// Status Change Close button
+const closeStatusChangeBtn = qs('#closeStatusChangeBtn');
+if(closeStatusChangeBtn){
+  closeStatusChangeBtn.addEventListener('click', closeUnitStatusChangeModal);
+}
+
+// ==================== UNIT STATUS HISTORY MODAL ====================
+function openUnitStatusHistoryModal(unit) {
+  const modal = qs('#unitStatusHistoryModal');
+  const title = qs('#statusHistoryTitle');
+  const listDiv = qs('#statusHistoryList');
+  
+  if (!modal || !title || !listDiv) return;
+  
+  title.textContent = `Status Change History - ${unit.unitId || 'Unknown'}`;
+  listDiv.innerHTML = '';
+  
+  const statusHistory = unit.statusHistory || [];
+  
+  if (statusHistory.length === 0) {
+    listDiv.innerHTML = '<div style="color:#6b7280;text-align:center;padding:20px;">No status change history available.</div>';
+  } else {
+    // Sort history by timestamp (newest first)
+    const sortedHistory = [...statusHistory].sort((a, b) => {
+      return new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date);
+    });
+    
+    sortedHistory.forEach((entry, index) => {
+      const entryDiv = document.createElement('div');
+      entryDiv.style.cssText = 'background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px;';
+      
+      // Top row container
+      const topRow = document.createElement('div');
+      topRow.style.cssText = 'display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap;';
+      
+      // Status badge
+      const statusBadge = document.createElement('span');
+      statusBadge.textContent = entry.status || 'Unknown';
+      statusBadge.style.cssText = `display:inline-block;padding:6px 12px;border-radius:12px;font-size:13px;font-weight:600;
+        ${entry.status === 'Disabled' ? 'background:#fee2e2;color:#dc2626;' : 'background:#dcfce7;color:#16a34a;'}`;
+      
+      // Date display (clickable to edit)
+      const dateDisplay = document.createElement('span');
+      dateDisplay.textContent = entry.date ? formatDateToUS(entry.date) : 'No date';
+      dateDisplay.style.cssText = 'padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;background:#fff;cursor:pointer;';
+      dateDisplay.title = 'Click to edit date';
+      
+      // Date input (hidden by default)
+      const dateInput = document.createElement('input');
+      dateInput.type = 'date';
+      dateInput.value = entry.date || '';
+      dateInput.style.cssText = 'display:none;padding:6px 10px;border:2px solid #0b74de;border-radius:6px;font-size:13px;';
+      
+      // Save button
+      const saveBtn = document.createElement('button');
+      saveBtn.textContent = 'Save';
+      saveBtn.style.cssText = 'display:none;padding:6px 12px;border-radius:6px;font-size:12px;background:#0b74de;color:#fff;border:none;cursor:pointer;';
+      
+      // Cancel button
+      const cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.cssText = 'display:none;padding:6px 12px;border-radius:6px;font-size:12px;background:#6b7280;color:#fff;border:none;cursor:pointer;';
+      
+      // Delete button
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.style.cssText = 'padding:6px 12px;border-radius:6px;font-size:12px;background:#dc2626;color:#fff;border:none;cursor:pointer;margin-left:auto;';
+      
+      // Click handler to edit date
+      dateDisplay.addEventListener('click', () => {
+        dateDisplay.style.display = 'none';
+        dateInput.style.display = 'inline-block';
+        saveBtn.style.display = 'inline-block';
+        cancelBtn.style.display = 'inline-block';
+        deleteBtn.style.display = 'none';
+        dateInput.focus();
+      });
+      
+      // Cancel button handler
+      cancelBtn.addEventListener('click', () => {
+        dateInput.value = entry.date || '';
+        dateInput.style.display = 'none';
+        saveBtn.style.display = 'none';
+        cancelBtn.style.display = 'none';
+        dateDisplay.style.display = 'inline-block';
+        deleteBtn.style.display = 'inline-block';
+      });
+      
+      // Save button handler
+      saveBtn.addEventListener('click', () => {
+        const newDate = dateInput.value;
+        if (!newDate) {
+          alert('Please enter a valid date');
+          return;
+        }
+        
+        // Find the unit in state and update the history entry
+        const unitIndex = state.units.findIndex(u => u.id === unit.id);
+        if (unitIndex !== -1 && state.units[unitIndex].statusHistory) {
+          const historyIndex = state.units[unitIndex].statusHistory.findIndex(h => 
+            h.status === entry.status && h.timestamp === entry.timestamp
+          );
+          
+          if (historyIndex !== -1) {
+            state.units[unitIndex].statusHistory[historyIndex].date = newDate;
+            
+            // Update the unit's current date fields if this is the most recent entry
+            if (historyIndex === state.units[unitIndex].statusHistory.length - 1) {
+              if (entry.status === 'Disabled') {
+                state.units[unitIndex].disabledDate = newDate;
+              } else if (entry.status === 'Operational') {
+                state.units[unitIndex].enabledDate = newDate;
+              }
+            }
+            
+            saveState();
+            renderUnits();
+            if(typeof renderUnitOverview === 'function') renderUnitOverview();
+            openUnitStatusHistoryModal(state.units[unitIndex]); // Refresh modal
+          }
+        }
+      });
+      
+      // Delete button handler
+      deleteBtn.addEventListener('click', () => {
+        if (!confirm('Are you sure you want to delete this status change record?')) return;
+        
+        const unitIndex = state.units.findIndex(u => u.id === unit.id);
+        if (unitIndex !== -1 && state.units[unitIndex].statusHistory) {
+          state.units[unitIndex].statusHistory = state.units[unitIndex].statusHistory.filter(h => 
+            !(h.status === entry.status && h.timestamp === entry.timestamp)
+          );
+          saveState();
+          renderUnits();
+          if(typeof renderUnitOverview === 'function') renderUnitOverview();
+          openUnitStatusHistoryModal(state.units[unitIndex]); // Refresh modal
+        }
+      });
+      
+      // User information
+      const userInfo = document.createElement('div');
+      userInfo.style.cssText = 'font-size:13px;color:#6b7280;';
+      
+      // Get full name of user who made the change
+      let userName = entry.changedBy || 'Unknown';
+      if (entry.changedBy && entry.changedBy !== 'System' && entry.changedBy !== 'Unknown') {
+        const user = (state.users || []).find(u => u.username === entry.changedBy);
+        if (user) {
+          const fullName = (user.firstName || '') + (user.lastName ? ' ' + user.lastName : '');
+          userName = fullName.trim() || entry.changedBy;
+        }
+      }
+      
+      const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '';
+      userInfo.innerHTML = `<strong>Changed by:</strong> ${escapeHtml(userName)}<br><strong>Timestamp:</strong> ${escapeHtml(timestamp)}`;
+      
+      // Build the top row
+      topRow.appendChild(statusBadge);
+      topRow.appendChild(dateDisplay);
+      topRow.appendChild(dateInput);
+      topRow.appendChild(saveBtn);
+      topRow.appendChild(cancelBtn);
+      topRow.appendChild(deleteBtn);
+      
+      entryDiv.appendChild(topRow);
+      entryDiv.appendChild(userInfo);
+      
+      listDiv.appendChild(entryDiv);
+    });
+  }
+  
+  modal.style.display = 'flex';
+}
+
+function closeUnitStatusHistoryModal() {
+  const modal = qs('#unitStatusHistoryModal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+// Status History Close button
+const closeStatusHistoryBtn = qs('#closeStatusHistoryBtn');
+if (closeStatusHistoryBtn) {
+  closeStatusHistoryBtn.addEventListener('click', closeUnitStatusHistoryModal);
+}
+
+// Close modal when clicking backdrop
+const statusHistoryModal = qs('#unitStatusHistoryModal');
+if (statusHistoryModal) {
+  statusHistoryModal.addEventListener('click', (e) => {
+    if (e.target === statusHistoryModal) {
+      closeUnitStatusHistoryModal();
+    }
+  });
+}
 
 // ==================== WD NUMBERS MODAL ====================
 function openUnitWdNumbersModal(unitId, year, month) {
