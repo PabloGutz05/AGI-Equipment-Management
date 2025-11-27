@@ -1876,17 +1876,37 @@ function renderRegistries(keepOpenRegistryId){
 function renderUnits(){
   const tbody = qs('#unitList'); if(!tbody) return; tbody.innerHTML = '';
   
-  // Initialize all units with operational status history if they don't have one
+  // Initialize all units with status history
   (state.units || []).forEach(unit => {
     if(!unit.statusHistory || unit.statusHistory.length === 0){
-      unit.statusHistory = [{
-        status: 'Operational',
-        date: '2025-01-01',
-        changedBy: 'System',
-        timestamp: '2025-01-01T00:00:00.000Z'
-      }];
-      if(!unit.status) unit.status = 'Operational';
-      if(!unit.enabledDate) unit.enabledDate = '2025-01-01';
+      // Check if this is a legacy disabled unit
+      if(unit.status === 'Disabled' && unit.disabledDate){
+        // Create status history based on legacy data
+        unit.statusHistory = [
+          {
+            status: 'Operational',
+            date: '2025-01-01',
+            changedBy: 'System',
+            timestamp: '2025-01-01T00:00:00.000Z'
+          },
+          {
+            status: 'Disabled',
+            date: unit.disabledDate,
+            changedBy: 'System',
+            timestamp: new Date(unit.disabledDate).toISOString()
+          }
+        ];
+      } else {
+        // Default to operational
+        unit.statusHistory = [{
+          status: 'Operational',
+          date: '2025-01-01',
+          changedBy: 'System',
+          timestamp: '2025-01-01T00:00:00.000Z'
+        }];
+        if(!unit.status) unit.status = 'Operational';
+        if(!unit.enabledDate) unit.enabledDate = '2025-01-01';
+      }
     }
   });
   
@@ -2072,8 +2092,12 @@ function renderUnits(){
     });
 
     // helper to render the disabled date portion (click-to-edit)
-    const renderDisabledDateFor = (index)=>{
-      const unitObj = state.units[index] || {};
+    const renderDisabledDateFor = ()=>{
+      // Find the actual unit in state.units by unitId
+      const actualIndex = state.units.findIndex(unit => unit.unitId === u.unitId || unit.id === u.id);
+      if(actualIndex === -1) return;
+      
+      const unitObj = state.units[actualIndex] || {};
       // reset status text
       tdStatus.innerHTML = '';
       tdStatus.textContent = unitObj.status || 'Operational';
@@ -2125,10 +2149,10 @@ function renderUnits(){
           
           save.addEventListener('click', ()=>{
             const v = input.value;
-            if(v) state.units[index].disabledDate = v; else delete state.units[index].disabledDate;
+            if(v) state.units[actualIndex].disabledDate = v; else delete state.units[actualIndex].disabledDate;
             saveState(); renderUnits(); renderOverview();
           });
-          cancel.addEventListener('click', ()=>{ renderDisabledDateFor(index); });
+          cancel.addEventListener('click', ()=>{ renderDisabledDateFor(); });
         });
         tdStatus.appendChild(document.createElement('br'));
         tdStatus.appendChild(dateSpan);
@@ -2137,9 +2161,7 @@ function renderUnits(){
 
     const toggleBtn = document.createElement('button'); toggleBtn.textContent = (u.status === 'Disabled' ? 'Enable' : 'Disable');
     toggleBtn.addEventListener('click', ()=>{
-      const idx = state.units.findIndex(x=>x.id===u.id);
-      if(idx === -1) return;
-      openUnitStatusChangeModal(state.units[idx], idx);
+      handleUnitStatusChange(u.unitId || u.id);
     });
 
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
@@ -2236,8 +2258,8 @@ function renderUnits(){
     }
   }catch(e){ /* non-fatal */ }
 
-    // render the disabled date UI for this row (uses current index i)
-    try{ renderDisabledDateFor(i); }catch(e){}
+    // render the disabled date UI for this row
+    try{ renderDisabledDateFor(); }catch(e){}
 
     tbody.appendChild(tr);
   });
@@ -2997,53 +3019,58 @@ function formatDateToUS(dateStr){
 }
 
 // Helper function to extract disabled periods from unit status history
-// Returns array of {fromDate, toDate} objects where toDate can be null if still disabled
 function getDisabledPeriods(unit){
   const statusHistory = unit.statusHistory || [];
-  if(statusHistory.length === 0) return [];
   
-  // Sort history by the actual date (not timestamp) to ensure chronological order
+  // Check for legacy data first
+  if(statusHistory.length === 0){
+    // If unit has legacy disabledDate, return it
+    if(unit.disabledDate){
+      return [{
+        fromDate: unit.disabledDate,
+        toDate: unit.enabledDate || null,
+        isLegacy: true
+      }];
+    }
+    return [];
+  }
+  
+  // Sort history by date
   const sortedHistory = [...statusHistory].sort((a, b) => {
     const dateA = a.date || a.timestamp;
     const dateB = b.date || b.timestamp;
     return new Date(dateA) - new Date(dateB);
   });
   
-  console.log(`Unit ${unit.unitId} status history:`, sortedHistory.map(h => `${h.date} - ${h.status}`));
-  
   const disabledPeriods = [];
   let currentDisabledStart = null;
   
   sortedHistory.forEach(entry => {
     if(entry.status === 'Disabled'){
-      // Start of a disabled period
       if(!currentDisabledStart){
         currentDisabledStart = entry.date;
-        console.log(`  Disabled period starts: ${currentDisabledStart}`);
       }
     } else if(entry.status === 'Operational'){
-      // End of a disabled period (if one was active)
       if(currentDisabledStart){
         disabledPeriods.push({
           fromDate: currentDisabledStart,
-          toDate: entry.date
+          toDate: entry.date,
+          isLegacy: false
         });
-        console.log(`  Disabled period: ${currentDisabledStart} to ${entry.date}`);
         currentDisabledStart = null;
       }
     }
   });
   
-  // If still disabled (no operational status after last disabled), add open-ended period
+  // Open-ended period
   if(currentDisabledStart){
     disabledPeriods.push({
       fromDate: currentDisabledStart,
-      toDate: null // Open-ended period
+      toDate: null,
+      isLegacy: false
     });
-    console.log(`  Disabled period (open): ${currentDisabledStart} to present`);
   }
   
-  console.log(`Unit ${unit.unitId} disabled periods:`, disabledPeriods);
   return disabledPeriods;
 }
 
@@ -3051,33 +3078,55 @@ function getDisabledPeriods(unit){
 function isDateInDisabledPeriod(year, month, day, disabledPeriods){
   if(disabledPeriods.length === 0) return false;
   
-  // Create date string in YYYY-MM-DD format for comparison
   const monthStr = String(month + 1).padStart(2, '0');
   const dayStr = String(day).padStart(2, '0');
   const checkDateStr = `${year}-${monthStr}-${dayStr}`;
   
-  const result = disabledPeriods.some(period => {
-    // If toDate is null, period is open-ended (check if checkDate >= fromDate)
+  return disabledPeriods.some(period => {
     if(!period.toDate){
-      const isDisabled = checkDateStr >= period.fromDate;
-      if(isDisabled) console.log(`  ${checkDateStr} is disabled (open period from ${period.fromDate})`);
-      return isDisabled;
+      return checkDateStr >= period.fromDate;
     }
-    
-    // Disabled period is from fromDate (inclusive) to the day BEFORE toDate (exclusive)
-    // Because toDate is when the unit becomes operational again
-    const isDisabled = checkDateStr >= period.fromDate && checkDateStr < period.toDate;
-    if(isDisabled) console.log(`  ${checkDateStr} is disabled (${period.fromDate} to ${period.toDate})`);
-    return isDisabled;
+    return checkDateStr >= period.fromDate && checkDateStr < period.toDate;
   });
-  
-  return result;
 }
 
 // Render the Unit Overview page: year/month selectors and per-unit day grid
 function renderUnitOverview(){
   const el = qs('#unitOverview'); if(!el) return;
   el.innerHTML = '';
+
+  // Initialize all units with status history
+  (state.units || []).forEach(unit => {
+    if(!unit.statusHistory || unit.statusHistory.length === 0){
+      // Check if this is a legacy disabled unit
+      if(unit.status === 'Disabled' && unit.disabledDate){
+        // Create status history based on legacy data
+        unit.statusHistory = [
+          {
+            status: 'Operational',
+            date: '2025-01-01',
+            changedBy: 'System',
+            timestamp: '2025-01-01T00:00:00.000Z'
+          },
+          {
+            status: 'Disabled',
+            date: unit.disabledDate,
+            changedBy: 'System',
+            timestamp: new Date(unit.disabledDate).toISOString()
+          }
+        ];
+      } else {
+        // Default to operational
+        unit.statusHistory = [{
+          status: 'Operational',
+          date: '2025-01-01',
+          changedBy: 'System',
+          timestamp: '2025-01-01T00:00:00.000Z'
+        }];
+        if(!unit.status) unit.status = 'Operational';
+      }
+    }
+  });
 
   // Create controls for month and year selection
   state.meta = state.meta || {};
@@ -5163,86 +5212,81 @@ if(addUnitCommentBtn){
 //   });
 // }
 
-// ==================== UNIT STATUS CHANGE MODAL ====================
-let currentUnitForStatusChange = null;
-let currentUnitIndexForStatusChange = null;
+// ==================== UNIT STATUS CHANGE MODAL (REBUILT) ====================
 
-function openUnitStatusChangeModal(unit, unitIndex){
-  currentUnitForStatusChange = unit;
-  currentUnitIndexForStatusChange = unitIndex;
+function handleUnitStatusChange(unitId){
+  console.log('\n=== handleUnitStatusChange called for unitId:', unitId);
   
+  // Find unit by unitId
+  const unitIndex = state.units.findIndex(u => u.unitId === unitId || u.id === unitId);
+  if(unitIndex === -1){
+    console.error('Unit not found:', unitId);
+    alert('Error: Unit not found');
+    return;
+  }
+  
+  const unit = state.units[unitIndex];
+  console.log('Found unit at index', unitIndex, ':', unit);
+  
+  // Get the modal elements
   const modal = qs('#unitStatusChangeModal');
   const title = qs('#statusChangeTitle');
   const dateInput = qs('#statusChangeDate');
+  const okBtn = qs('#statusChangeOkBtn');
+  const cancelBtn = qs('#statusChangeCancelBtn');
+  const closeBtn = qs('#closeStatusChangeBtn');
   
-  if(!modal || !title || !dateInput) return;
+  if(!modal || !title || !dateInput || !okBtn){
+    console.error('Modal elements not found');
+    return;
+  }
   
+  // Set modal title based on current status
   const newStatus = unit.status === 'Disabled' ? 'Operational' : 'Disabled';
   title.textContent = `${newStatus === 'Disabled' ? 'Disable' : 'Enable'} Unit - ${unit.unitId || 'Unit'}`;
   
   // Set today's date
   dateInput.value = new Date().toISOString().slice(0,10);
   
+  // Show modal
   modal.style.display = 'flex';
-}
-
-function closeUnitStatusChangeModal(){
-  const modal = qs('#unitStatusChangeModal');
-  if(modal) modal.style.display = 'none';
-  currentUnitForStatusChange = null;
-  currentUnitIndexForStatusChange = null;
-}
-
-// Status Change OK button
-const statusChangeOkBtn = qs('#statusChangeOkBtn');
-if(statusChangeOkBtn){
-  statusChangeOkBtn.addEventListener('click', () => {
-    console.log('Status change OK button clicked');
-    console.log('currentUnitIndexForStatusChange:', currentUnitIndexForStatusChange);
-    
-    if(currentUnitIndexForStatusChange === null) return;
-    
-    const dateInput = qs('#statusChangeDate');
-    const selectedDate = dateInput ? dateInput.value : new Date().toISOString().slice(0,10);
-    
-    console.log('Selected date:', selectedDate);
+  
+  // Remove any existing listeners
+  const newOkBtn = okBtn.cloneNode(true);
+  okBtn.parentNode.replaceChild(newOkBtn, okBtn);
+  
+  // Add new click handler
+  newOkBtn.addEventListener('click', () => {
+    console.log('=== OK button clicked ===');
+    const selectedDate = dateInput.value;
     
     if(!selectedDate){
       alert('Please select a date');
       return;
     }
     
-    const unit = state.units[currentUnitIndexForStatusChange];
-    if(!unit) {
-      console.log('Unit not found at index:', currentUnitIndexForStatusChange);
-      return;
-    }
+    console.log('Processing status change...');
+    console.log('Before:', {unitId: unit.unitId, status: unit.status});
     
-    console.log('Unit before change:', {id: unit.id, unitId: unit.unitId, status: unit.status});
-    
-    // Get current user for history tracking
+    // Get current user
     const session = currentSession();
     const currentUser = session ? session.user : 'Unknown';
     
-    // Initialize status history if not present
+    // Initialize status history
     if(!unit.statusHistory) unit.statusHistory = [];
     
     // Toggle status
     if(unit.status === 'Disabled'){
-      // Re-enable
       unit.status = 'Operational';
       unit.enabledDate = selectedDate;
       delete unit.disabledDate;
-      console.log('Changed to Operational');
     } else {
-      // Disable
       unit.status = 'Disabled';
       unit.disabledDate = selectedDate;
       delete unit.enabledDate;
-      console.log('Changed to Disabled');
     }
     
-    // Add to history
+    // Add history entry
     unit.statusHistory.push({
       status: unit.status,
       date: selectedDate,
@@ -5250,30 +5294,52 @@ if(statusChangeOkBtn){
       timestamp: new Date().toISOString()
     });
     
-    console.log('Unit after change:', {id: unit.id, unitId: unit.unitId, status: unit.status});
-    console.log('Saving and rendering...');
+    console.log('After:', {unitId: unit.unitId, status: unit.status, historyLength: unit.statusHistory.length});
     
+    // Update the unit in the state array
+    state.units[unitIndex] = unit;
+    
+    // Save and refresh
     saveState();
+    console.log('State saved');
+    
+    // Close modal first
+    modal.style.display = 'none';
+    
+    // Force complete re-render
     renderUnits();
     renderOverview();
     if(typeof renderUnitOverview === 'function') renderUnitOverview();
-    closeUnitStatusChangeModal();
+    
+    console.log('Renders complete');
+    
+    alert(`Unit ${unit.unitId} status changed to: ${unit.status}`);
+    
+    console.log('=== Status change complete ===\n');
   });
-}
-
-// Status Change Cancel button
-const statusChangeCancelBtn = qs('#statusChangeCancelBtn');
-if(statusChangeCancelBtn){
-  statusChangeCancelBtn.addEventListener('click', closeUnitStatusChangeModal);
-}
-
-// Status Change Close button
-const closeStatusChangeBtn = qs('#closeStatusChangeBtn');
-if(closeStatusChangeBtn){
-  closeStatusChangeBtn.addEventListener('click', closeUnitStatusChangeModal);
+  
+  // Cancel and close handlers
+  const closeModal = () => { modal.style.display = 'none'; };
+  if(cancelBtn) cancelBtn.onclick = closeModal;
+  if(closeBtn) closeBtn.onclick = closeModal;
 }
 
 // ==================== UNIT STATUS HISTORY MODAL ====================
+// Clear legacy disabled/enabled date fields
+function clearLegacyData(unitId) {
+  if (!confirm('Clear legacy disabled/enabled dates from this unit? This will remove the red background highlighting.')) return;
+  
+  const unitIndex = state.units.findIndex(u => u.id === unitId);
+  if (unitIndex !== -1) {
+    delete state.units[unitIndex].disabledDate;
+    delete state.units[unitIndex].enabledDate;
+    saveState();
+    renderUnits();
+    if (typeof renderUnitOverview === 'function') renderUnitOverview();
+    openUnitStatusHistoryModal(state.units[unitIndex]);
+  }
+}
+
 function openUnitStatusHistoryModal(unit) {
   const modal = qs('#unitStatusHistoryModal');
   const title = qs('#statusHistoryTitle');
@@ -5286,15 +5352,43 @@ function openUnitStatusHistoryModal(unit) {
   
   const statusHistory = unit.statusHistory || [];
   
+  // Show warning for legacy data
+  if (statusHistory.length === 0 && (unit.disabledDate || unit.enabledDate)) {
+    const legacyInfo = document.createElement('div');
+    legacyInfo.style.cssText = 'background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:16px;margin-bottom:12px;';
+    
+    legacyInfo.innerHTML = `
+      <div style="font-weight:600;color:#92400e;margin-bottom:8px;">⚠️ Legacy Data Detected</div>
+      <div style="color:#78350f;font-size:13px;margin-bottom:12px;">
+        This unit has disabled/enabled dates in an old format:<br>
+        ${unit.disabledDate ? `<strong>Disabled Date:</strong> ${formatDateToUS(unit.disabledDate)}<br>` : ''}
+        ${unit.enabledDate ? `<strong>Enabled Date:</strong> ${formatDateToUS(unit.enabledDate)}<br>` : ''}
+        <strong>Current Status:</strong> ${unit.status || 'Operational'}<br><br>
+        <button onclick="clearLegacyData('${unit.id}')" style="background:#dc2626;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;">
+          Clear Legacy Data
+        </button>
+      </div>
+    `;
+    
+    listDiv.appendChild(legacyInfo);
+  }
+  
   if (statusHistory.length === 0) {
-    listDiv.innerHTML = '<div style="color:#6b7280;text-align:center;padding:20px;">No status change history available.</div>';
+    const emptyDiv = document.createElement('div');
+    emptyDiv.style.cssText = 'color:#6b7280;text-align:center;padding:20px;';
+    emptyDiv.textContent = 'No status change history available.';
+    listDiv.appendChild(emptyDiv);
   } else {
     // Sort history by timestamp (newest first)
     const sortedHistory = [...statusHistory].sort((a, b) => {
       return new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date);
     });
     
+    console.log('>>> Sorted history for display (newest first):', sortedHistory.map(h => `${h.date} - ${h.status}`));
+    
     sortedHistory.forEach((entry, index) => {
+      console.log(`>>> Rendering entry ${index}:`, {date: entry.date, status: entry.status, changedBy: entry.changedBy});
+      
       const entryDiv = document.createElement('div');
       entryDiv.style.cssText = 'background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px;';
       
@@ -5828,6 +5922,7 @@ function convertToSystemDate(dateStr) {
 function uploadBulkData(target, data, statusDiv) {
   let added = 0;
   let skipped = 0;
+  const skippedItems = []; // Track skipped items for report
   
   try {
     switch (target) {
@@ -5835,14 +5930,52 @@ function uploadBulkData(target, data, statusDiv) {
         // Group invoices by WD number to create registries
         const invoicesByWD = new Map();
         
-        data.forEach(item => {
+        data.forEach((item, index) => {
           if (!item.unit || !item.wdNumber) {
             skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Missing unit or wdNumber', data: item });
+            return;
+          }
+          
+          // Check if invoice already exists (by wdNumber + unit + docNumber combination)
+          const existingInvoice = state.invoices.find(inv => 
+            inv.wdNumber === item.wdNumber && 
+            inv.unit === item.unit && 
+            inv.docNumber === item.docNumber
+          );
+          if (existingInvoice) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Duplicate invoice', data: item });
             return;
           }
           
           // Find the associated lease to get company, supplier, arrangement, invoicing
           const associatedLease = state.leases.find(l => l.leaseNumber === item.lease);
+          
+          // Clean and validate amount field
+          let cleanAmount = (item.amount || '').toString().trim();
+          
+          // Handle negative numbers in parentheses format like (1500.00)
+          if (cleanAmount.startsWith('(') && cleanAmount.endsWith(')')) {
+            cleanAmount = '-' + cleanAmount.slice(1, -1);
+          }
+          
+          // Remove currency symbols, commas, and spaces
+          cleanAmount = cleanAmount.replace(/[$,\s]/g, '');
+          
+          // Check if amount contains letters (skip if it does)
+          if (cleanAmount && /[a-zA-Z]/.test(cleanAmount)) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Amount contains letters', data: item });
+            return;
+          }
+          
+          // Validate it's a valid number
+          if (cleanAmount && isNaN(parseFloat(cleanAmount))) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Invalid amount format', data: item });
+            return;
+          }
           
           const invoice = {
             id: id(),
@@ -5855,7 +5988,7 @@ function uploadBulkData(target, data, statusDiv) {
             category: item.category || 'Rental',
             wdNumber: item.wdNumber || '',
             docNumber: item.docNumber || '',
-            amount: item.amount || '',
+            amount: cleanAmount || '0',
             periodStart: convertToSystemDate(item.periodStart),
             periodEnd: convertToSystemDate(item.periodEnd),
             submittedDate: convertToSystemDate(item.submittedDate) || new Date().toISOString().slice(0, 10),
@@ -5872,14 +6005,20 @@ function uploadBulkData(target, data, statusDiv) {
           invoicesByWD.get(wd).push(invoice);
         });
         
-        // Create registries for each WD number group
+        // Create registries for each WD number group (only if not already exists)
         invoicesByWD.forEach((invoices, wdNumber) => {
+          // Check if registry with this WD number already exists
+          const existingRegistry = state.registries.find(r => r.wdNumber === wdNumber);
+          if (existingRegistry) {
+            // Registry already exists, skip creation
+            return;
+          }
+          
           const firstInvoice = invoices[0];
           const units = invoices.map(inv => inv.unit);
-          const totalAmount = invoices.reduce((sum, inv) => {
-            const amt = parseFloat(inv.amount) || 0;
-            return sum + amt;
-          }, 0);
+          
+          // Use the amount from the first invoice as the total (don't sum)
+          const totalAmount = parseFloat(firstInvoice.amount) || 0;
           
           state.meta = state.meta || {};
           state.meta.registrySeq = (state.meta.registrySeq || 0) + 1;
@@ -5913,14 +6052,48 @@ function uploadBulkData(target, data, statusDiv) {
         break;
         
       case 'units':
-        data.forEach(item => {
+        data.forEach((item, index) => {
           if (!item.unitId || !item.lease) {
             skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Missing unitId or lease', data: item });
+            return;
+          }
+          
+          // Check if unit already exists (by unitId)
+          const existingUnit = state.units.find(u => u.unitId === item.unitId);
+          if (existingUnit) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Duplicate unit', data: item });
             return;
           }
           
           // Find the associated lease to get company, supplier, arrangement, invoicing
           const associatedLease = state.leases.find(l => l.leaseNumber === item.lease);
+          
+          // Clean and validate monthly amount field
+          let cleanMonthly = (item.monthly || '').toString().trim();
+          
+          // Handle negative numbers in parentheses format like (1500.00)
+          if (cleanMonthly.startsWith('(') && cleanMonthly.endsWith(')')) {
+            cleanMonthly = '-' + cleanMonthly.slice(1, -1);
+          }
+          
+          // Remove currency symbols, commas, and spaces
+          cleanMonthly = cleanMonthly.replace(/[$,\s]/g, '');
+          
+          // Check if monthly contains letters (skip if it does)
+          if (cleanMonthly && /[a-zA-Z]/.test(cleanMonthly)) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Monthly amount contains letters', data: item });
+            return;
+          }
+          
+          // Validate it's a valid number
+          if (cleanMonthly && isNaN(parseFloat(cleanMonthly))) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Invalid monthly amount format', data: item });
+            return;
+          }
           
           const unit = {
             id: id(),
@@ -5930,11 +6103,38 @@ function uploadBulkData(target, data, statusDiv) {
             arrangement: associatedLease ? associatedLease.arrangement : '',
             invoicing: associatedLease ? associatedLease.invoicing : '',
             unitId: item.unitId || '',
-            monthly: item.monthly || '',
+            monthly: cleanMonthly || '0',
             description: item.description || '',
             notes: item.notes || '',
             status: item.status || 'Operational'
           };
+          
+          // Handle status history fields
+          if (item.disabledDate) unit.disabledDate = item.disabledDate;
+          if (item.enabledDate) unit.enabledDate = item.enabledDate;
+          
+          // Parse statusHistory if provided
+          if (item.statusHistory) {
+            try {
+              unit.statusHistory = typeof item.statusHistory === 'string' 
+                ? JSON.parse(item.statusHistory) 
+                : item.statusHistory;
+            } catch (e) {
+              // If parsing fails, ignore the statusHistory
+            }
+          }
+          
+          // Auto-initialize status history for new units without it
+          if (!unit.statusHistory || unit.statusHistory.length === 0) {
+            unit.statusHistory = [{
+              status: 'Operational',
+              date: '2025-01-01',
+              changedBy: 'System',
+              timestamp: '2025-01-01T00:00:00.000Z'
+            }];
+            if (!unit.enabledDate) unit.enabledDate = '2025-01-01';
+          }
+          
           state.units.push(unit);
           added++;
         });
@@ -5942,9 +6142,18 @@ function uploadBulkData(target, data, statusDiv) {
         break;
         
       case 'leases':
-        data.forEach(item => {
+        data.forEach((item, index) => {
           if (!item.leaseNumber) {
             skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Missing leaseNumber', data: item });
+            return;
+          }
+          
+          // Check if lease already exists (by leaseNumber)
+          const existingLease = state.leases.find(l => l.leaseNumber === item.leaseNumber);
+          if (existingLease) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Duplicate lease', data: item });
             return;
           }
           
@@ -5990,11 +6199,21 @@ function uploadBulkData(target, data, statusDiv) {
         break;
         
       case 'registries':
-        data.forEach(item => {
+        data.forEach((item, index) => {
           if (!item.wdNumber || !item.units) {
             skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Missing wdNumber or units', data: item });
             return;
           }
+          
+          // Check if registry already exists (by wdNumber)
+          const existingRegistry = state.registries.find(r => r.wdNumber === item.wdNumber);
+          if (existingRegistry) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Duplicate registry', data: item });
+            return;
+          }
+          
           state.meta = state.meta || {};
           state.meta.registrySeq = (state.meta.registrySeq || 0) + 1;
           const registry = {
@@ -6019,11 +6238,21 @@ function uploadBulkData(target, data, statusDiv) {
         break;
         
       case 'users':
-        data.forEach(item => {
+        data.forEach((item, index) => {
           if (!item.username) {
             skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Missing username', data: item });
             return;
           }
+          
+          // Check if user already exists (by username)
+          const existingUser = state.users.find(u => u.username === item.username);
+          if (existingUser) {
+            skipped++;
+            skippedItems.push({ row: index + 2, reason: 'Duplicate user', data: item });
+            return;
+          }
+          
           const user = {
             id: id(),
             username: item.username || '',
@@ -6050,13 +6279,50 @@ function uploadBulkData(target, data, statusDiv) {
     
     let message = `Successfully uploaded ${added} record(s).`;
     if (skipped > 0) {
-      message += ` ${skipped} record(s) were skipped due to missing required fields.`;
+      message += ` ${skipped} record(s) were skipped (missing required fields or duplicates).`;
+      
+      // Generate and offer download of skipped items report
+      const reportContent = generateSkippedItemsReport(target, skippedItems);
+      const blob = new Blob([reportContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      
+      // Add download link to status message
+      setTimeout(() => {
+        const downloadLink = document.createElement('a');
+        downloadLink.href = url;
+        downloadLink.download = `skipped_${target}_${new Date().toISOString().slice(0, 10)}.csv`;
+        downloadLink.textContent = 'Download Report Here';
+        downloadLink.style.cssText = 'display:block;margin-top:8px;color:#0b74de;font-weight:600;text-decoration:underline;cursor:pointer;';
+        downloadLink.addEventListener('click', () => {
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+        });
+        
+        statusDiv.appendChild(document.createElement('br'));
+        statusDiv.appendChild(downloadLink);
+      }, 100);
     }
     showUploadStatus(statusDiv, message, 'success');
     
   } catch (err) {
     showUploadStatus(statusDiv, `Error uploading data: ${err.message}`, 'error');
   }
+}
+
+// Helper function to generate a CSV report of skipped items
+function generateSkippedItemsReport(target, skippedItems) {
+  if (!skippedItems || skippedItems.length === 0) return '';
+  
+  // Build headers based on the first skipped item's data (original upload format)
+  const firstItem = skippedItems[0].data;
+  const dataHeaders = Object.keys(firstItem);
+  
+  // Build rows with original data only (no Row/Reason columns)
+  const rows = skippedItems.map(item => {
+    const rowData = dataHeaders.map(header => escapeCSVField(item.data[header] || ''));
+    return rowData.join(',');
+  });
+  
+  return [dataHeaders.join(','), ...rows].join('\n');
 }
 
 function downloadFormatTemplate(target) {
@@ -6071,8 +6337,8 @@ function downloadFormatTemplate(target) {
       filename = 'invoices_template.csv';
       break;
     case 'units':
-      headers = ['lease', 'unitId', 'monthly', 'description', 'notes'];
-      exampleRow = ['LEASE001', 'UNIT123', '1500.00', 'Equipment description', 'Additional notes'];
+      headers = ['lease', 'unitId', 'monthly', 'description', 'notes', 'company', 'supplier', 'arrangement', 'invoicing', 'status', 'disabledDate', 'enabledDate', 'statusHistory'];
+      exampleRow = ['LEASE001', 'UNIT123', '1500.00', 'Equipment description', 'Additional notes', 'Company A', 'Supplier B', 'Arrangement C', 'Invoicing D', 'Operational', '', '', ''];
       filename = 'units_template.csv';
       break;
     case 'leases':
@@ -6166,7 +6432,7 @@ function downloadAllData() {
   downloadCSV(convertToCSV(invoicesData, invoicesHeaders), `invoices_${timestamp}.csv`);
   
   // Download Units
-  const unitsHeaders = ['lease', 'unitId', 'monthly', 'description', 'notes', 'company', 'supplier', 'arrangement', 'invoicing', 'status'];
+  const unitsHeaders = ['lease', 'unitId', 'monthly', 'description', 'notes', 'company', 'supplier', 'arrangement', 'invoicing', 'status', 'disabledDate', 'enabledDate', 'statusHistory'];
   const unitsData = (state.units || []).map(u => ({
     lease: u.lease || '',
     unitId: u.unitId || '',
@@ -6177,7 +6443,10 @@ function downloadAllData() {
     supplier: u.supplier || '',
     arrangement: u.arrangement || '',
     invoicing: u.invoicing || '',
-    status: u.status || 'Operational'
+    status: u.status || 'Operational',
+    disabledDate: u.disabledDate || '',
+    enabledDate: u.enabledDate || '',
+    statusHistory: u.statusHistory ? JSON.stringify(u.statusHistory) : ''
   }));
   downloadCSV(convertToCSV(unitsData, unitsHeaders), `units_${timestamp}.csv`);
   
@@ -6205,34 +6474,29 @@ function downloadAllData() {
   }));
   downloadCSV(convertToCSV(usersData, usersHeaders), `users_${timestamp}.csv`);
   
-  // Download Configuration
-  const configHeaders = ['type', 'value'];
+  // Download Configuration - Format compatible with upload
+  const configHeaders = ['AGI Company', 'Category', 'Supplier', 'Invoicing', 'Arrangement'];
   const configData = [];
   
-  // Add companies
-  (state.meta.devCompanies || []).forEach(c => {
-    configData.push({ type: 'company', value: c });
-  });
+  // Get the maximum length among all arrays
+  const maxLength = Math.max(
+    (state.meta.devCompanies || []).length,
+    (state.meta.devRentals || []).length,
+    (state.meta.devSuppliers || []).length,
+    (state.meta.devPayments || []).length,
+    (state.meta.devArrangements || []).length
+  );
   
-  // Add categories
-  (state.meta.devRentals || []).forEach(r => {
-    configData.push({ type: 'category', value: r });
-  });
-  
-  // Add suppliers
-  (state.meta.devSuppliers || []).forEach(s => {
-    configData.push({ type: 'supplier', value: s });
-  });
-  
-  // Add arrangements
-  (state.meta.devArrangements || []).forEach(a => {
-    configData.push({ type: 'arrangement', value: a });
-  });
-  
-  // Add invoicing
-  (state.meta.devPayments || []).forEach(p => {
-    configData.push({ type: 'invoicing', value: p });
-  });
+  // Create rows with values from each configuration array
+  for (let i = 0; i < maxLength; i++) {
+    configData.push({
+      'AGI Company': (state.meta.devCompanies || [])[i] || '',
+      'Category': (state.meta.devRentals || [])[i] || '',
+      'Supplier': (state.meta.devSuppliers || [])[i] || '',
+      'Invoicing': (state.meta.devPayments || [])[i] || '',
+      'Arrangement': (state.meta.devArrangements || [])[i] || ''
+    });
+  }
   
   downloadCSV(convertToCSV(configData, configHeaders), `configuration_${timestamp}.csv`);
   
