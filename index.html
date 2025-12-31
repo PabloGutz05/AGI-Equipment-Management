@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>AGI Vehicle Lease Management v10.7</title>
+  <title>AGI Vehicle Lease Management v10.8</title>
   <link rel="icon" type="image/png" href="AGI-Standard-logo-Blue-2025 2.png">
   <link rel="stylesheet" href="styles.css?v=9.5">
 </head>
@@ -149,9 +149,17 @@
             <button type="button" id="invoiceCommentBtn" class="btn-primary">Add Comment</button>
             <button type="submit">Add Invoice</button>
         </form>
+        <!-- Selected Lease Details -->
+        <div id="invoiceLeaseInfoPanel" style="margin-top:12px;display:none;border:1px solid #e5e7eb;border-radius:6px;padding:10px;">
+          <div style="font-weight:600;margin-bottom:6px;">Selected Lease Details</div>
+          <div id="invoiceLeaseInfoContent" class="small-muted"></div>
+        </div>
         <!-- Registry list: shows registrations of submitted invoices (grouped submissions) -->
         <div id="registryList" class="list" style="margin-top:12px"></div>
       </div>
+      
+      <!-- Excel export library with styling support -->
+      <script src="https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
 
       <div id="unitControl" class="tab-panel">
         <h2>Unit Control</h2>
@@ -532,6 +540,11 @@
             <option value="">Select Lease</option>
           </select>
         </label>
+        <!-- Selected Lease Details for Registry Edit -->
+        <div id="registryLeaseInfoPanel" style="display:none;border:1px solid #e5e7eb;border-radius:6px;padding:10px;">
+          <div style="font-weight:600;margin-bottom:6px;">Selected Lease Details</div>
+          <div id="registryLeaseInfoContent" class="small-muted"></div>
+        </div>
         
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span style="font-weight:600;font-size:13px;">Category</span>
@@ -651,7 +664,7 @@
   <!-- Unit Comments Modal -->
   <div id="unitCommentsModal" class="modal" style="display:none">
     <div class="modal-dialog" style="max-width:600px;width:90%;">
-      <div class="modal-content" style="position:relative;">
+      <div class="modal-content" style="position:relative;overflow:visible;">
         <button type="button" id="closeUnitCommentsBtn" class="close-btn" style="position:absolute;top:10px;right:10px;background:#dc2626;color:#fff;border:none;font-size:18px;width:30px;height:30px;border-radius:50%;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;font-weight:bold;line-height:1;">&times;</button>
         <div class="modal-header">
           <h3 id="unitCommentsTitle" style="margin:0;font-size:18px;font-weight:600;">Unit Comments</h3>
@@ -681,11 +694,70 @@
                        padding:0;line-height:1;">
           &times;
         </button>
-        <div class="modal-header">
-          <h3 id="unitWdNumbersTitle">WD Numbers</h3>
+        <div class="modal-header" style="display:flex;align-items:center;gap:8px;justify-content:flex-start;padding-right:52px;">
+          <div style="position:relative;display:flex;align-items:center;">
+            <button id="unitMenuBtn" style="background:none;border:none;font-size:20px;cursor:pointer;color:#6b7280;padding:4px;line-height:1;">⋯</button>
+            <div id="unitMenuDropdown" class="dropdown-menu" style="display:none;position:absolute;left:0;top:100%;background:#fff;border:1px solid #e5e7eb;border-radius:6px;box-shadow:0 4px 6px rgba(0,0,0,0.1);z-index:1000;min-width:150px;max-width:280px;overflow:auto;">
+              <button id="addCommentBtn" style="display:block;width:100%;text-align:left;padding:10px 16px;background:none;border:none;cursor:pointer;color:#374151;font-size:14px;">
+                Add Comment
+              </button>
+            </div>
+          </div>
+          <h3 id="unitWdNumbersTitle" style="margin:0;">WD Numbers</h3>
         </div>
         <div class="modal-body">
           <div id="unitWdNumbersList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Visual Status Labels Modal -->
+  <div id="visualLabelsModal" class="modal" style="display:none">
+    <div class="modal-dialog" style="max-width:520px;width:90%;">
+      <div class="modal-content" style="position:relative;">
+        <button id="closeVisualLabelsBtn" class="close-btn" 
+                style="position:absolute;top:10px;right:10px;
+                       background:#fff;color:#6b7280;border:1px solid #e5e7eb;
+                       font-size:18px;width:30px;height:30px;
+                       border-radius:50%;cursor:pointer;
+                       display:flex;align-items:center;justify-content:center;
+                       padding:0;line-height:1;">
+          &times;
+        </button>
+        <div class="modal-header" style="display:flex;align-items:center;gap:8px;justify-content:flex-start;">
+          <h3 style="margin:0;">Visual Status Labels</h3>
+        </div>
+        <div class="modal-body" style="padding:16px;">
+          <div style="display:grid;grid-template-columns:1fr;gap:12px;">
+            <!-- No Invoice / Pending (No highlight) -->
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="width:28px;height:28px;border:1px solid #d1d5db;border-radius:4px;display:flex;align-items:center;justify-content:center;background:#ffffff;color:#6b7280;font-weight:600;">1</div>
+              <div><strong>No Invoice / Pending</strong> — no highlight</div>
+            </div>
+            <!-- Rental Charge (Green square) -->
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="width:28px;height:28px;border:1px solid #d1d5db;border-radius:4px;display:flex;align-items:center;justify-content:center;background:#dcfce7;color:#111827;font-weight:600;">1</div>
+              <div><strong>Rental Charge</strong> — green highlight</div>
+            </div>
+            <!-- Overlap Rental Charge (Light red square + red border) -->
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="width:28px;height:28px;border:2px solid #dc2626;border-radius:4px;display:flex;align-items:center;justify-content:center;background:#fee2e2;color:#111827;font-weight:600;">1</div>
+              <div><strong>Overlap Rental Charge</strong> — red highlight</div>
+            </div>
+            <!-- Credit (Yellow frame) -->
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="width:28px;height:28px;border:2px solid #eab308;border-radius:4px;display:flex;align-items:center;justify-content:center;background:#ffffff;color:#eab308;font-weight:700;">1</div>
+              <div><strong>Credit</strong> — yellow frame</div>
+            </div>
+            <!-- Disabled Unit (Red background) -->
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="width:28px;height:28px;background:#dc2626;border-radius:4px;display:flex;align-items:center;justify-content:center;">
+                <div style="width:22px;height:22px;border:1px solid #d1d5db;border-radius:4px;display:flex;align-items:center;justify-content:center;background:#ffffff;color:#111827;font-weight:600;">1</div>
+              </div>
+              <div><strong>Disabled Unit</strong> — red background</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -744,6 +816,27 @@
     </div>
   </div>
 
-  <script src="app.js?v=10.7"></script>
+  <!-- Lease Overview Info Modal -->
+  <div id="leaseOverviewInfoModal" class="modal" style="display:none">
+    <div class="modal-dialog" style="max-width:600px;width:90%">
+      <div class="modal-content" style="position:relative;">
+        <button id="closeLeaseOverviewInfoBtn" class="close-btn"
+                style="position:absolute;top:10px;right:10px;
+                       background:#fff;color:#6b7280;border:1px solid #e5e7eb;
+                       font-size:18px;width:30px;height:30px;
+                       border-radius:50%;cursor:pointer;
+                       display:flex;align-items:center;justify-content:center;
+                       padding:0;line-height:1;">&times;</button>
+        <div class="modal-header" style="display:flex;align-items:center;gap:8px;justify-content:flex-start;">
+          <h3 id="leaseOverviewInfoTitle" style="margin:0;">Lease Details</h3>
+        </div>
+        <div class="modal-body" style="padding:16px;">
+          <div id="leaseOverviewInfoContent"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=10.9"></script>
 </body>
 </html>

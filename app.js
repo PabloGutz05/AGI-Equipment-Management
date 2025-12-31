@@ -7,6 +7,7 @@ const defaultData = {
   leases: [],
   users: [],
   registries: [],
+  comments: {}, // Store comments by unitId
   meta: { createdAt: new Date().toISOString(), registrySeq: 0 }
 };
 
@@ -19,7 +20,15 @@ document.querySelectorAll('.tab').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(btn.dataset.tab).classList.add('active');
-    renderOverview();
+    // When switching to Overview, ensure the currently selected sub-section renders
+    if(btn.dataset.tab === 'overview'){
+      try{
+        const sec = (state.meta && state.meta.overviewSection) ? state.meta.overviewSection : 'generalOverview';
+        if(typeof showOverviewSection === 'function') showOverviewSection(sec);
+      }catch(e){ renderOverview(); }
+    } else {
+      renderOverview();
+    }
   });
 });
 
@@ -117,9 +126,9 @@ function getCurrentUserInfo(){
 
 function updateHeaderTitleForMenu(menuVisible){
   const titleEl = qs('#brandLink h1') || qs('header h1'); if(!titleEl) return;
-  if(menuVisible){
+  if (menuVisible) {
     const info = getCurrentUserInfo();
-    if(info){
+    if (info) {
       const name = (info.firstName || info.username) + (info.lastName ? ' ' + info.lastName : '');
       const role = info.role ? (' — ' + info.role) : '';
       titleEl.textContent = 'Welcome! ' + name + role;
@@ -339,6 +348,73 @@ qs('#invoiceForm').addEventListener('submit', e=>{
   e.preventDefault();
   const form = e.target;
   const fd = new FormData(form);
+  // Required field validation: block submission if information is missing
+  try{
+    const wd = (fd.get('invoiceWD') || '').toString().trim();
+    const doc = (fd.get('invoiceDoc') || '').toString().trim();
+    const lease = ((qs('#invoiceLease') && qs('#invoiceLease').value) || fd.get('invoiceLease') || '').toString().trim();
+    const category = (fd.get('invoiceCategory') || '').toString().trim();
+    const supplier = ((qs('#invoiceSupplier') && qs('#invoiceSupplier').value) || fd.get('invoiceSupplier') || '').toString().trim();
+    const company = ((qs('#invoiceCompany') && qs('#invoiceCompany').value) || fd.get('invoiceCompany') || '').toString().trim();
+    const arrangement = ((qs('#invoiceArrangement') && qs('#invoiceArrangement').value) || fd.get('invoiceArrangement') || '').toString().trim();
+    const invoicing = ((qs('#invoiceInvoicing') && qs('#invoiceInvoicing').value) || fd.get('invoiceInvoicing') || '').toString().trim();
+    const amountStr = (fd.get('invoiceAmount') || '').toString().trim();
+    const amountNum = parseCurrency(amountStr);
+    const pStart = (fd.get('invoicePeriodStart') || '').toString().trim();
+    const pEnd = (fd.get('invoicePeriodEnd') || '').toString().trim();
+    const submitted = (fd.get('invoiceSubmitted') || '').toString().trim();
+
+    // Units selection (support multiple selection via getAll)
+    let selectedUnits = [];
+    if(typeof fd.getAll === 'function'){
+      selectedUnits = fd.getAll('invoiceUnit').map(s=> (s||'').toString().trim()).filter(Boolean);
+    }
+    if(selectedUnits.length === 0){
+      const single = (fd.get('invoiceUnit') || '').toString();
+      selectedUnits = single.split(/[;,]+/).map(s=> s.trim()).filter(Boolean);
+    }
+
+    const missing = [];
+    if(!wd) missing.push('WD Invoice Number');
+    if(!doc) missing.push('Doc Invoice Number');
+    if(!lease) missing.push('Lease');
+    if(!category) missing.push('Category');
+    if(!company) missing.push('Company');
+    if(!supplier) missing.push('Supplier');
+    if(!arrangement) missing.push('Arrangement');
+    if(!invoicing) missing.push('Invoicing');
+    // Amount validation: allow negative only for Credit category, require positive otherwise
+    const isCreditCategory = (category || '').toString().trim().toLowerCase() === 'credit';
+    if(amountNum === null || Number.isNaN(Number(amountNum))) {
+      missing.push('Amount');
+    } else {
+      const amt = Number(amountNum);
+      if(isCreditCategory) {
+        if(amt >= 0) missing.push('Amount');
+      } else {
+        if(amt <= 0) missing.push('Amount');
+      }
+    }
+    if(!pStart) missing.push('Period From');
+    if(!pEnd) missing.push('Period To');
+    if(!submitted) missing.push('Submitted Date');
+    if(selectedUnits.length === 0) missing.push('Units');
+
+    // Validate period order if both provided
+    if(pStart && pEnd){
+      const ps = new Date(pStart);
+      const pe = new Date(pEnd);
+      if(!isNaN(ps) && !isNaN(pe) && pe < ps){
+        alert('Invalid period: "To" date must be after or equal to "From" date.');
+        return;
+      }
+    }
+
+    if(missing.length){
+      alert('Please complete the following before submitting:\n- ' + missing.join('\n- '));
+      return;
+    }
+  }catch(err){ /* fail-open not allowed: validation should be robust */ }
   // New rule: only block submission when an existing invoice has the same
   // Lease, Category, Unit and WD Invoice number. If any of those differs,
   // allow the registration. Editing the same invoice is allowed.
@@ -400,7 +476,16 @@ qs('#invoiceForm').addEventListener('submit', e=>{
 
     const invoiceObj = Object.assign({}, baseInvoice, { id: editingId, unit: unitVal });
     state.invoices = state.invoices.map(inv => inv.id === editingId ? Object.assign({}, inv, invoiceObj, {id: editingId}) : inv);
-    saveState(); renderInvoices();
+    // If there is a registry for this WD/Doc pair, update its lease value to match edit
+    try{
+      const targetWd = (invoiceObj.wdNumber || '').toString().trim();
+      const targetDoc = (invoiceObj.docNumber || '').toString().trim();
+      const regIdx = (state.registries||[]).findIndex(r => (r.wdNumber||'').toString().trim() === targetWd && (r.docNumber||'').toString().trim() === targetDoc);
+      if(regIdx !== -1){
+        state.registries[regIdx].lease = invoiceObj.lease || '';
+      }
+    }catch(e){}
+    saveState(); renderInvoices(); renderRegistries();
     renderUnitOverview(); renderLeaseOverview(); renderOverview();
     form.reset(); delete form.dataset.editing;
     const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice';
@@ -444,10 +529,10 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         // work in cents to avoid floating point issues
         const totalCents = Math.round(Number(tot) * 100);
         const q = Math.floor(totalCents / units.length);
-        let rem = totalCents % units.length;
+        // compute remainder so it's always between 0 and units.length - 1, even for negatives
+        const rem = totalCents - q * units.length;
         for(let i=0;i<units.length;i++){
-          let cents = q + (rem > 0 ? 1 : 0);
-          if(rem > 0) rem -= 1;
+          const cents = q + (i < rem ? 1 : 0);
           perUnitAmounts.push((cents/100).toFixed(2));
         }
       } else {
@@ -573,6 +658,21 @@ qs('#invoiceForm').addEventListener('submit', e=>{
   }
 
 });
+
+// Prevent submitting invoice via Enter key on inputs; only allow button click
+const invFormEl = qs('#invoiceForm');
+if(invFormEl){
+  invFormEl.addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter'){
+      const target = e.target;
+      const isSubmitBtn = target && target.tagName === 'BUTTON' && (target.type || '').toLowerCase() === 'submit';
+      if(!isSubmitBtn){
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+  });
+}
 
 // sync invoice selects
 function syncInvoiceLeaseOptions(){
@@ -868,6 +968,8 @@ if(invoiceLeaseSel){
     if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(val);
     // ensure the Submitted date is prefilled to today's date (predetermined actual date)
     const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+    // Update lease info panel
+    try{ updateInvoiceLeaseInfoPanel(val); }catch(e){}
   });
 }
 
@@ -1097,6 +1199,7 @@ function renderOverview(){
   currentMonthRow.appendChild(label);
   el.appendChild(currentMonthRow);
 }
+
 
 function oldRenderOverview(){
   const el = qs('#overviewSummary');
@@ -1338,6 +1441,8 @@ function renderInvoices(){
       menu.style.display = 'none';
       // focus the form tab
       const invTab = Array.from(document.querySelectorAll('.tab')).find(t=>t.dataset.tab==='invoices'); if(invTab) invTab.click();
+      // Render lease details panel
+      try{ updateInvoiceLeaseInfoPanel(inv.lease || ''); }catch(e){}
     });
 
     // Delete: remove all invoices in this WD group
@@ -1440,6 +1545,32 @@ function renderInvoices(){
   });
 
   // lease numbers are plain text (no popup on click)
+}
+
+// Render selected lease information under the invoice form
+function updateInvoiceLeaseInfoPanel(leaseVal){
+  const panel = qs('#invoiceLeaseInfoPanel');
+  const content = qs('#invoiceLeaseInfoContent');
+  if(!panel || !content) return;
+  const leaseValNorm = (leaseVal||'').toString().trim().toLowerCase();
+  const lease = (state.leases||[]).find(l => {
+    const key = (l.leaseNumber || l.id || '').toString().trim().toLowerCase();
+    return key === leaseValNorm;
+  });
+  if(!lease){ panel.style.display = 'none'; content.innerHTML=''; return; }
+  const status = lease.status || 'Enabled';
+  const disabledDate = lease.disabledDate || '';
+  const enabledDate = lease.enabledDate || '';
+  const parts = [
+    `<strong>Lease:</strong> ${escapeHtml(lease.leaseNumber||lease.id||'')}`,
+    `<strong>Company:</strong> ${escapeHtml(lease.company||'')}`,
+    `<strong>Supplier:</strong> ${escapeHtml(lease.supplier||'')}`,
+    `<strong>Arrangement:</strong> ${escapeHtml(lease.arrangement||'')}`,
+    `<strong>Invoicing:</strong> ${escapeHtml(lease.invoicing||'')}`,
+    `<strong>Status:</strong> ${escapeHtml(status)}${status==='Disabled' && disabledDate ? ' — Disabled: '+escapeHtml(disabledDate) : (status==='Enabled' && enabledDate ? ' — Enabled: '+escapeHtml(enabledDate) : '')}`
+  ];
+  content.innerHTML = parts.join('<br>');
+  panel.style.display = 'block';
 }
 
 
@@ -1647,27 +1778,32 @@ function renderRegistries(keepOpenRegistryId){
     let arrangement = '';
     let invoicing = '';
     
-    // Find matching invoice to get category and company info
+    // Prefer details from the selected lease on the registry
+    const leaseKey = (r.lease||'').toString().trim().toLowerCase();
+    const matchedLease = (state.leases||[]).find(l => {
+      const key = (l.leaseNumber || l.id || '').toString().trim().toLowerCase();
+      return key === leaseKey;
+    });
+    if(matchedLease){
+      supplier = matchedLease.supplier || '';
+      company = matchedLease.company || '';
+      arrangement = matchedLease.arrangement || '';
+      invoicing = matchedLease.invoicing || '';
+    }
+    
+    // Fallback: Find matching invoice to get category if registry doesn't have it
     const matchingInvoice = (state.invoices || []).find(inv => {
       const invWd = (inv.wdNumber || '').toString().trim().toLowerCase();
       const regWd = (r.wdNumber || '').toString().trim().toLowerCase();
       return invWd === regWd;
     });
-    
     if(matchingInvoice){
       if(!category) category = matchingInvoice.category || '';
-      supplier = matchingInvoice.supplier || '';
-      company = matchingInvoice.company || '';
-      arrangement = matchingInvoice.arrangement || '';
-    }
-    
-    // Get invoicing from the registry's lease
-    if(r.lease){
-      const lease = (state.leases || []).find(l => 
-        (l.leaseNumber === r.lease) || (l.id === r.lease)
-      );
-      if(lease){
-        invoicing = lease.invoicing || '';
+      // If lease not matched (rare), use invoice fields as last resort
+      if(!matchedLease){
+        supplier = supplier || (matchingInvoice.supplier || '');
+        company = company || (matchingInvoice.company || '');
+        arrangement = arrangement || (matchingInvoice.arrangement || '');
       }
     }
     
@@ -2855,7 +2991,10 @@ function escapeHtml(str){
 
 // --- Persistence ---
 function saveState(){
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){ alert('Error saving data: '+e.message); }
+  try{ 
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); 
+    try{ window.dispatchEvent(new Event('agi:stateSaved')); }catch(ev){}
+  }catch(e){ alert('Error saving data: '+e.message); }
 }
 
 function loadState(){
@@ -2899,6 +3038,14 @@ function id(){ return Math.random().toString(36).slice(2,9); }
 
 // --- Import / Export ---
 qs('#exportBtn').addEventListener('click', ()=>{
+  // Ensure all meta data is included before export
+  state.meta = state.meta || {};
+  state.meta.devCompanies = state.meta.devCompanies || [];
+  state.meta.devRentals = state.meta.devRentals || [];
+  state.meta.devSuppliers = state.meta.devSuppliers || [];
+  state.meta.devArrangements = state.meta.devArrangements || [];
+  state.meta.devPayments = state.meta.devPayments || [];
+  
   const dataStr = JSON.stringify(state, null, 2);
   const blob = new Blob([dataStr], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -3008,7 +3155,7 @@ if (loginGate) {
 
 // Clear data button removed by user request
 
-function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); }
+function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); renderReport(); }
 
 // Helper function to format date from YYYY-MM-DD to MM/DD/YYYY
 function formatDateToUS(dateStr){
@@ -3215,6 +3362,21 @@ function renderUnitOverview(){
   });
   controls.appendChild(searchBtn);
   
+  // Visual Status Labels helper (right-aligned clickable label)
+  const labelsLink = document.createElement('span');
+  labelsLink.textContent = 'Visual Status Labels';
+  labelsLink.style.marginLeft = 'auto';
+  labelsLink.style.fontSize = '12px';
+  labelsLink.style.color = '#6b7280';
+  labelsLink.style.cursor = 'pointer';
+  labelsLink.style.userSelect = 'none';
+  labelsLink.setAttribute('role','button');
+  labelsLink.setAttribute('aria-label','Open visual status labels legend');
+  labelsLink.addEventListener('mouseenter', () => { labelsLink.style.textDecoration = 'underline'; });
+  labelsLink.addEventListener('mouseleave', () => { labelsLink.style.textDecoration = 'none'; });
+  labelsLink.addEventListener('click', () => { openVisualLabelsModal(); });
+  controls.appendChild(labelsLink);
+  
   el.appendChild(controls);
 
   // Event listeners for dropdowns
@@ -3251,6 +3413,7 @@ function renderUnitOverview(){
   const headers = [
     { text: 'Unit ID', key: 'unitId' },
     { text: 'Lease', key: 'lease' },
+    { text: 'Supplier', key: 'supplier' },
     { text: 'Arrangement', key: 'arrangement' },
     { text: 'Invoicing', key: 'invoicing' },
     { text: 'Status', key: 'status' }
@@ -3313,10 +3476,11 @@ function renderUnitOverview(){
     units = units.filter(u => {
       const unitId = (u.unitId || '').toString().toLowerCase();
       const lease = (u.lease || '').toString().toLowerCase();
+      const supplier = (u.supplier || '').toString().toLowerCase();
       const arrangement = (u.arrangement || '').toString().toLowerCase();
       const invoicing = (u.invoicing || '').toString().toLowerCase();
       const status = (u.status || '').toString().toLowerCase();
-      return unitId.includes(searchTerm) || lease.includes(searchTerm) || 
+      return unitId.includes(searchTerm) || lease.includes(searchTerm) || supplier.includes(searchTerm) ||
              arrangement.includes(searchTerm) || invoicing.includes(searchTerm) || status.includes(searchTerm);
     });
   }
@@ -3337,7 +3501,7 @@ function renderUnitOverview(){
   if(units.length === 0){
     const emptyRow = document.createElement('tr');
     const emptyCell = document.createElement('td');
-    emptyCell.colSpan = 4 + daysInMonth;
+    emptyCell.colSpan = headers.length + daysInMonth;
     emptyCell.textContent = 'No units registered.';
     emptyCell.style.padding = '12px';
     emptyCell.style.textAlign = 'center';
@@ -3383,6 +3547,40 @@ function renderUnitOverview(){
       tdUnit.style.cursor = 'pointer';
       tdUnit.style.color = '#0b74de';
       tdUnit.textContent = u.unitId || '(no unit)';
+
+      // Show red ! indicator if the unit has comments for the selected month/year
+      try {
+        const src = [];
+        if (Array.isArray(u.overviewComments)) src.push(...u.overviewComments);
+        if (Array.isArray(u.comments)) src.push(...u.comments);
+        const hasMonthComment = src.some(c => {
+          if (c && c.monthYear && typeof c.monthYear.year === 'number' && typeof c.monthYear.month === 'number') {
+            return c.monthYear.year === selectedYear && c.monthYear.month === selectedMonth;
+          }
+          if (c && c.timestamp) {
+            const d = new Date(c.timestamp);
+            return d.getFullYear() === selectedYear && d.getMonth() === selectedMonth;
+          }
+          return false;
+        });
+
+        if (hasMonthComment) {
+          const alertIcon = document.createElement('span');
+          alertIcon.textContent = ' !';
+          alertIcon.style.color = '#dc2626';
+          alertIcon.style.fontWeight = '700';
+          alertIcon.style.marginLeft = '6px';
+          alertIcon.style.cursor = 'pointer';
+          alertIcon.title = 'Comments exist for this month';
+          alertIcon.addEventListener('click', (e) => {
+            e.stopPropagation();
+            try {
+              openCommentsModalFromWdNumbers(u.unitId, selectedYear, selectedMonth);
+            } catch(err) {}
+          });
+          tdUnit.appendChild(alertIcon);
+        }
+      } catch(e) {}
       tdUnit.addEventListener('click', () => {
         openUnitWdNumbersModal(u.unitId, year, month);
       });
@@ -3395,6 +3593,14 @@ function renderUnitOverview(){
       tdLease.style.verticalAlign = 'middle';
       tdLease.textContent = u.lease || '';
       row.appendChild(tdLease);
+
+      // Supplier column
+      const tdSupplier = document.createElement('td');
+      tdSupplier.style.padding = '6px';
+      tdSupplier.style.fontSize = '12px';
+      tdSupplier.style.verticalAlign = 'middle';
+      tdSupplier.textContent = u.supplier || '';
+      row.appendChild(tdSupplier);
 
       // Arrangement column
       const tdArrangement = document.createElement('td');
@@ -3507,14 +3713,14 @@ function renderUnitOverview(){
         }
 
         const square = document.createElement('div');
-        square.style.width = '24px';
-        square.style.height = '24px';
+        square.style.width = '20px';
+        square.style.height = '20px';
         square.style.border = '1px solid #ddd';
-        square.style.borderRadius = '4px';
+        square.style.borderRadius = '3px';
         square.style.display = 'flex';
         square.style.alignItems = 'center';
         square.style.justifyContent = 'center';
-        square.style.fontSize = '11px';
+        square.style.fontSize = '9px';
         square.textContent = d;
         
         // Check if this day has credit category coverage
@@ -3836,11 +4042,13 @@ function renderLeaseOverview(){
       
       // Hover effect
       row.addEventListener('mouseenter', () => {
+        if(row.dataset.allUnitsDisabled === 'true') return;
         if(row.style.backgroundColor !== 'rgb(224, 242, 254)') {
           row.style.backgroundColor = '#f3f6fb';
         }
       });
       row.addEventListener('mouseleave', () => {
+        if(row.dataset.allUnitsDisabled === 'true') return;
         if(row.style.backgroundColor !== 'rgb(224, 242, 254)') {
           row.style.backgroundColor = '';
         }
@@ -3848,6 +4056,7 @@ function renderLeaseOverview(){
       
       // Click handler for row highlighting
       row.addEventListener('click', () => {
+        if(row.dataset.allUnitsDisabled === 'true') return;
         // Remove highlight from all rows in this table
         const allRows = tbody.querySelectorAll('tr');
         allRows.forEach(r => {
@@ -3857,12 +4066,30 @@ function renderLeaseOverview(){
         row.style.backgroundColor = '#e0f2fe';
       });
 
+      // If all units under this lease are Disabled, mark the row with a red background
+      try{
+        const leaseKey = (lease.leaseNumber||lease.id||'').toString().trim().toLowerCase();
+        const unitsForLease = (state.units||[]).filter(u => (u.lease||'').toString().trim().toLowerCase() === leaseKey);
+        const allDisabled = unitsForLease.length > 0 && unitsForLease.every(u => (u.status||'Operational').toString().trim() === 'Disabled');
+        if(allDisabled){
+          row.style.backgroundColor = '#fee2e2';
+          row.dataset.allUnitsDisabled = 'true';
+        }
+      }catch(e){}
+
       // Lease Number
       const tdLeaseNum = document.createElement('td');
       tdLeaseNum.style.padding = '6px';
       tdLeaseNum.style.fontSize = '12px';
       tdLeaseNum.style.fontWeight = '600';
       tdLeaseNum.textContent = lease.leaseNumber || '(no number)';
+      tdLeaseNum.style.color = '#0b74de';
+      tdLeaseNum.style.cursor = 'pointer';
+      tdLeaseNum.title = 'View lease info';
+      tdLeaseNum.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        try{ openLeaseOverviewInfo(lease); }catch(e){}
+      });
       row.appendChild(tdLeaseNum);
 
       // Company
@@ -4049,9 +4276,1673 @@ function renderLeaseOverview(){
   el.appendChild(table);
 }
 
+// Open informational panel for a lease in Lease Overview
+function openLeaseOverviewInfo(lease){
+  const modal = qs('#leaseOverviewInfoModal');
+  const titleEl = qs('#leaseOverviewInfoTitle');
+  const contentEl = qs('#leaseOverviewInfoContent');
+  if(!modal || !contentEl) return;
+  if(titleEl) titleEl.textContent = `Lease ${escapeHtml(lease.leaseNumber||lease.id||'')}`;
+  const status = lease.status || 'Enabled';
+  const disabledDate = lease.disabledDate || '';
+  const enabledDate = lease.enabledDate || '';
+
+  // Selected month/year from Lease Overview controls
+  const now = new Date();
+  const selectedYear = (state.meta && typeof state.meta.leaseOverviewYear !== 'undefined') ? parseInt(state.meta.leaseOverviewYear, 10) : now.getFullYear();
+  const selectedMonth = (state.meta && typeof state.meta.leaseOverviewMonth !== 'undefined') ? parseInt(state.meta.leaseOverviewMonth, 10) : now.getMonth();
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+  const leaseKey = (lease.leaseNumber||lease.id||'').toString().trim().toLowerCase();
+
+  // Helper: check overlap with selected month/year
+  function overlapsSelectedMonth(fromStr, toStr){
+    if(!fromStr || !toStr) return false;
+    const sp = fromStr.toString().trim().split('-');
+    const ep = toStr.toString().trim().split('-');
+    if(sp.length < 3 || ep.length < 3) return false;
+    const sd = new Date(parseInt(sp[0],10), parseInt(sp[1],10)-1, parseInt(sp[2],10));
+    const ed = new Date(parseInt(ep[0],10), parseInt(ep[1],10)-1, parseInt(ep[2],10));
+    if(isNaN(sd.getTime()) || isNaN(ed.getTime())) return false;
+    const mStart = new Date(selectedYear, selectedMonth, 1);
+    const mEnd = new Date(selectedYear, selectedMonth + 1, 0);
+    return sd <= mEnd && ed >= mStart;
+  }
+
+  // Units under lease
+  const units = (state.units||[]).filter(u => {
+    const uLease = (u.lease||'').toString().trim().toLowerCase();
+    return uLease === leaseKey && (u.unitId || u.id);
+  });
+
+  // Registries for this lease overlapping selected month
+  const registries = (state.registries||[]).filter(r => {
+    const rLease = (r.lease||'').toString().trim().toLowerCase();
+    return rLease === leaseKey && overlapsSelectedMonth(r.periodStart, r.periodEnd);
+  });
+  function getRegistryCategory(reg){
+    if(reg.category) return (reg.category||'').toString().trim().toLowerCase();
+    const inv = (state.invoices||[]).find(inv => {
+      const invWd = (inv.wdNumber||'').toString().trim().toLowerCase();
+      const regWd = (reg.wdNumber||'').toString().trim().toLowerCase();
+      return invWd === regWd;
+    });
+    return (inv && inv.category) ? inv.category.toString().trim().toLowerCase() : '';
+  }
+
+  // Standalone invoices overlapping selected month, not covered by registry with lease
+  const regWdWithLease = new Set((state.registries||[])
+    .filter(r => (r.lease||'').toString().trim().toLowerCase() !== '')
+    .map(r => (r.wdNumber||'').toString().trim().toLowerCase()));
+  const invoices = (state.invoices||[]).filter(inv => {
+    const invLease = (inv.lease||'').toString().trim().toLowerCase();
+    const invWd = (inv.wdNumber||'').toString().trim().toLowerCase();
+    const hasRegWithLease = regWdWithLease.has(invWd);
+    return invLease === leaseKey && overlapsSelectedMonth(inv.periodStart, inv.periodEnd) && !hasRegWithLease;
+  });
+
+  // Build content: details grid
+  let html = '';
+  html += `<div style="display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:13px;margin-bottom:12px;">
+      <div style="color:#6b7280;font-weight:600;">Company</div><div>${escapeHtml(lease.company||'')}</div>
+      <div style="color:#6b7280;font-weight:600;">Supplier</div><div>${escapeHtml(lease.supplier||'')}</div>
+      <div style="color:#6b7280;font-weight:600;">Arrangement</div><div>${escapeHtml(lease.arrangement||'')}</div>
+      <div style="color:#6b7280;font-weight:600;">Invoicing</div><div>${escapeHtml(lease.invoicing||'')}</div>
+      <div style="color:#6b7280;font-weight:600;">Status</div><div>${escapeHtml(status)}${status==='Disabled' && disabledDate ? ' — Disabled: '+escapeHtml(disabledDate) : (status==='Enabled' && enabledDate ? ' — Enabled: '+escapeHtml(enabledDate) : '')}</div>
+    </div>`;
+
+  // Units chips
+  html += `<h4 style="margin:8px 0">Units under this lease</h4>`;
+  if(units.length === 0){
+    html += `<div class="small-muted">No units found for this lease.</div>`;
+  } else {
+    html += `<div style="display:flex;flex-wrap:wrap;gap:6px;">`;
+    units.forEach(u => {
+      const isDisabled = ((u.status||'').toString().trim() === 'Disabled');
+      const chipStyle = isDisabled
+        ? 'display:inline-block;padding:4px 8px;border:1px solid #dc2626;border-radius:999px;background:#fee;color:#dc2626;font-size:12px;font-weight:600;'
+        : 'display:inline-block;padding:4px 8px;border:1px solid #e5e7eb;border-radius:999px;background:#f9fafb;font-size:12px;';
+      html += `<span style="${chipStyle}">${escapeHtml(u.unitId||u.id||'')}</span>`;
+    });
+    html += `</div>`;
+  }
+
+  // Rental registries list (WD + Amount + Period)
+  const rentalRegistries = registries.filter(r => getRegistryCategory(r) === 'rental');
+  html += `<h4 style="margin:12px 0 8px">Rental Invoices in ${monthNames[selectedMonth]} ${selectedYear}</h4>`;
+  if(rentalRegistries.length === 0){
+    html += `<div class="small-muted">No rental invoices for the selected period.</div>`;
+  } else {
+    html += `<div>`;
+    rentalRegistries.forEach(r => {
+      const formatDate = (dateStr) => {
+        if (!dateStr) return '';
+        const parts = dateStr.split('-');
+        if (parts.length === 3) {
+          const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+        return dateStr;
+      };
+      html += `<div style="padding:10px;border-bottom:1px solid #e5e7eb;">
+        <div style="font-weight:600;color:#111827;">${escapeHtml(r.wdNumber||'')}</div>
+        <div style="color:#2563eb;font-size:12px;margin-top:2px;font-weight:600;">Amount: ${formatCurrency(r.totalAmount||'')}</div>
+        <div style="color:#6b7280;font-size:12px;margin-top:4px;">${formatDate(r.periodStart)} - ${formatDate(r.periodEnd)}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Credit invoices (Doc + WD + Amount + Period)
+  html += `<h4 style="margin:12px 0 8px">Credit Invoices in ${monthNames[selectedMonth]} ${selectedYear}</h4>`;
+  const creditInvoices = invoices.filter(inv => (inv.category||'').toString().trim().toLowerCase() === 'credit');
+  if(creditInvoices.length === 0){
+    html += `<div class="small-muted">No credit invoices for the selected period.</div>`;
+  } else {
+    html += `<div>`;
+    creditInvoices.forEach(inv => {
+      const formatDate = (dateStr) => {
+        if (!dateStr) return '';
+        const parts = dateStr.split('-');
+        if (parts.length === 3) {
+          const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+        return dateStr;
+      };
+      html += `<div style="padding:10px;border-bottom:1px solid #e5e7eb;">
+        <div style="font-weight:600;color:#111827;">Doc: ${escapeHtml(inv.docNumber||'')}</div>
+        <div style="color:#6b7280;font-size:12px;margin-top:2px;">WD: ${escapeHtml(inv.wdNumber||'')}</div>
+        <div style="color:#ef4444;font-size:12px;margin-top:2px;font-weight:600;">Amount: ${formatCurrency(inv.amount||'')}</div>
+        <div style="color:#6b7280;font-size:12px;margin-top:4px;">${formatDate(inv.periodStart)} - ${formatDate(inv.periodEnd)}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  contentEl.innerHTML = html;
+  modal.style.display = 'flex';
+
+  // Close handlers
+  const closeBtn = qs('#closeLeaseOverviewInfoBtn');
+  if(closeBtn){
+    const newBtn = closeBtn.cloneNode(true);
+    closeBtn.parentNode.replaceChild(newBtn, closeBtn);
+    newBtn.addEventListener('click', ()=>{ modal.style.display = 'none'; });
+  }
+}
+
 function renderReport(){
   const el = qs('#report'); if(!el) return;
   el.innerHTML = '';
+
+  // Persist selection
+  state.meta = state.meta || {};
+  state.meta.reportSimple = state.meta.reportSimple || {
+    year: new Date().getFullYear(),
+    month: new Date().getMonth()
+  };
+  const sel = state.meta.reportSimple;
+
+  // Controls: Month / Year
+  const controls = document.createElement('div');
+  controls.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:12px;';
+
+  const monthSelect = document.createElement('select');
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  monthNames.forEach((name, idx)=>{
+    const opt = document.createElement('option'); opt.value = String(idx); opt.textContent = name; if(idx === sel.month) opt.selected = true; monthSelect.appendChild(opt);
+  });
+  const yearSelect = document.createElement('select');
+  const now = new Date();
+  for(let y = now.getFullYear()-3; y <= now.getFullYear()+1; y++){
+    const opt = document.createElement('option'); opt.value = String(y); opt.textContent = String(y); if(y === sel.year) opt.selected = true; yearSelect.appendChild(opt);
+  }
+  controls.appendChild(monthSelect); controls.appendChild(yearSelect);
+  // Download button
+  const downloadBtn = document.createElement('button');
+  downloadBtn.textContent = 'Download Report';
+  downloadBtn.title = 'Export to Excel (tabs per table)';
+  downloadBtn.style.padding = '6px 12px';
+  downloadBtn.style.border = '1px solid #0b74de';
+  downloadBtn.style.background = '#0b74de';
+  downloadBtn.style.color = '#fff';
+  downloadBtn.style.borderRadius = '6px';
+  downloadBtn.style.fontSize = '13px';
+  downloadBtn.style.cursor = 'pointer';
+  downloadBtn.style.marginLeft = 'auto';
+  controls.appendChild(downloadBtn);
+  el.appendChild(controls);
+  // Auto-refresh on month/year change and persist selection
+  monthSelect.addEventListener('change', ()=>{ 
+    try{ 
+      sel.month = parseInt(monthSelect.value, 10);
+      sel.year = parseInt(yearSelect.value, 10);
+      saveState();
+      run(); 
+    }catch(e){}
+  });
+  yearSelect.addEventListener('change', ()=>{ 
+    try{ 
+      sel.month = parseInt(monthSelect.value, 10);
+      sel.year = parseInt(yearSelect.value, 10);
+      saveState();
+      run(); 
+    }catch(e){}
+  });
+
+  const resultsWrap = document.createElement('div');
+  el.appendChild(resultsWrap);
+
+  // Computed datasets for export
+  let computedFullyCovered = [];
+  let computedCoverageMap = new Map();
+  let computedMissingUnits = [];
+  let computedCoverageMapMissing = new Map();
+  let computedOverlapUnits = [];
+  let computedOverlapMap = new Map();
+  let computedRentalCoveredMap = new Map();
+  let computedCreditUnits = [];
+  let computedCreditMap = new Map();
+  let computedRentalCountsMap = new Map();
+  // Disabled + Covered export datasets
+  let computedDisabledCoveredUnits = [];
+  let computedDisabledMap = new Map();
+  let computedDisabledCoverageMap = new Map();
+  let computedDisabledCountsMap = new Map();
+  // Consecutive months without invoicing export dataset
+  let computedNoInvoiceRows = [];
+
+  function extractMonthComments(u, year, month){
+    // Consider comments added from both contexts: Unit Overview (overviewComments)
+    // and Unit Control (comments). Filter by selected month/year.
+    const sources = [];
+    if (Array.isArray(u.overviewComments)) sources.push(...u.overviewComments);
+    if (Array.isArray(u.comments)) sources.push(...u.comments);
+    const monthComments = sources.filter(c => {
+      if (c && c.monthYear && typeof c.monthYear.year === 'number' && typeof c.monthYear.month === 'number') {
+        return c.monthYear.year === year && c.monthYear.month === month;
+      }
+      if (c && c.timestamp) {
+        const d = new Date(c.timestamp);
+        return d.getFullYear() === year && d.getMonth() === month;
+      }
+      return false;
+    }).map(c => (c.text || '').toString());
+    return monthComments;
+  }
+
+  function exportReport(){
+    // Ensure latest computations before exporting
+    try{ run(); }catch(e){}
+    const year = sel.year; const month = sel.month; const daysInMonth = new Date(year, month+1, 0).getDate();
+    if(!(window.XLSX && typeof XLSX === 'object')){ alert('Excel export library not found. Please reload the page.'); return; }
+    const wb = XLSX.utils.book_new();
+
+    // Basic workbook properties
+    wb.Props = {
+      Title: `Vehicle Report ${String(year)}-${String(month+1).padStart(2,'0')}`,
+      Subject: 'AGI Vehicle Lease Management Reports',
+      Author: 'AGI Vehicle Lease Management',
+      Company: 'AGI',
+      CreatedDate: new Date()
+    };
+
+    // Shared styles
+    const styles = {
+      header: {
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '0B74DE' } },
+        alignment: { horizontal: 'center', vertical: 'center' },
+        border: { bottom: { style: 'thin', color: { rgb: 'E5E7EB' } } }
+      },
+      title: {
+        font: { bold: true, sz: 16, color: { rgb: '0B74DE' } },
+        alignment: { horizontal: 'left', vertical: 'center' }
+      },
+      info: { alignment: { vertical: 'center' } },
+      dayBase: { alignment: { horizontal: 'center', vertical: 'center' }, border: { outline: true, left: { style:'thin', color:{rgb:'DDDDDD'} }, right: { style:'thin', color:{rgb:'DDDDDD'} }, top: { style:'thin', color:{rgb:'DDDDDD'} }, bottom: { style:'thin', color:{rgb:'DDDDDD'} } } },
+      dayCovered: { fill: { fgColor: { rgb: 'DCFCE7' } }, font: { color: { rgb: '15803D' }, bold: true } },
+      dayOverlap: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: { color: { rgb: '991B1B' }, bold: true } },
+      dayNone: { fill: { fgColor: { rgb: 'FFFFFF' } }, font: { color: { rgb: '6B7280' } } },
+      dayCreditBorder: { border: { left: { style:'medium', color:{rgb:'EAB308'} }, right: { style:'medium', color:{rgb:'EAB308'} }, top: { style:'medium', color:{rgb:'EAB308'} }, bottom: { style:'medium', color:{rgb:'EAB308'} } }, font: { color: { rgb: 'EAB308' }, bold: true } },
+      // Disabled day styles
+      dayDisabled: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: { color: { rgb: '991B1B' }, bold: true } },
+      dayDisabledCovered: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: { color: { rgb: '15803D' }, bold: true }, border: { left: { style:'medium', color:{rgb:'16A34A'} }, right: { style:'medium', color:{rgb:'16A34A'} }, top: { style:'medium', color:{rgb:'16A34A'} }, bottom: { style:'medium', color:{rgb:'16A34A'} } } }
+    };
+
+    function mergeStyles(...objs){
+      const out = {}; objs.forEach(o=>{ if(!o) return; Object.keys(o).forEach(k=>{ out[k] = Object.assign({}, out[k], o[k]); }); }); return out;
+    }
+
+    function buildSheetData(unitsArr, dayStateFn, title){
+      const headers = ['Unit','Lease','Supplier','Arrangement','Invoicing','Status'];
+      const dayHeaders = Array.from({length: daysInMonth}, (_,i)=> {
+        const d = new Date(year, month, i+1);
+        return { v: d, s: Object.assign({}, styles.header, { numFmt: 'mmm d' }) };
+      });
+      // Determine max comments per unit for this sheet
+      let maxComments = 0;
+      const unitCommentsMap = new Map();
+      unitsArr.forEach(u => { const mc = extractMonthComments(u, year, month); unitCommentsMap.set(u.unitId||u.id, mc); if(mc.length>maxComments) maxComments = mc.length; });
+      const commentHeaders = Array.from({length: maxComments}, (_,i)=> `Comment ${i+1}`);
+      const headerRow = headers.concat(dayHeaders).concat(commentHeaders.map(h => ({ v: h, s: styles.header })));
+      const totalCols = headerRow.length;
+      const titleText = `${title} — ${new Date(year, month, 1).toLocaleString(undefined, { month:'long' })} ${year}`;
+      const titleRow = [{ v: titleText, s: styles.title }].concat(Array.from({length: totalCols-1}, ()=> ({ v: '', s: styles.title })));
+      const aoa = [ titleRow, headerRow.map(h => (typeof h === 'string' ? ({ v: h, s: styles.header }) : h)) ];
+      unitsArr.forEach((u, idxRow) => {
+        const zebra = (idxRow % 2 === 1) ? { fill: { fgColor: { rgb: 'F8FAFC' } } } : null;
+        const base = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational']
+          .map(v => ({ v, s: mergeStyles(styles.info, zebra) }));
+        const days = [];
+        for(let d=1; d<=daysInMonth; d++){
+          const st = dayStateFn(u, d);
+          const isCredit = !!st.credit; const isOverlap = !!st.overlap; const isCovered = !!st.covered; const isDisabled = !!st.disabled;
+          const label = (isCredit || isOverlap || isCovered) ? String(d) : '';
+          let s = mergeStyles(styles.dayBase, zebra);
+          if(isDisabled){
+            // Disabled days: red background; if covered, emphasize with green border
+            s = mergeStyles(s, styles.dayDisabled);
+            if(isCovered){ s = mergeStyles(s, styles.dayDisabledCovered); }
+            // if overlap, keep red tone via dayOverlap (will reinforce red styling)
+            else if(isOverlap){ s = mergeStyles(s, styles.dayOverlap); }
+          } else {
+            if(isOverlap){ s = mergeStyles(s, styles.dayOverlap); }
+            else if(isCovered){ s = mergeStyles(s, styles.dayCovered); }
+            else { s = mergeStyles(s, styles.dayNone); }
+          }
+          if(isCredit){ s = mergeStyles(s, styles.dayCreditBorder); }
+          days.push({ v: label, s });
+        }
+        const ctexts = unitCommentsMap.get(u.unitId||u.id)||[];
+        const commentCells = Array.from({length:maxComments}, (_,i)=> ({ v: ctexts[i]||'', s: mergeStyles({ alignment: { vertical:'top', wrapText: true } }, zebra) }));
+        const row = base.concat(days).concat(commentCells);
+        aoa.push(row);
+      });
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      // Add autofilter and freeze header
+      const range = XLSX.utils.encode_range({ s: { r:1, c:0 }, e: { r: aoa.length-1, c: totalCols-1 } });
+      ws['!autofilter'] = { ref: range };
+      ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
+      // Column widths: a bit wider for info columns, compact for days
+      ws['!cols'] = [
+        {wch:14},{wch:12},{wch:14},{wch:14},{wch:12},{wch:10},
+        ...Array.from({length: daysInMonth}, ()=> ({wch:6})),
+        ...Array.from({length: maxComments}, ()=> ({wch:28}))
+      ];
+      // Optional: set row heights for title and header
+      ws['!rows'] = [{ hpt: 22 }, { hpt: 18 }];
+      // Merge title row across all columns
+      ws['!merges'] = [{ s: { r:0, c:0 }, e: { r:0, c: totalCols-1 } }];
+      return ws;
+    }
+
+    // Full Coverage sheet
+    if(computedFullyCovered.length){
+      const wsFull = buildSheetData(computedFullyCovered, (u,d)=>{
+        const cov = computedCoverageMap.get(u.id || u.unitId) || [];
+        return { covered: !!cov[d-1], overlap: false, credit: false };
+      }, 'Full Coverage');
+      XLSX.utils.book_append_sheet(wb, wsFull, 'Full Coverage');
+    }
+    // Missing Coverage sheet
+    if(computedMissingUnits.length){
+      const wsMissing = buildSheetData(computedMissingUnits, (u,d)=>{
+        const cov = computedCoverageMapMissing.get(u.id || u.unitId) || [];
+        return { covered: !!cov[d-1], overlap: false, credit: false };
+      }, 'Missing Coverage');
+      XLSX.utils.book_append_sheet(wb, wsMissing, 'Missing Coverage');
+    }
+    // Overlaps sheet
+    if(computedOverlapUnits.length){
+      const wsOverlap = buildSheetData(computedOverlapUnits, (u,d)=>{
+        const overlaps = computedOverlapMap.get(u.id || u.unitId) || [];
+        const covered = computedRentalCoveredMap.get(u.id || u.unitId) || [];
+        return { covered: !!covered[d-1], overlap: !!overlaps[d-1], credit: false };
+      }, 'Overlaps');
+      XLSX.utils.book_append_sheet(wb, wsOverlap, 'Overlaps');
+    }
+    // Credit sheet
+    if(computedCreditUnits.length){
+      const wsCredit = buildSheetData(computedCreditUnits, (u,d)=>{
+        const creditDays = computedCreditMap.get(u.id || u.unitId) || [];
+        const counts = computedRentalCountsMap.get(u.id || u.unitId) || [];
+        const overlap = (counts[d-1] > 1);
+        const covered = (counts[d-1] === 1);
+        const credit = !!creditDays[d-1];
+        return { covered, overlap, credit };
+      }, 'Credit Days');
+      XLSX.utils.book_append_sheet(wb, wsCredit, 'Credit Days');
+    }
+
+    // Disabled + Covered sheet
+    if(computedDisabledCoveredUnits.length){
+      const wsDisabled = buildSheetData(computedDisabledCoveredUnits, (u,d)=>{
+        const dis = (computedDisabledMap.get(u.id || u.unitId) || []);
+        const cov = (computedDisabledCoverageMap.get(u.id || u.unitId) || []);
+        const cnt = (computedDisabledCountsMap.get(u.id || u.unitId) || []);
+        return { disabled: !!dis[d-1], covered: !!cov[d-1], overlap: (cnt[d-1] > 1), credit: false };
+      }, 'Disabled + Covered');
+      XLSX.utils.book_append_sheet(wb, wsDisabled, 'Disabled + Covered');
+    }
+
+    // Consecutive Months Without Invoicing sheet
+    if(computedNoInvoiceRows.length){
+      const headers = ['#','Unit','Lease','Supplier','Description','Invoicing','Last WD Number','Status','Consecutive Months (no rental invoice)','Period'];
+      const titleText = `No Rental Invoicing — ${new Date(year, month, 1).toLocaleString(undefined, { month:'long' })} ${year}`;
+      const aoa = [];
+      // title row merged later
+      aoa.push([titleText]);
+      aoa.push(headers);
+      computedNoInvoiceRows.forEach((row, idx) => {
+        aoa.push([
+          String(idx + 1),
+          row.u.unitId||'',
+          row.u.lease||'',
+          row.u.supplier||'',
+          row.u.description||'',
+          row.u.invoicing||'',
+          row.lastWd || '',
+          row.u.status || 'Operational',
+          String(row.streak || 0),
+          row.periodText || ''
+        ]);
+      });
+      const wsMonths = XLSX.utils.aoa_to_sheet(aoa);
+      // styles: basic header bold
+      const totalCols = headers.length;
+      wsMonths['!rows'] = [{ hpt: 22 }, { hpt: 18 }];
+      wsMonths['!merges'] = [{ s: { r:0, c:0 }, e: { r:0, c: totalCols-1 } }];
+      wsMonths['!cols'] = [{wch:6},{wch:14},{wch:12},{wch:18},{wch:12},{wch:16},{wch:12},{wch:14},{wch:20}];
+      XLSX.utils.book_append_sheet(wb, wsMonths, 'No Invoicing');
+    }
+
+    const fname = `Vehicle_Report_${String(year)}_${String(month+1).padStart(2,'0')}.xlsx`;
+    try{ XLSX.writeFile(wb, fname); }catch(e){ alert('Failed to save Excel: ' + (e && e.message || e)); }
+  }
+
+  downloadBtn.addEventListener('click', ()=>{ try{ exportReport(); }catch(e){ alert('Export failed: ' + (e && e.message || e)); } });
+
+  // Compute coverage array (boolean per day) for a unit in selected month
+  function coverageArrayForUnit(u, year, month){
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const covered = new Array(daysInMonth).fill(false);
+    const unitIdNorm = (u.unitId || u.id || '').toString().trim().toLowerCase();
+
+    // Registries (Rental) covering this unit
+    (state.registries||[]).forEach(reg => {
+      const units = Array.isArray(reg.units) ? reg.units.map(x=> (x||'').toString().trim().toLowerCase()) : [];
+      if(!units.includes(unitIdNorm)) return;
+      // Determine category
+      let cat = (reg.category||'').toString().trim().toLowerCase();
+      if(!cat){
+        const inv = (state.invoices||[]).find(i => (i.wdNumber||'').toString().trim().toLowerCase() === (reg.wdNumber||'').toString().trim().toLowerCase());
+        cat = (inv && inv.category) ? inv.category.toString().trim().toLowerCase() : '';
+      }
+      if(cat !== 'rental') return;
+      if(!reg.periodStart || !reg.periodEnd) return;
+      const sp = String(reg.periodStart).split('-'); const ep = String(reg.periodEnd).split('-');
+      const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+      const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+      if(isNaN(start) || isNaN(end)) return;
+      const cur = new Date(start);
+      while(cur <= end){
+        if(cur.getFullYear() === year && cur.getMonth() === month){
+          const d = cur.getDate(); covered[d-1] = true;
+        }
+        cur.setDate(cur.getDate()+1);
+      }
+    });
+
+    // Invoices (Rental) not in registries
+    (state.invoices||[]).forEach(inv => {
+      const invUnitNorm = (inv.unit||'').toString().trim().toLowerCase();
+      if(invUnitNorm !== unitIdNorm) return;
+      const cat = (inv.category||'').toString().trim().toLowerCase(); if(cat !== 'rental') return;
+      if(!inv.periodStart || !inv.periodEnd) return;
+      const sp = String(inv.periodStart).split('-'); const ep = String(inv.periodEnd).split('-');
+      const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+      const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+      if(isNaN(start) || isNaN(end)) return;
+      const cur = new Date(start);
+      while(cur <= end){
+        if(cur.getFullYear() === year && cur.getMonth() === month){
+          const d = cur.getDate(); covered[d-1] = true;
+        }
+        cur.setDate(cur.getDate()+1);
+      }
+    });
+
+    return covered;
+  }
+
+  // Count rental coverage sources per day for a unit (for overlap detection)
+  function rentalCountsArrayForUnit(u, year, month){
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const counts = new Array(daysInMonth).fill(0);
+    const unitIdNorm = (u.unitId || u.id || '').toString().trim().toLowerCase();
+
+    // Use registries membership and category (fallback to matching invoice category)
+    const registries = state.registries || [];
+    const invoices = state.invoices || [];
+    registries.forEach(reg => {
+      const unitsArr = Array.isArray(reg.units) ? reg.units.map(x=> (x||'').toString().trim().toLowerCase()) : [];
+      if(!unitsArr.includes(unitIdNorm)) return;
+      let cat = (reg.category||'').toString().trim().toLowerCase();
+      if(!cat){
+        const inv = invoices.find(i => (i.wdNumber||'').toString().trim().toLowerCase() === (reg.wdNumber||'').toString().trim().toLowerCase());
+        cat = (inv && (inv.category||'').toString().trim().toLowerCase()) || '';
+      }
+      if(cat !== 'rental') return;
+      const ps = reg.periodStart, pe = reg.periodEnd; if(!ps || !pe) return;
+      const sp = String(ps).split('-'); const ep = String(pe).split('-');
+      const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+      const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+      if(isNaN(start) || isNaN(end)) return;
+      const cur = new Date(start);
+      while(cur <= end){
+        if(cur.getFullYear()===year && cur.getMonth()===month){ counts[cur.getDate()-1] += 1; }
+        cur.setDate(cur.getDate()+1);
+      }
+    });
+    return counts;
+  }
+
+  // Mark days with credit category coverage for a unit
+  function creditArrayForUnit(u, year, month){
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const credit = new Array(daysInMonth).fill(false);
+    const unitIdNorm = (u.unitId || u.id || '').toString().trim().toLowerCase();
+    const registries = state.registries || [];
+    const invoices = state.invoices || [];
+    registries.forEach(reg => {
+      const unitsArr = Array.isArray(reg.units) ? reg.units.map(x=> (x||'').toString().trim().toLowerCase()) : [];
+      if(!unitsArr.includes(unitIdNorm)) return;
+      let cat = (reg.category||'').toString().trim().toLowerCase();
+      if(!cat){
+        const inv = invoices.find(i => (i.wdNumber||'').toString().trim().toLowerCase() === (reg.wdNumber||'').toString().trim().toLowerCase());
+        cat = (inv && (inv.category||'').toString().trim().toLowerCase()) || '';
+      }
+      if(cat !== 'credit') return;
+      const ps = reg.periodStart, pe = reg.periodEnd; if(!ps || !pe) return;
+      const sp = String(ps).split('-'); const ep = String(pe).split('-');
+      const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+      const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+      if(isNaN(start) || isNaN(end)) return;
+      const cur = new Date(start);
+      while(cur <= end){
+        if(cur.getFullYear()===year && cur.getMonth()===month){ credit[cur.getDate()-1] = true; }
+        cur.setDate(cur.getDate()+1);
+      }
+    });
+    return credit;
+  }
+
+  function run(){
+    // Keep sel in sync with controls but do not save here to avoid
+    // triggering auto-refresh loops via agi:stateSaved.
+    sel.month = parseInt(monthSelect.value, 10);
+    sel.year = parseInt(yearSelect.value, 10);
+
+    const year = sel.year; const month = sel.month;
+    const units = (state.units||[]).slice();
+    // Determine full coverage and keep coverage arrays for rendering
+    const fullyCovered = [];
+    const coverageMap = new Map();
+    units.forEach(u => {
+      const cov = coverageArrayForUnit(u, year, month);
+      if(cov.every(Boolean)){
+        fullyCovered.push(u);
+        coverageMap.set(u.id || u.unitId, cov);
+      }
+    });
+
+    // Sort handling
+    state.meta.reportSimple.sort = state.meta.reportSimple.sort || { column: 'unitId', ascending: true };
+    const sort = state.meta.reportSimple.sort;
+    fullyCovered.sort((a, b) => {
+      const va = (a[sort.column] || '').toString().toLowerCase();
+      const vb = (b[sort.column] || '').toString().toLowerCase();
+      if(va < vb) return sort.ascending ? -1 : 1;
+      if(va > vb) return sort.ascending ? 1 : -1;
+      return 0;
+    });
+
+    // assign export datasets
+    computedFullyCovered = fullyCovered.slice();
+    computedCoverageMap = new Map(coverageMap);
+
+    resultsWrap.innerHTML = '';
+    // Independent scroll container for the results
+    const titleFull = document.createElement('div');
+    titleFull.textContent = 'Units Fully Covered';
+    titleFull.style.margin = '12px 0 8px';
+    titleFull.style.fontWeight = '600';
+    resultsWrap.appendChild(titleFull);
+
+    const scroller = document.createElement('div');
+    scroller.style.maxHeight = '600px';
+    scroller.style.overflowY = 'auto';
+    scroller.style.border = '1px solid #eef2f7';
+    scroller.style.borderRadius = '6px';
+    scroller.style.padding = '8px';
+    scroller.style.background = '#fff';
+
+    const table = document.createElement('table');
+    table.style.width = '100%'; table.style.borderCollapse = 'collapse'; table.style.marginTop = '0';
+    const thead = document.createElement('thead'); const tbody = document.createElement('tbody');
+
+    // Header: info columns + Period colSpan
+    const headerRow = document.createElement('tr');
+    const headerDefs = [
+      { text: 'Unit', key: 'unitId' },
+      { text: 'Lease', key: 'lease' },
+      { text: 'Supplier', key: 'supplier' },
+      { text: 'Arrangement', key: 'arrangement' },
+      { text: 'Invoicing', key: 'invoicing' },
+      { text: 'Status', key: 'status' }
+    ];
+    // Counter column
+    const thCounter = document.createElement('th');
+    thCounter.textContent = '#';
+    thCounter.style.textAlign='center'; thCounter.style.padding='6px'; thCounter.style.fontSize='12px'; thCounter.style.borderBottom='2px solid #eef2f7'; thCounter.style.fontWeight='600'; thCounter.style.background='#f9fafb';
+    thCounter.style.position = 'sticky'; thCounter.style.top = '0'; thCounter.style.zIndex = '2';
+    thCounter.style.width = '40px';
+    headerRow.appendChild(thCounter);
+    headerDefs.forEach(def => {
+      const th = document.createElement('th');
+      // Add sort indicator
+      let label = def.text;
+      if(sort.column === def.key){ label += sort.ascending ? ' ▲' : ' ▼'; }
+      th.textContent = label;
+      th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
+      // Sticky header
+      th.style.position = 'sticky'; th.style.top = '0'; th.style.zIndex = '2';
+      th.style.cursor = 'pointer'; th.style.userSelect = 'none';
+      th.title = 'Click to sort';
+      th.addEventListener('click', ()=>{
+        if(state.meta.reportSimple.sort.column === def.key){
+          state.meta.reportSimple.sort.ascending = !state.meta.reportSimple.sort.ascending;
+        } else {
+          state.meta.reportSimple.sort.column = def.key;
+          state.meta.reportSimple.sort.ascending = true;
+        }
+        try{ saveState(); }catch(e){}
+        run();
+      });
+      headerRow.appendChild(th);
+    });
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const thPeriod = document.createElement('th');
+    thPeriod.textContent = 'Period';
+    thPeriod.colSpan = daysInMonth;
+    thPeriod.style.textAlign='center'; thPeriod.style.padding='6px'; thPeriod.style.fontSize='12px'; thPeriod.style.borderBottom='2px solid #eef2f7'; thPeriod.style.fontWeight='600'; thPeriod.style.background='#f9fafb';
+    // Sticky header
+    thPeriod.style.position = 'sticky'; thPeriod.style.top = '0'; thPeriod.style.zIndex = '2';
+    headerRow.appendChild(thPeriod);
+    thead.appendChild(headerRow);
+
+    if(fullyCovered.length === 0){
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = headerDefs.length + daysInMonth + 1; td.textContent = 'No units have full coverage for the selected month.'; td.className = 'small-muted'; td.style.padding='12px';
+      tr.appendChild(td); tbody.appendChild(tr);
+    } else {
+      // Render all rows; the scroller limits visible height (~20 rows)
+      fullyCovered.forEach((u, idx) => {
+        const tr = document.createElement('tr');
+        // Hover + selection highlight
+        tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
+        tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
+        tr.addEventListener('click', () => {
+          const tbodyEl = tr.parentNode;
+          if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
+          tr.dataset.selected = 'true';
+          tr.style.backgroundColor = '#e6f0ff';
+        });
+        // Counter cell
+        const tdCounter = document.createElement('td');
+        tdCounter.textContent = String(idx + 1);
+        tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
+        tr.appendChild(tdCounter);
+        const infoCells = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        infoCells.forEach((val, idx) => {
+          const td = document.createElement('td');
+          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
+          // Make Unit ID clickable to open detail panel (same as Unit Overview)
+          if(idx === 0){
+            td.style.cursor = 'pointer';
+            td.style.color = '#0b74de';
+            td.title = 'View unit details';
+            // Unit text
+            td.appendChild(document.createTextNode(String(val)));
+            // Add red ! indicator if the unit has comments for selected month
+            try{
+              const monthComments = extractMonthComments(u, year, month);
+              if(monthComments && monthComments.length > 0){
+                const alertIcon = document.createElement('span');
+                alertIcon.textContent = ' !';
+                alertIcon.style.color = '#dc2626';
+                alertIcon.style.fontWeight = '700';
+                alertIcon.style.marginLeft = '6px';
+                alertIcon.style.cursor = 'pointer';
+                alertIcon.title = 'Comments exist for this month';
+                alertIcon.addEventListener('click', (e)=>{ e.stopPropagation(); try{ openCommentsModalFromWdNumbers(u.unitId, year, month); }catch(e){} });
+                td.appendChild(alertIcon);
+              }
+            }catch(e){}
+            td.addEventListener('click', (ev)=>{ 
+              ev.stopPropagation(); 
+              // Select the row
+              const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
+              if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
+              if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
+              try{ openUnitWdNumbersModal(u.unitId, year, month); }catch(e){} 
+            });
+          } else { td.textContent = String(val); }
+          tr.appendChild(td);
+        });
+
+        // Day squares, using Unit Overview style (20px squares)
+        const cov = coverageMap.get(u.id || u.unitId) || [];
+        for(let d=1; d<=daysInMonth; d++){
+          const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
+          const square = document.createElement('div');
+          square.style.width = '20px'; square.style.height = '20px'; square.style.border = '1px solid #ddd'; square.style.borderRadius = '3px';
+          square.style.display = 'flex'; square.style.alignItems = 'center'; square.style.justifyContent = 'center'; square.style.fontSize = '9px';
+          square.textContent = d;
+          if(cov[d-1]){ // covered day => green
+            square.style.backgroundColor = '#dcfce7';
+            square.style.borderColor = '#16a34a';
+            square.style.color = '#15803d';
+            square.style.fontWeight = '600';
+          } else {
+            square.style.backgroundColor = '#fff';
+            square.style.color = '#6b7280';
+          }
+          tdDay.appendChild(square);
+          tr.appendChild(tdDay);
+        }
+        tbody.appendChild(tr);
+      });
+    }
+
+    table.appendChild(thead); table.appendChild(tbody);
+    scroller.appendChild(table);
+    resultsWrap.appendChild(scroller);
+
+    // --- Missing coverage table ---
+    // Compute units that are not fully covered
+    const missingUnits = [];
+    const coverageMapMissing = new Map();
+    units.forEach(u => {
+      const cov = coverageArrayForUnit(u, year, month);
+      if(!cov.every(Boolean)){
+        missingUnits.push(u);
+        coverageMapMissing.set(u.id || u.unitId, cov);
+      }
+    });
+
+    // Sort handling for missing table
+    state.meta.reportSimple.sortMissing = state.meta.reportSimple.sortMissing || { column: 'unitId', ascending: true };
+    const sortMissing = state.meta.reportSimple.sortMissing;
+    missingUnits.sort((a, b) => {
+      const va = (a[sortMissing.column] || '').toString().toLowerCase();
+      const vb = (b[sortMissing.column] || '').toString().toLowerCase();
+      if(va < vb) return sortMissing.ascending ? -1 : 1;
+      if(va > vb) return sortMissing.ascending ? 1 : -1;
+      return 0;
+    });
+
+    // Title
+    const titleMissing = document.createElement('div');
+    titleMissing.textContent = 'Units Missing Coverage';
+    titleMissing.style.margin = '12px 0 8px';
+    titleMissing.style.fontWeight = '600';
+    resultsWrap.appendChild(titleMissing);
+
+    // Independent scroll for missing table
+    const scrollerMissing = document.createElement('div');
+    scrollerMissing.style.maxHeight = '600px';
+    scrollerMissing.style.overflowY = 'auto';
+    scrollerMissing.style.border = '1px solid #eef2f7';
+    scrollerMissing.style.borderRadius = '6px';
+    scrollerMissing.style.padding = '8px';
+    scrollerMissing.style.background = '#fff';
+
+    const tableMissing = document.createElement('table');
+    tableMissing.style.width = '100%'; tableMissing.style.borderCollapse = 'collapse'; tableMissing.style.marginTop = '0';
+    const theadMissing = document.createElement('thead'); const tbodyMissing = document.createElement('tbody');
+
+    // Header
+    const headerRowMissing = document.createElement('tr');
+    const headerDefsMissing = [
+      { text: 'Unit', key: 'unitId' },
+      { text: 'Lease', key: 'lease' },
+      { text: 'Supplier', key: 'supplier' },
+      { text: 'Arrangement', key: 'arrangement' },
+      { text: 'Invoicing', key: 'invoicing' },
+      { text: 'Status', key: 'status' }
+    ];
+    // Counter column
+    const thCounterMissing = document.createElement('th');
+    thCounterMissing.textContent = '#';
+    thCounterMissing.style.textAlign='center'; thCounterMissing.style.padding='6px'; thCounterMissing.style.fontSize='12px'; thCounterMissing.style.borderBottom='2px solid #eef2f7'; thCounterMissing.style.fontWeight='600'; thCounterMissing.style.background='#f9fafb';
+    thCounterMissing.style.position = 'sticky'; thCounterMissing.style.top = '0'; thCounterMissing.style.zIndex = '2';
+    thCounterMissing.style.width = '40px';
+    headerRowMissing.appendChild(thCounterMissing);
+    headerDefsMissing.forEach(def => {
+      const th = document.createElement('th');
+      let label = def.text;
+      if(sortMissing.column === def.key){ label += sortMissing.ascending ? ' ▲' : ' ▼'; }
+      th.textContent = label;
+      th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
+      // Sticky header
+      th.style.position = 'sticky'; th.style.top = '0'; th.style.zIndex = '2';
+      th.style.cursor = 'pointer'; th.style.userSelect = 'none'; th.title = 'Click to sort';
+      th.addEventListener('click', ()=>{
+        if(state.meta.reportSimple.sortMissing.column === def.key){
+          state.meta.reportSimple.sortMissing.ascending = !state.meta.reportSimple.sortMissing.ascending;
+        } else {
+          state.meta.reportSimple.sortMissing.column = def.key;
+          state.meta.reportSimple.sortMissing.ascending = true;
+        }
+        try{ saveState(); }catch(e){}
+        run();
+      });
+      headerRowMissing.appendChild(th);
+    });
+    const thPeriodMissing = document.createElement('th');
+    thPeriodMissing.textContent = 'Period';
+    thPeriodMissing.colSpan = daysInMonth;
+    thPeriodMissing.style.textAlign='center'; thPeriodMissing.style.padding='6px'; thPeriodMissing.style.fontSize='12px'; thPeriodMissing.style.borderBottom='2px solid #eef2f7'; thPeriodMissing.style.fontWeight='600'; thPeriodMissing.style.background='#f9fafb';
+    // Sticky header
+    thPeriodMissing.style.position = 'sticky'; thPeriodMissing.style.top = '0'; thPeriodMissing.style.zIndex = '2';
+    headerRowMissing.appendChild(thPeriodMissing);
+    theadMissing.appendChild(headerRowMissing);
+
+    if(missingUnits.length === 0){
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = headerDefsMissing.length + daysInMonth + 1; td.textContent = 'All units have full coverage for the selected month.'; td.className = 'small-muted'; td.style.padding='12px';
+      tr.appendChild(td); tbodyMissing.appendChild(tr);
+    } else {
+      missingUnits.forEach((u, idx) => {
+        const tr = document.createElement('tr');
+        // Hover + selection highlight
+        tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
+        tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
+        tr.addEventListener('click', () => {
+          const tbodyEl = tr.parentNode;
+          if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
+          tr.dataset.selected = 'true';
+          tr.style.backgroundColor = '#e6f0ff';
+        });
+        // Counter cell
+        const tdCounter = document.createElement('td');
+        tdCounter.textContent = String(idx + 1);
+        tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
+        tr.appendChild(tdCounter);
+        const infoCells = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        infoCells.forEach((val, idx) => {
+          const td = document.createElement('td');
+          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
+          if(idx === 0){
+            td.style.cursor = 'pointer'; td.style.color = '#0b74de'; td.title = 'View unit details';
+            td.appendChild(document.createTextNode(String(val)));
+            // Add red ! indicator if the unit has comments for selected month
+            try{
+              const monthComments = extractMonthComments(u, year, month);
+              if(monthComments && monthComments.length > 0){
+                const alertIcon = document.createElement('span');
+                alertIcon.textContent = ' !';
+                alertIcon.style.color = '#dc2626';
+                alertIcon.style.fontWeight = '700';
+                alertIcon.style.marginLeft = '6px';
+                alertIcon.style.cursor = 'pointer';
+                alertIcon.title = 'Comments exist for this month';
+                alertIcon.addEventListener('click', (e)=>{ e.stopPropagation(); try{ openCommentsModalFromWdNumbers(u.unitId, year, month); }catch(e){} });
+                td.appendChild(alertIcon);
+              }
+            }catch(e){}
+            td.addEventListener('click', (ev)=>{ 
+              ev.stopPropagation(); 
+              // Select the row
+              const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
+              if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
+              if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
+              try{ openUnitWdNumbersModal(u.unitId, year, month); }catch(e){} 
+            });
+          } else { td.textContent = String(val); }
+          tr.appendChild(td);
+        });
+
+        const cov = coverageMapMissing.get(u.id || u.unitId) || [];
+        for(let d=1; d<=daysInMonth; d++){
+          const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
+          const square = document.createElement('div');
+          square.style.width = '20px'; square.style.height = '20px'; square.style.border = '1px solid #ddd'; square.style.borderRadius = '3px';
+          square.style.display = 'flex'; square.style.alignItems = 'center'; square.style.justifyContent = 'center'; square.style.fontSize = '9px';
+          square.textContent = d;
+          if(cov[d-1]){
+            square.style.backgroundColor = '#dcfce7'; square.style.borderColor = '#16a34a'; square.style.color = '#15803d'; square.style.fontWeight = '600';
+          } else {
+            square.style.backgroundColor = '#fff'; square.style.color = '#6b7280';
+          }
+          tdDay.appendChild(square);
+          tr.appendChild(tdDay);
+        }
+        tbodyMissing.appendChild(tr);
+      });
+    }
+
+    // assign export datasets
+    computedMissingUnits = missingUnits.slice();
+    computedCoverageMapMissing = new Map(coverageMapMissing);
+
+    tableMissing.appendChild(theadMissing); tableMissing.appendChild(tbodyMissing);
+    scrollerMissing.appendChild(tableMissing);
+    resultsWrap.appendChild(scrollerMissing);
+
+    // --- Units Highlighted in Red (Overlaps) ---
+    // Collect units that have at least one overlapped rental day in the selected month
+    const overlapUnits = [];
+    const overlapMap = new Map();
+    const rentalCoveredMap = new Map();
+    units.forEach(u => {
+      const counts = rentalCountsArrayForUnit(u, year, month);
+      const hasOverlap = counts.some(c => c > 1);
+      if(hasOverlap){
+        overlapUnits.push(u);
+        overlapMap.set(u.id || u.unitId, counts.map(c => c > 1));
+        rentalCoveredMap.set(u.id || u.unitId, counts.map(c => c > 0));
+      }
+    });
+
+    const titleOverlap = document.createElement('div');
+    titleOverlap.textContent = 'Units with Red Highlighted Dates (Overlaps)';
+    titleOverlap.style.margin = '12px 0 8px';
+    titleOverlap.style.fontWeight = '600';
+    resultsWrap.appendChild(titleOverlap);
+
+    // assign export datasets
+    computedOverlapUnits = overlapUnits.slice();
+    computedOverlapMap = new Map(overlapMap);
+    computedRentalCoveredMap = new Map(rentalCoveredMap);
+
+    const scrollerOverlap = document.createElement('div');
+    scrollerOverlap.style.maxHeight = '600px';
+    scrollerOverlap.style.overflowY = 'auto';
+    scrollerOverlap.style.border = '1px solid #eef2f7';
+    scrollerOverlap.style.borderRadius = '6px';
+    scrollerOverlap.style.padding = '8px';
+    scrollerOverlap.style.background = '#fff';
+
+    const tableOverlap = document.createElement('table');
+    tableOverlap.style.width = '100%'; tableOverlap.style.borderCollapse = 'collapse'; tableOverlap.style.marginTop = '0';
+    const theadOverlap = document.createElement('thead'); const tbodyOverlap = document.createElement('tbody');
+
+    const hdr = document.createElement('tr');
+    const headerDefsOverlap = [
+      { text: 'Unit', key: 'unitId' },
+      { text: 'Lease', key: 'lease' },
+      { text: 'Supplier', key: 'supplier' },
+      { text: 'Arrangement', key: 'arrangement' },
+      { text: 'Invoicing', key: 'invoicing' },
+      { text: 'Status', key: 'status' }
+    ];
+    // Counter column
+    const thCounterOverlap = document.createElement('th');
+    thCounterOverlap.textContent = '#';
+    thCounterOverlap.style.textAlign='center'; thCounterOverlap.style.padding='6px'; thCounterOverlap.style.fontSize='12px'; thCounterOverlap.style.borderBottom='2px solid #eef2f7'; thCounterOverlap.style.fontWeight='600'; thCounterOverlap.style.background='#f9fafb';
+    thCounterOverlap.style.position='sticky'; thCounterOverlap.style.top='0'; thCounterOverlap.style.zIndex='2'; thCounterOverlap.style.width='40px';
+    hdr.appendChild(thCounterOverlap);
+    headerDefsOverlap.forEach(def => {
+      const th = document.createElement('th'); th.textContent = def.text;
+      th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
+      th.style.position='sticky'; th.style.top='0'; th.style.zIndex='2';
+      hdr.appendChild(th);
+    });
+    const thP = document.createElement('th'); thP.textContent = 'Period'; thP.colSpan = daysInMonth; thP.style.textAlign='center'; thP.style.padding='6px'; thP.style.fontSize='12px'; thP.style.borderBottom='2px solid #eef2f7'; thP.style.fontWeight='600'; thP.style.background='#f9fafb'; thP.style.position='sticky'; thP.style.top='0'; thP.style.zIndex='2';
+    hdr.appendChild(thP); theadOverlap.appendChild(hdr);
+
+    if(overlapUnits.length === 0){
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = headerDefsOverlap.length + daysInMonth + 1; td.textContent = 'No units have overlapped rental days for the selected month.'; td.className = 'small-muted'; td.style.padding='12px';
+      tr.appendChild(td); tbodyOverlap.appendChild(tr);
+    } else {
+      overlapUnits.forEach((u, idx) => {
+        const tr = document.createElement('tr');
+        tr.addEventListener('mouseenter', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor='#fff5f5'; });
+        tr.addEventListener('mouseleave', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor=''; });
+        tr.addEventListener('click', ()=>{ const tb=tr.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } tr.dataset.selected='true'; tr.style.backgroundColor='#ffe4e6'; });
+        // Counter cell
+        const tdCounter = document.createElement('td');
+        tdCounter.textContent = String(idx + 1);
+        tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
+        tr.appendChild(tdCounter);
+        const info = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        info.forEach((val, idx) => { 
+          const td=document.createElement('td'); 
+          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px'; 
+          if(idx===0){ 
+            td.style.cursor='pointer'; td.style.color='#0b74de'; td.title='View unit details';
+            td.appendChild(document.createTextNode(String(val)));
+            // Add red ! indicator if the unit has comments for selected month
+            try{
+              const monthComments = extractMonthComments(u, year, month);
+              if(monthComments && monthComments.length > 0){
+                const alertIcon = document.createElement('span');
+                alertIcon.textContent = ' !';
+                alertIcon.style.color = '#dc2626';
+                alertIcon.style.fontWeight = '700';
+                alertIcon.style.marginLeft = '6px';
+                alertIcon.style.cursor = 'pointer';
+                alertIcon.title = 'Comments exist for this month';
+                alertIcon.addEventListener('click', (e)=>{ e.stopPropagation(); try{ openCommentsModalFromWdNumbers(u.unitId, year, month); }catch(e){} });
+                td.appendChild(alertIcon);
+              }
+            }catch(e){}
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#ffe4e6'; } try{ openUnitWdNumbersModal(u.unitId, year, month);}catch(e){} }); 
+          } else { td.textContent = String(val); }
+          tr.appendChild(td); 
+        });
+
+        const overlaps = overlapMap.get(u.id || u.unitId) || [];
+        const covered = rentalCoveredMap.get(u.id || u.unitId) || [];
+        for(let d=1; d<=daysInMonth; d++){
+          const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
+          const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
+          if(overlaps[d-1]){ square.style.backgroundColor='#fee2e2'; square.style.borderColor='#dc2626'; square.style.color='#991b1b'; square.style.fontWeight='600'; }
+          else if(covered[d-1]){ square.style.backgroundColor='#dcfce7'; square.style.borderColor='#16a34a'; square.style.color='#15803d'; square.style.fontWeight='600'; }
+          else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
+          tdDay.appendChild(square); tr.appendChild(tdDay);
+        }
+        tbodyOverlap.appendChild(tr);
+      });
+    }
+
+    tableOverlap.appendChild(theadOverlap); tableOverlap.appendChild(tbodyOverlap);
+    scrollerOverlap.appendChild(tableOverlap);
+    resultsWrap.appendChild(scrollerOverlap);
+
+    // --- Units with Yellow Frame Dates (Credit) ---
+    const creditUnits = [];
+    const creditMap = new Map();
+    const rentalCountsMap = new Map();
+    units.forEach(u => {
+      const creditDays = creditArrayForUnit(u, year, month);
+      if(creditDays.some(Boolean)){
+        creditUnits.push(u);
+        creditMap.set(u.id || u.unitId, creditDays);
+        rentalCountsMap.set(u.id || u.unitId, rentalCountsArrayForUnit(u, year, month));
+      }
+    });
+
+    const titleCredit = document.createElement('div');
+    titleCredit.textContent = 'Units with Yellow Frame Dates (Credit)';
+    titleCredit.style.margin = '12px 0 8px';
+    titleCredit.style.fontWeight = '600';
+    resultsWrap.appendChild(titleCredit);
+
+    // assign export datasets
+    computedCreditUnits = creditUnits.slice();
+    computedCreditMap = new Map(creditMap);
+    computedRentalCountsMap = new Map(rentalCountsMap);
+
+    const scrollerCredit = document.createElement('div');
+    scrollerCredit.style.maxHeight = '600px';
+    scrollerCredit.style.overflowY = 'auto';
+    scrollerCredit.style.border = '1px solid #eef2f7';
+    scrollerCredit.style.borderRadius = '6px';
+    scrollerCredit.style.padding = '8px';
+    scrollerCredit.style.background = '#fff';
+
+    const tableCredit = document.createElement('table');
+    tableCredit.style.width = '100%'; tableCredit.style.borderCollapse = 'collapse'; tableCredit.style.marginTop = '0';
+    const theadCredit = document.createElement('thead'); const tbodyCredit = document.createElement('tbody');
+
+    const hdrC = document.createElement('tr');
+    const headerDefsCredit = [
+      { text: 'Unit', key: 'unitId' },
+      { text: 'Lease', key: 'lease' },
+      { text: 'Supplier', key: 'supplier' },
+      { text: 'Arrangement', key: 'arrangement' },
+      { text: 'Invoicing', key: 'invoicing' },
+      { text: 'Status', key: 'status' }
+    ];
+    // Counter column
+    const thCounterCredit = document.createElement('th');
+    thCounterCredit.textContent = '#';
+    thCounterCredit.style.textAlign='center'; thCounterCredit.style.padding='6px'; thCounterCredit.style.fontSize='12px'; thCounterCredit.style.borderBottom='2px solid #eef2f7'; thCounterCredit.style.fontWeight='600'; thCounterCredit.style.background='#f9fafb';
+    thCounterCredit.style.position='sticky'; thCounterCredit.style.top='0'; thCounterCredit.style.zIndex='2'; thCounterCredit.style.width='40px';
+    hdrC.appendChild(thCounterCredit);
+    headerDefsCredit.forEach(def => {
+      const th = document.createElement('th'); th.textContent = def.text;
+      th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
+      th.style.position='sticky'; th.style.top='0'; th.style.zIndex='2';
+      hdrC.appendChild(th);
+    });
+    const thPC = document.createElement('th'); thPC.textContent = 'Period'; thPC.colSpan = daysInMonth; thPC.style.textAlign='center'; thPC.style.padding='6px'; thPC.style.fontSize='12px'; thPC.style.borderBottom='2px solid #eef2f7'; thPC.style.fontWeight='600'; thPC.style.background='#f9fafb'; thPC.style.position='sticky'; thPC.style.top='0'; thPC.style.zIndex='2';
+    hdrC.appendChild(thPC); theadCredit.appendChild(hdrC);
+
+    if(creditUnits.length === 0){
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = headerDefsCredit.length + daysInMonth + 1; td.textContent = 'No units have credit-covered days for the selected month.'; td.className = 'small-muted'; td.style.padding='12px';
+      tr.appendChild(td); tbodyCredit.appendChild(tr);
+    } else {
+      creditUnits.forEach((u, idx) => {
+        const tr = document.createElement('tr');
+        tr.addEventListener('mouseenter', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor='#fffaf0'; });
+        tr.addEventListener('mouseleave', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor=''; });
+        tr.addEventListener('click', ()=>{ const tb=tr.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } tr.dataset.selected='true'; tr.style.backgroundColor='#fff4e5'; });
+        // Counter cell
+        const tdCounter = document.createElement('td');
+        tdCounter.textContent = String(idx + 1);
+        tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
+        tr.appendChild(tdCounter);
+        const info = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        info.forEach((val, idx) => { 
+          const td=document.createElement('td'); 
+          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px'; 
+          if(idx===0){ 
+            td.style.cursor='pointer'; td.style.color='#0b74de'; td.title='View unit details';
+            td.appendChild(document.createTextNode(String(val)));
+            // Add red ! indicator if the unit has comments for selected month
+            try{
+              const monthComments = extractMonthComments(u, year, month);
+              if(monthComments && monthComments.length > 0){
+                const alertIcon = document.createElement('span');
+                alertIcon.textContent = ' !';
+                alertIcon.style.color = '#dc2626';
+                alertIcon.style.fontWeight = '700';
+                alertIcon.style.marginLeft = '6px';
+                alertIcon.style.cursor = 'pointer';
+                alertIcon.title = 'Comments exist for this month';
+                alertIcon.addEventListener('click', (e)=>{ e.stopPropagation(); try{ openCommentsModalFromWdNumbers(u.unitId, year, month); }catch(e){} });
+                td.appendChild(alertIcon);
+              }
+            }catch(e){}
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#fff4e5'; } try{ openUnitWdNumbersModal(u.unitId, year, month);}catch(e){} }); 
+          } else { td.textContent = String(val); }
+          tr.appendChild(td); 
+        });
+
+        const creditDays = creditMap.get(u.id || u.unitId) || [];
+        const counts = rentalCountsMap.get(u.id || u.unitId) || [];
+        for(let d=1; d<=daysInMonth; d++){
+          const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
+          const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
+          if(creditDays[d-1]){
+            square.style.borderColor='#eab308'; square.style.borderWidth='2px'; square.style.color='#eab308'; square.style.fontWeight='700';
+            if(counts[d-1] > 1){ square.style.backgroundColor='#fee2e2'; square.style.borderColor='#eab308'; }
+            else if(counts[d-1] === 1){ square.style.backgroundColor='#dcfce7'; }
+            else { square.style.backgroundColor='#fff'; }
+          } else {
+            if(counts[d-1] > 1){ square.style.backgroundColor='#fee2e2'; square.style.borderColor='#dc2626'; square.style.color='#991b1b'; square.style.fontWeight='600'; }
+            else if(counts[d-1] === 1){ square.style.backgroundColor='#dcfce7'; square.style.borderColor='#16a34a'; square.style.color='#15803d'; square.style.fontWeight='600'; }
+            else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
+          }
+          tdDay.appendChild(square); tr.appendChild(tdDay);
+        }
+        tbodyCredit.appendChild(tr);
+      });
+    }
+
+    tableCredit.appendChild(theadCredit); tableCredit.appendChild(tbodyCredit);
+    scrollerCredit.appendChild(tableCredit);
+    resultsWrap.appendChild(scrollerCredit);
+
+    // --- Disabled + Covered (Red background + Green highlight) ---
+    // Identify units that have at least one day in the selected month where
+    // the unit is disabled (red background) and has rental coverage (green square).
+    const disabledCoveredUnits = [];
+    const disabledCoveredData = new Map(); // id -> { disabledPeriods, coverage }
+    units.forEach(u => {
+      const disabledPeriods = getDisabledPeriods(u);
+      const cov = coverageArrayForUnit(u, year, month);
+      const daysInMonthLocal = new Date(year, month+1, 0).getDate();
+      let hasDisabledCovered = false;
+      for(let d=1; d<=daysInMonthLocal; d++){
+        const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+        if(isDisabled && !!cov[d-1]){ hasDisabledCovered = true; break; }
+      }
+      if(hasDisabledCovered){
+        disabledCoveredUnits.push(u);
+        disabledCoveredData.set(u.id || u.unitId, { disabledPeriods, coverage: cov });
+      }
+    });
+
+    // assign export datasets
+    computedDisabledCoveredUnits = disabledCoveredUnits.slice();
+    // Build maps for export
+    const disabledArrayForUnit = (u, y, m) => {
+      const days = new Date(y, m+1, 0).getDate();
+      const arr = new Array(days).fill(false);
+      const periods = getDisabledPeriods(u);
+      for(let d=1; d<=days; d++){
+        if(isDateInDisabledPeriod(y, m, d, periods)) arr[d-1] = true;
+      }
+      return arr;
+    };
+    computedDisabledMap = new Map();
+    computedDisabledCoverageMap = new Map();
+    computedDisabledCountsMap = new Map();
+    disabledCoveredUnits.forEach(u => {
+      computedDisabledMap.set(u.id || u.unitId, disabledArrayForUnit(u, year, month));
+      computedDisabledCoverageMap.set(u.id || u.unitId, coverageArrayForUnit(u, year, month));
+      computedDisabledCountsMap.set(u.id || u.unitId, rentalCountsArrayForUnit(u, year, month));
+    });
+
+    // Note: Excel export for Disabled + Covered is handled in exportReport();
+    // avoid invoking XLSX here to prevent runtime errors.
+
+    // Disabled + Covered UI section
+
+    const titleDisabledCovered = document.createElement('div');
+    titleDisabledCovered.textContent = 'Disabled Units with Rental Coverage (Red Background + Green Highlight)';
+    titleDisabledCovered.style.margin = '12px 0 8px';
+    titleDisabledCovered.style.fontWeight = '600';
+    const sectionDisabledCovered = document.createElement('div');
+    sectionDisabledCovered.id = 'report-disabled-covered';
+    sectionDisabledCovered.appendChild(titleDisabledCovered);
+
+    const scrollerDisabledCovered = document.createElement('div');
+    scrollerDisabledCovered.style.maxHeight = '600px';
+    scrollerDisabledCovered.style.overflowY = 'auto';
+    scrollerDisabledCovered.style.border = '1px solid #eef2f7';
+    scrollerDisabledCovered.style.borderRadius = '6px';
+    scrollerDisabledCovered.style.padding = '8px';
+    scrollerDisabledCovered.style.background = '#fff';
+
+    const tableDisabledCovered = document.createElement('table');
+    tableDisabledCovered.style.width = '100%';
+    tableDisabledCovered.style.borderCollapse = 'collapse';
+    tableDisabledCovered.style.marginTop = '0';
+    const theadDC = document.createElement('thead');
+    const tbodyDC = document.createElement('tbody');
+
+    const hdrDC = document.createElement('tr');
+    const headerDefsDC = [
+      { text: 'Unit', key: 'unitId' },
+      { text: 'Lease', key: 'lease' },
+      { text: 'Supplier', key: 'supplier' },
+      { text: 'Arrangement', key: 'arrangement' },
+      { text: 'Invoicing', key: 'invoicing' },
+      { text: 'Status', key: 'status' },
+      { text: 'Labels', key: 'labels' }
+    ];
+    // Counter column
+    const thCounterDC = document.createElement('th');
+    thCounterDC.textContent = '#';
+    thCounterDC.style.textAlign='center'; thCounterDC.style.padding='6px'; thCounterDC.style.fontSize='12px'; thCounterDC.style.borderBottom='2px solid #eef2f7'; thCounterDC.style.fontWeight='600'; thCounterDC.style.background='#f9fafb';
+    thCounterDC.style.position='sticky'; thCounterDC.style.top='0'; thCounterDC.style.zIndex='2'; thCounterDC.style.width='40px';
+    hdrDC.appendChild(thCounterDC);
+    headerDefsDC.forEach(def => {
+      const th = document.createElement('th'); th.textContent = def.text;
+      th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
+      th.style.position='sticky'; th.style.top='0'; th.style.zIndex='2';
+      hdrDC.appendChild(th);
+    });
+    const thPeriodDC = document.createElement('th');
+    const daysInMonthDC = new Date(year, month+1, 0).getDate();
+    thPeriodDC.textContent = 'Period'; thPeriodDC.colSpan = daysInMonthDC;
+    thPeriodDC.style.textAlign='center'; thPeriodDC.style.padding='6px'; thPeriodDC.style.fontSize='12px'; thPeriodDC.style.borderBottom='2px solid #eef2f7'; thPeriodDC.style.fontWeight='600'; thPeriodDC.style.background='#f9fafb'; thPeriodDC.style.position='sticky'; thPeriodDC.style.top='0'; thPeriodDC.style.zIndex='2';
+    hdrDC.appendChild(thPeriodDC);
+    theadDC.appendChild(hdrDC);
+
+    if(disabledCoveredUnits.length === 0){
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = headerDefsDC.length + daysInMonthDC + 1; td.textContent = 'No disabled units with rental-covered days in the selected month.'; td.className = 'small-muted'; td.style.padding='12px';
+      tr.appendChild(td); tbodyDC.appendChild(tr);
+    } else {
+      disabledCoveredUnits.forEach((u, idx) => {
+        const tr = document.createElement('tr');
+        tr.addEventListener('mouseenter', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor='#f3f6fb'; });
+        tr.addEventListener('mouseleave', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor=''; });
+        tr.addEventListener('click', ()=>{ const tb=tr.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } tr.dataset.selected='true'; tr.style.backgroundColor='#e6f0ff'; });
+        // Counter cell
+        const tdCounter = document.createElement('td');
+        tdCounter.textContent = String(idx + 1);
+        tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
+        tr.appendChild(tdCounter);
+        const info = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        info.forEach((val, idx) => {
+          const td=document.createElement('td');
+          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
+          if(idx===0){
+            td.style.cursor='pointer'; td.style.color='#0b74de'; td.title='View unit details';
+            td.appendChild(document.createTextNode(String(val)));
+            // Red ! indicator if comments exist for selected month
+            try{
+              const monthComments = extractMonthComments(u, year, month);
+              if(monthComments && monthComments.length>0){
+                const alertIcon = document.createElement('span');
+                alertIcon.textContent = ' !'; alertIcon.style.color = '#dc2626'; alertIcon.style.fontWeight='700'; alertIcon.style.marginLeft='6px'; alertIcon.style.cursor='pointer'; alertIcon.title='Comments exist for this month';
+                alertIcon.addEventListener('click', (e)=>{ e.stopPropagation(); try{ openCommentsModalFromWdNumbers(u.unitId, year, month); }catch(e){} });
+                td.appendChild(alertIcon);
+              }
+            }catch(e){}
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); try{ openUnitWdNumbersModal(u.unitId, year, month);}catch(e){} });
+          } else {
+            td.textContent = String(val);
+          }
+          tr.appendChild(td);
+        });
+
+        // Labels column: show other visual labels present this month (Overlap, Credit)
+        try{
+          const counts = rentalCountsArrayForUnit(u, year, month) || [];
+          const hasOverlap = counts.some(c => c > 1);
+          const creditDays = creditArrayForUnit(u, year, month) || [];
+          const hasCredit = creditDays.some(Boolean);
+          const labels = [];
+          if(hasOverlap) labels.push('Overlap');
+          if(hasCredit) labels.push('Credit');
+          const tdLabels = document.createElement('td');
+          tdLabels.style.padding='6px'; tdLabels.style.borderBottom='1px solid #eef2f7'; tdLabels.style.fontSize='12px';
+          tdLabels.textContent = labels.length ? labels.join(', ') : '-';
+          tr.appendChild(tdLabels);
+        }catch(e){
+          const tdLabels = document.createElement('td');
+          tdLabels.style.padding='6px'; tdLabels.style.borderBottom='1px solid #eef2f7'; tdLabels.style.fontSize='12px';
+          tdLabels.textContent = '-';
+          tr.appendChild(tdLabels);
+        }
+
+        const data = disabledCoveredData.get(u.id || u.unitId) || { disabledPeriods: [], coverage: [] };
+        // Compute per-day overlap counts and credit markers like Unit Overview
+        const counts = rentalCountsArrayForUnit(u, year, month) || [];
+        const creditDays = creditArrayForUnit(u, year, month) || [];
+        for(let d=1; d<=daysInMonthDC; d++){
+          const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
+          const isDisabled = isDateInDisabledPeriod(year, month, d, data.disabledPeriods || []);
+          if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
+          const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
+          const covered = !!(data.coverage && data.coverage[d-1]);
+          const overlap = (counts[d-1] > 1);
+          const credit = !!creditDays[d-1];
+
+          if(credit){
+            // Credit day: yellow frame/text; background reflects overlap or single coverage
+            square.style.borderColor = '#eab308';
+            square.style.borderWidth = '2px';
+            square.style.color = '#eab308';
+            square.style.fontWeight = '700';
+            if(overlap){
+              square.style.backgroundColor = '#fee2e2';
+            } else if(covered){
+              square.style.backgroundColor = '#dcfce7';
+            } else {
+              square.style.backgroundColor = '#ffffff';
+            }
+          } else if(overlap){
+            // Overlap rental coverage: red border + light red background
+            square.style.backgroundColor = '#fee2e2';
+            square.style.borderColor = '#dc2626';
+            square.style.color = '#991b1b';
+            square.style.fontWeight = '600';
+          } else if(covered){
+            // Single rental coverage: green highlight
+            square.style.backgroundColor = '#dcfce7';
+            square.style.borderColor = '#16a34a';
+            square.style.color = '#15803d';
+            square.style.fontWeight = '600';
+          } else if(isDisabled){
+            // Disabled but not covered: white square with red border
+            square.style.backgroundColor = '#ffffff';
+            square.style.borderColor = '#991b1b';
+            square.style.color = '#dc2626';
+            square.style.fontWeight = '600';
+          } else {
+            // No coverage
+            square.style.backgroundColor = '#fff';
+            square.style.color = '#6b7280';
+          }
+
+          tdDay.appendChild(square); tr.appendChild(tdDay);
+        }
+        tbodyDC.appendChild(tr);
+      });
+    }
+
+    tableDisabledCovered.appendChild(theadDC); tableDisabledCovered.appendChild(tbodyDC);
+    scrollerDisabledCovered.appendChild(tableDisabledCovered);
+    sectionDisabledCovered.appendChild(scrollerDisabledCovered);
+    // Append Disabled + Covered between Credit and Consecutive Months
+    resultsWrap.appendChild(sectionDisabledCovered);
+
+    // --- Bottom: Units with 2+ consecutive months without invoicing ---
+    try{
+      const streakMonthsRows = [];
+      // Anchor the counting start date to Jan 2022
+      const ANCHOR_YEAR = 2022;
+      const ANCHOR_MONTH = 0; // Jan
+      const monthsSinceAnchor = (year - ANCHOR_YEAR) * 12 + (month - ANCHOR_MONTH) + 1;
+      const MAX_LOOKBACK_MONTHS = Math.max(36, monthsSinceAnchor);
+      function hasAnyInvoiceInMonth(u, y, m){
+        const unitIdNorm = (u.unitId || u.id || '').toString().trim().toLowerCase();
+        const monthStart = new Date(y, m, 1);
+        const monthEnd = new Date(y, m+1, 0);
+        return (state.invoices||[]).some(inv => {
+          const invUnitNorm = (inv.unit||'').toString().trim().toLowerCase();
+          if(invUnitNorm !== unitIdNorm) return false;
+          const cat = (inv.category || '').toString().trim().toLowerCase();
+          if(!cat.includes('rental')) return false; // consider Rental invoices only
+          if(!inv.periodStart || !inv.periodEnd) return false;
+          const sp = String(inv.periodStart).split('-'); const ep = String(inv.periodEnd).split('-');
+          const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+          const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+          if(isNaN(start) || isNaN(end)) return false;
+          return !(end < monthStart || start > monthEnd);
+        });
+      }
+      function shiftMonth(y, m, delta){
+        let yy = y, mm = m + delta;
+        while(mm < 0){ mm += 12; yy -= 1; }
+        while(mm > 11){ mm -= 12; yy += 1; }
+        return [yy, mm];
+      }
+      function parseDateSafe(d){
+        if(!d) return null;
+        const t = new Date(d);
+        if(!isNaN(t)) return t;
+        const parts = String(d).split('-');
+        if(parts.length === 3){
+          const n = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          if(!isNaN(n)) return n;
+        }
+        return null;
+      }
+      function getLastWdForUnit(u){
+        const uid = (u.unitId || u.id || '').toString().trim().toLowerCase();
+        let latest = null;
+        (state.invoices||[]).forEach(inv => {
+          const invUnit = (inv.unit||'').toString().trim().toLowerCase();
+          if(invUnit !== uid) return;
+          const cat = (inv.category||'').toString().trim().toLowerCase();
+          // Only consider Rental category invoices
+          if(!(cat.includes('rental'))) return;
+          const wd = (inv.wdNumber||'').toString().trim();
+          if(!wd) return;
+          let dt = parseDateSafe(inv.submittedDate);
+          if(!dt) dt = parseDateSafe(inv.periodEnd);
+          if(!dt) dt = parseDateSafe(inv.periodStart);
+          if(!dt) return;
+          if(!latest || dt > latest.date){ latest = { wdNumber: wd, date: dt }; }
+        });
+        return latest;
+      }
+      // Exclude disabled units from the no-invoicing streak report
+      const eligibleUnits = (units||[]).filter(u => {
+        const status = (u.status || '').toString().trim().toLowerCase();
+        return status !== 'disabled';
+      });
+      eligibleUnits.forEach(u => {
+        let m = month; let y = year; let streak = 0;
+        for(let i=0; i<MAX_LOOKBACK_MONTHS; i++){
+          // Stop if we would go earlier than Jan 2022
+          if (y < ANCHOR_YEAR || (y === ANCHOR_YEAR && m < ANCHOR_MONTH)) break;
+          const cov = coverageArrayForUnit(u, y, m);
+          const hasAnyCoverage = Array.isArray(cov) && cov.some(Boolean);
+          const hasInvoice = hasAnyInvoiceInMonth(u, y, m);
+          if(hasAnyCoverage || hasInvoice) break;
+          streak++;
+          m -= 1; if(m < 0){ m = 11; y -= 1; }
+        }
+        if(streak >= 2){
+          let [startY, startM] = shiftMonth(year, month, -(streak-1));
+          // Cap the displayed start period at Jan 2022
+          if (startY < ANCHOR_YEAR || (startY === ANCHOR_YEAR && startM < ANCHOR_MONTH)){
+            startY = ANCHOR_YEAR; startM = ANCHOR_MONTH;
+          }
+          const startLabel = `${monthNames[startM]} ${startY}`;
+          const endLabel = `${monthNames[month]} ${year}`;
+          const periodText = `${startLabel} - ${endLabel}`;
+          const lastWd = getLastWdForUnit(u);
+          const lastWdNumber = lastWd ? lastWd.wdNumber : '';
+          const lastWdAt = lastWd ? lastWd.date.getTime() : 0;
+          streakMonthsRows.push({ u, streak, periodText, lastWd: lastWdNumber, lastWdAt });
+        }
+      });
+
+      // Always render the section with a table, even if empty
+      // Sorting state for monthly no-invoice streak table
+      state.meta.reportSimple.sortNoInvoiceMonths = state.meta.reportSimple.sortNoInvoiceMonths || { column: 'streak', ascending: false };
+      const sortMonths = state.meta.reportSimple.sortNoInvoiceMonths;
+      // Apply sort when rows exist
+      if(streakMonthsRows.length){
+        const getVal = (row, key) => {
+          if(key === 'streak') return row.streak || 0;
+          if(key === 'lastWd') return row.lastWdAt || 0;
+          if(key === 'unitId') return (row.u.unitId || row.u.id || '').toString();
+          if(key === 'lease') return (row.u.lease || '').toString();
+          if(key === 'supplier') return (row.u.supplier || '').toString();
+          if(key === 'description') return (row.u.description || '').toString();
+          if(key === 'invoicing') return (row.u.invoicing || '').toString();
+          if(key === 'status') return (row.u.status || 'Operational').toString();
+          if(key === 'periodText') return (row.periodText || '').toString();
+          return '';
+        };
+        streakMonthsRows.sort((a,b)=>{
+          const va = getVal(a, sortMonths.column);
+          const vb = getVal(b, sortMonths.column);
+          let cmp = 0;
+          if(sortMonths.column === 'streak'){
+            cmp = (va - vb);
+          } else {
+            const sa = va.toString().toLowerCase();
+            const sb = vb.toString().toLowerCase();
+            if(sa < sb) cmp = -1; else if(sa > sb) cmp = 1; else cmp = 0;
+          }
+          if(!sortMonths.ascending) cmp = -cmp;
+          if(cmp !== 0) return cmp;
+          // tie-breaker by unitId asc
+          const ua = (a.u.unitId || a.u.id || '').toString().toLowerCase();
+          const ub = (b.u.unitId || b.u.id || '').toString().toLowerCase();
+          if(ua < ub) return -1; if(ua > ub) return 1; return 0;
+        });
+      }
+
+      // assign export dataset
+      computedNoInvoiceRows = streakMonthsRows.slice();
+
+      const title = document.createElement('div');
+      title.textContent = 'Units With \u22652 Consecutive Months Without Invoicing';
+      title.style.margin = '12px 0 8px';
+      title.style.fontWeight = '600';
+      const sectionConsecutive = document.createElement('div');
+      sectionConsecutive.id = 'report-consecutive-without-invoicing';
+      sectionConsecutive.appendChild(title);
+
+      const cont = document.createElement('div');
+      cont.style.maxHeight = '400px';
+      cont.style.overflowY = 'auto';
+      cont.style.border = '1px solid #eef2f7';
+      cont.style.borderRadius = '6px';
+      cont.style.padding = '8px';
+      cont.style.background = '#fff';
+
+      const tbl = document.createElement('table');
+      tbl.style.width = '100%'; tbl.style.borderCollapse = 'collapse';
+      const theadM = document.createElement('thead'); const tbodyM = document.createElement('tbody');
+      const hr = document.createElement('tr');
+      const headerDefsMonths = [
+        { text: 'Unit', key: 'unitId' },
+        { text: 'Lease', key: 'lease' },
+        { text: 'Supplier', key: 'supplier' },
+        { text: 'Description', key: 'description' },
+        { text: 'Invoicing', key: 'invoicing' },
+        { text: 'Last WD Number', key: 'lastWd' },
+        { text: 'Status', key: 'status' },
+        { text: 'Consecutive Months (no rental invoice)', key: 'streak' },
+        { text: 'Period', key: 'periodText' }
+      ];
+      // Counter column
+      const thCounterMonths = document.createElement('th');
+      thCounterMonths.textContent = '#';
+      thCounterMonths.style.textAlign='center'; thCounterMonths.style.padding='6px'; thCounterMonths.style.fontSize='12px'; thCounterMonths.style.borderBottom='2px solid #eef2f7'; thCounterMonths.style.fontWeight='600'; thCounterMonths.style.background='#f9fafb';
+      thCounterMonths.style.position='sticky'; thCounterMonths.style.top='0'; thCounterMonths.style.zIndex='2'; thCounterMonths.style.width='40px';
+      hr.appendChild(thCounterMonths);
+      headerDefsMonths.forEach(def => {
+        const th = document.createElement('th');
+        let label = def.text;
+        if(sortMonths.column === def.key){ label += sortMonths.ascending ? ' ▲' : ' ▼'; }
+        th.textContent = label;
+        th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
+        th.style.position='sticky'; th.style.top='0'; th.style.zIndex='2';
+        th.style.cursor='pointer'; th.style.userSelect='none'; th.title='Click to sort';
+        th.addEventListener('click', ()=>{
+          if(state.meta.reportSimple.sortNoInvoiceMonths.column === def.key){
+            state.meta.reportSimple.sortNoInvoiceMonths.ascending = !state.meta.reportSimple.sortNoInvoiceMonths.ascending;
+          } else {
+            state.meta.reportSimple.sortNoInvoiceMonths.column = def.key;
+            state.meta.reportSimple.sortNoInvoiceMonths.ascending = true;
+          }
+          try{ saveState(); }catch(e){}
+          run();
+        });
+        hr.appendChild(th);
+      });
+      theadM.appendChild(hr); tbl.appendChild(theadM);
+
+      if(streakMonthsRows.length === 0){
+        const tr = document.createElement('tr'); const td = document.createElement('td');
+        td.colSpan = headerDefsMonths.length + 1; td.textContent = 'No units with consecutive months without rental invoicing.'; td.className = 'small-muted'; td.style.padding='12px';
+        tr.appendChild(td); tbodyM.appendChild(tr);
+      } else {
+        streakMonthsRows.forEach((row, idx) => {
+          const tr = document.createElement('tr');
+          tr.addEventListener('mouseenter', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor='#f3f6fb'; });
+          tr.addEventListener('mouseleave', ()=>{ if(tr.dataset.selected!=='true') tr.style.backgroundColor=''; });
+          tr.addEventListener('click', ()=>{ const tb=tr.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(x=>{ x.dataset.selected=''; x.style.backgroundColor=''; }); } tr.dataset.selected='true'; tr.style.backgroundColor='#e6f0ff'; });
+          // Counter cell
+          const tdCounter = document.createElement('td');
+          tdCounter.textContent = String(idx + 1);
+          tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
+          tr.appendChild(tdCounter);
+          const cells = [
+            row.u.unitId||'',
+            row.u.lease||'',
+            row.u.supplier||'',
+            row.u.description||'',
+            row.u.invoicing||'',
+            row.lastWd || '',
+            row.u.status||'Operational',
+            String(row.streak),
+            row.periodText
+          ];
+          cells.forEach((val, idx)=>{
+            const td = document.createElement('td');
+            td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
+            if(idx===0){
+              td.style.cursor='pointer'; td.style.color='#0b74de'; td.title='View unit details';
+              td.appendChild(document.createTextNode(String(val)));
+              // Add red ! indicator if comments exist for selected month
+              try{
+                const monthComments = extractMonthComments(row.u, year, month);
+                if(monthComments && monthComments.length>0){
+                  const alertIcon = document.createElement('span');
+                  alertIcon.textContent = ' !';
+                  alertIcon.style.color = '#dc2626';
+                  alertIcon.style.fontWeight = '700';
+                  alertIcon.style.marginLeft = '6px';
+                  alertIcon.style.cursor = 'pointer';
+                  alertIcon.title = 'Comments exist for this month';
+                  alertIcon.addEventListener('click', (e)=>{ e.stopPropagation(); try{ openCommentsModalFromWdNumbers(row.u.unitId, year, month); }catch(e){} });
+                  td.appendChild(alertIcon);
+                }
+              }catch(e){}
+              td.addEventListener('click',(ev)=>{ ev.stopPropagation(); try{ openUnitWdNumbersModal(row.u.unitId, year, month); }catch(e){} });
+            } else {
+              td.textContent = String(val);
+            }
+            tr.appendChild(td);
+          });
+          tbodyM.appendChild(tr);
+        });
+      }
+
+      tbl.appendChild(tbodyM);
+      cont.appendChild(tbl);
+      sectionConsecutive.appendChild(cont);
+      resultsWrap.appendChild(sectionConsecutive);
+    }catch(e){}
+  }
+
+  // Removed manual Refresh button; report auto-updates on changes and state saves
+  // Auto-refresh when state changes (only if Report tab is active)
+  if(!window.__reportAutoRefreshInit){
+    window.__reportAutoRefreshInit = true;
+    window.addEventListener('agi:stateSaved', ()=>{
+      const panel = qs('#report');
+      const overviewPanel = qs('#overview');
+      const isVisible = !!panel && !!overviewPanel && overviewPanel.classList.contains('active') && panel.style.display !== 'none';
+      if(isVisible){
+        try{ run(); }catch(e){}
+      }
+    });
+  }
+  run();
 }
 
 // init
@@ -4567,11 +6458,19 @@ function showOverviewSection(sectionId){
   document.querySelectorAll('.overview-tab').forEach(b=>{
     if(b.dataset.section === sectionId) b.classList.add('active-sub'); else b.classList.remove('active-sub');
   });
+  // Render the section now to ensure data is fresh without extra clicks
+  try{
+    if(sectionId === 'generalOverview'){ renderOverview(); }
+    else if(sectionId === 'unitOverview'){ renderUnitOverview(); }
+    else if(sectionId === 'leaseOverview'){ renderLeaseOverview(); }
+    else if(sectionId === 'report'){ renderReport(); }
+  }catch(e){ /* ignore render errors */ }
 }
 
 function initOverviewSubtabs(){
   state.meta = state.meta || {};
-  const defaultSection = state.meta.overviewSection || 'generalOverview';
+  // Default to Report so users immediately see the report tables
+  const defaultSection = state.meta.overviewSection || 'report';
   document.querySelectorAll('.overview-tab').forEach(btn => {
     btn.addEventListener('click', ()=>{
       const sec = btn.dataset.section;
@@ -4759,14 +6658,45 @@ function openRegistryEditModal(registry){
       newLeaseSelect.style.color = '#6b7280';
     }
     
+    // initial render of lease info panel
+    try{ updateRegistryLeaseInfoPanel(registryLease); }catch(e){}
+
     newLeaseSelect.addEventListener('change', () => {
       const container = qs('#editRegistryUnits');
       const currentlySelected = container ? Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value) : [];
       if(typeof syncRegistryUnitOptions === 'function') syncRegistryUnitOptions(newLeaseSelect.value, currentlySelected);
+      // Update lease info panel on change
+      try{ updateRegistryLeaseInfoPanel(newLeaseSelect.value); }catch(e){}
     });
   }
   
   modal.style.display = 'block';
+}
+
+// Render selected lease info in Registry Edit modal
+function updateRegistryLeaseInfoPanel(leaseVal){
+  const panel = qs('#registryLeaseInfoPanel');
+  const content = qs('#registryLeaseInfoContent');
+  if(!panel || !content) return;
+  const leaseValNorm = (leaseVal||'').toString().trim().toLowerCase();
+  const lease = (state.leases||[]).find(l => {
+    const key = (l.leaseNumber || l.id || '').toString().trim().toLowerCase();
+    return key === leaseValNorm;
+  });
+  if(!lease){ panel.style.display = 'none'; content.innerHTML=''; return; }
+  const status = lease.status || 'Enabled';
+  const disabledDate = lease.disabledDate || '';
+  const enabledDate = lease.enabledDate || '';
+  const parts = [
+    `<strong>Lease:</strong> ${escapeHtml(lease.leaseNumber||lease.id||'')}`,
+    `<strong>Company:</strong> ${escapeHtml(lease.company||'')}`,
+    `<strong>Supplier:</strong> ${escapeHtml(lease.supplier||'')}`,
+    `<strong>Arrangement:</strong> ${escapeHtml(lease.arrangement||'')}`,
+    `<strong>Invoicing:</strong> ${escapeHtml(lease.invoicing||'')}`,
+    `<strong>Status:</strong> ${escapeHtml(status)}${status==='Disabled' && disabledDate ? ' — Disabled: '+escapeHtml(disabledDate) : (status==='Enabled' && enabledDate ? ' — Enabled: '+escapeHtml(enabledDate) : '')}`
+  ];
+  content.innerHTML = parts.join('<br>');
+  panel.style.display = 'block';
 }
 
 function openRegistryCommentModal(registry){
@@ -5038,7 +6968,13 @@ function openUnitCommentsModal(unit){
   if(title) title.textContent = `Comments - ${unit.unitId || 'Unit'}`;
   
   // Initialize comments array if not present
-  if(!unit.comments) unit.comments = [];
+  if(currentCommentsSource === 'overview'){
+    if(!unit.overviewComments) unit.overviewComments = [];
+  } else {
+    if(!unit.comments) unit.comments = [];
+    // default source when opened outside overview
+    if(!currentCommentsSource) currentCommentsSource = 'unit';
+  }
   
   renderUnitComments();
   modal.style.display = 'flex';
@@ -5048,6 +6984,8 @@ function closeUnitCommentsModal(){
   const modal = qs('#unitCommentsModal');
   if(modal) modal.style.display = 'none';
   currentUnitForComments = null;
+  currentCommentMonthYear = null; // Clear month/year context
+  currentCommentsSource = null; // Clear source context
   const textarea = qs('#newUnitComment');
   if(textarea) textarea.value = '';
 }
@@ -5058,7 +6996,23 @@ function renderUnitComments(){
   
   list.innerHTML = '';
   
-  const comments = currentUnitForComments.comments || [];
+  let comments = (currentCommentsSource === 'overview') ? (currentUnitForComments.overviewComments || []) : (currentUnitForComments.comments || []);
+  
+  // If viewing from WD Numbers modal with month/year context, filter comments
+  if (currentCommentMonthYear) {
+    comments = comments.filter(comment => {
+      // Prefer explicit monthYear tagging; fallback to timestamp for older comments
+      if (comment.monthYear && typeof comment.monthYear.year === 'number' && typeof comment.monthYear.month === 'number') {
+        return comment.monthYear.year === currentCommentMonthYear.year && 
+               comment.monthYear.month === currentCommentMonthYear.month;
+      }
+      if (comment.timestamp) {
+        const d = new Date(comment.timestamp);
+        return d.getFullYear() === currentCommentMonthYear.year && d.getMonth() === currentCommentMonthYear.month;
+      }
+      return false;
+    });
+  }
   
   if(comments.length === 0){
     const emptyMsg = document.createElement('div');
@@ -5066,7 +7020,10 @@ function renderUnitComments(){
     emptyMsg.style.textAlign = 'center';
     emptyMsg.style.color = '#9ca3af';
     emptyMsg.style.fontSize = '13px';
-    emptyMsg.textContent = 'No comments yet';
+    const contextText = currentCommentMonthYear ? 
+      `No comments for ${new Date(currentCommentMonthYear.year, currentCommentMonthYear.month).toLocaleString('en-US', { month: 'long', year: 'numeric' })}` :
+      'No comments yet';
+    emptyMsg.textContent = contextText;
     list.appendChild(emptyMsg);
     return;
   }
@@ -5120,15 +7077,39 @@ function renderUnitComments(){
       deleteBtn.style.cursor = 'pointer';
       deleteBtn.addEventListener('click', () => {
         if(confirm('Delete this comment?')){
-          currentUnitForComments.comments.splice(index, 1);
-          // Update the unit in state
-          const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
+          // Remove from the correct array based on source
+          if(currentCommentsSource === 'overview'){
+            let originalIndex = (currentUnitForComments.overviewComments || []).indexOf(comment);
+            if(originalIndex === -1){
+              originalIndex = (currentUnitForComments.overviewComments || []).findIndex(c => c.timestamp === comment.timestamp && c.text === comment.text);
+            }
+            if(originalIndex !== -1){
+              currentUnitForComments.overviewComments.splice(originalIndex, 1);
+            }
+          } else {
+            let originalIndex = (currentUnitForComments.comments || []).indexOf(comment);
+            if(originalIndex === -1){
+              originalIndex = (currentUnitForComments.comments || []).findIndex(c => c.timestamp === comment.timestamp && c.text === comment.text);
+            }
+            if(originalIndex !== -1){
+              currentUnitForComments.comments.splice(originalIndex, 1);
+            }
+          }
+          // Update the unit in state (match by unitId or id)
+          const unitIndex = (state.units || []).findIndex(u => {
+            const uid = (u.unitId || '').toString().trim().toLowerCase();
+            const alt = (u.id || '').toString().trim().toLowerCase();
+            const curUid = (currentUnitForComments.unitId || '').toString().trim().toLowerCase();
+            const curAlt = (currentUnitForComments.id || '').toString().trim().toLowerCase();
+            return uid && uid === curUid || (alt && alt === curAlt);
+          });
           if(unitIndex !== -1){
             state.units[unitIndex] = currentUnitForComments;
           }
           saveState();
           renderUnitComments();
-          renderUnits(); // Refresh the units table to update the last comment column
+          renderUnits(); // Refresh units table (last comment column)
+          renderUnitOverview(); // Refresh overview to update the red ! indicator
         }
       });
       header.appendChild(deleteBtn);
@@ -5181,13 +7162,29 @@ if(addUnitCommentBtn){
       }
     }
     
-    if(!currentUnitForComments.comments) currentUnitForComments.comments = [];
-    
-    currentUnitForComments.comments.push({
+    const commentObj = {
       text: text,
       userName: userName,
       timestamp: new Date().toISOString()
-    });
+    };
+    
+    // If comment was added from WD Numbers modal with month/year context, store it
+    if(currentCommentMonthYear){
+      commentObj.monthYear = currentCommentMonthYear;
+    }
+    
+    if(currentCommentsSource === 'overview'){
+      if(!currentUnitForComments.overviewComments) currentUnitForComments.overviewComments = [];
+      // Ensure monthYear is present
+      if(!commentObj.monthYear){
+        const d = new Date(commentObj.timestamp);
+        commentObj.monthYear = { year: d.getFullYear(), month: d.getMonth() };
+      }
+      currentUnitForComments.overviewComments.push(commentObj);
+    } else {
+      if(!currentUnitForComments.comments) currentUnitForComments.comments = [];
+      currentUnitForComments.comments.push(commentObj);
+    }
     
     // Update the unit in state
     const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
@@ -5199,6 +7196,8 @@ if(addUnitCommentBtn){
     textarea.value = '';
     renderUnitComments();
     renderUnits(); // Refresh the units table to show the new comment
+    renderUnitOverview(); // Refresh overview to update indicator
+    try{ if(typeof renderReport === 'function') renderReport(); }catch(e){}
   });
 }
 
@@ -5560,6 +7559,10 @@ if (statusHistoryModal) {
 
 // ==================== WD NUMBERS MODAL ====================
 function openUnitWdNumbersModal(unitId, year, month) {
+  // Store the year/month for use by comment feature
+  window.currentWdNumbersYear = year;
+  window.currentWdNumbersMonth = month;
+  
   const modal = qs('#unitWdNumbersModal');
   const title = qs('#unitWdNumbersTitle');
   const listDiv = qs('#unitWdNumbersList');
@@ -5588,6 +7591,21 @@ function openUnitWdNumbersModal(unitId, year, month) {
   }
   
   if (unit) {
+    // Get the most recent status and its date
+    let statusDate = 'N/A';
+    if (unit.statusHistory && unit.statusHistory.length > 0) {
+      const lastStatus = unit.statusHistory[unit.statusHistory.length - 1];
+      if (lastStatus.date) {
+        const dateParts = lastStatus.date.split('-');
+        if (dateParts.length === 3) {
+          const d = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]));
+          statusDate = d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+        } else {
+          statusDate = lastStatus.date;
+        }
+      }
+    }
+    
     unitInfoDiv.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;">
         <div><strong>Lease:</strong> ${escapeHtml(unit.lease || 'N/A')}</div>
@@ -5597,7 +7615,7 @@ function openUnitWdNumbersModal(unitId, year, month) {
         <div><strong>Invoicing:</strong> ${escapeHtml(unit.invoicing || 'N/A')}</div>
         <div><strong>Monthly:</strong> ${unit.monthly ? formatCurrency(unit.monthly) : 'N/A'}</div>
         <div style="grid-column:1/-1;"><strong>Description:</strong> ${escapeHtml(unit.description || 'N/A')}</div>
-        <div style="grid-column:1/-1;"><strong>Status:</strong> ${escapeHtml(unit.status || 'Operational')}</div>
+        <div style="grid-column:1/-1;"><strong>Status:</strong> ${escapeHtml(unit.status || 'Operational')} - ${statusDate}</div>
       </div>
     `;
   } else {
@@ -5608,6 +7626,7 @@ function openUnitWdNumbersModal(unitId, year, month) {
   const registries = state.registries || [];
   const invoices = state.invoices || [];
   const wdNumberMap = new Map();
+  const creditInvoicesMap = new Map();
   
   registries.forEach(reg => {
     // Check if this unit is in the registry's units array
@@ -5677,17 +7696,82 @@ function openUnitWdNumbersModal(unitId, year, month) {
       
       wdNumberMap.set(wd, {
         wdNumber: wd,
+        amount: matchingInvoice ? matchingInvoice.amount : '0',
         periodStart: matchingInvoice ? matchingInvoice.periodStart : reg.periodStart,
         periodEnd: matchingInvoice ? matchingInvoice.periodEnd : reg.periodEnd
       });
     }
   });
   
+  // Also find credit invoices for this unit that overlap with the selected month
+  invoices.forEach(inv => {
+    const invUnit = (inv.unit || '').toString().trim().toLowerCase();
+    const unitIdLower = (unitId || '').toString().trim().toLowerCase();
+    
+    if (invUnit !== unitIdLower) return;
+    
+    const category = (inv.category || '').toString().trim().toLowerCase();
+    if (category === 'credit') {
+      // Check if invoice period overlaps with selected month
+      if (!inv.periodStart || !inv.periodEnd) return;
+      
+      const startParts = inv.periodStart.split('-');
+      const endParts = inv.periodEnd.split('-');
+      const startDate = new Date(parseInt(startParts[0]), parseInt(startParts[1]) - 1, parseInt(startParts[2]));
+      const endDate = new Date(parseInt(endParts[0]), parseInt(endParts[1]) - 1, parseInt(endParts[2]));
+      
+      if(isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return;
+      
+      // Check if any day in the period falls in the selected month/year
+      let coversMonth = false;
+      const currentDate = new Date(startDate);
+      while(currentDate <= endDate){
+        if(currentDate.getFullYear() === year && currentDate.getMonth() === month){
+          coversMonth = true;
+          break;
+        }
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      
+      if (!coversMonth) return;
+      
+      // Add to credit invoices map
+      const docNum = (inv.docNumber || inv.wdNumber || '(No Doc Number)').toString().trim();
+      if (!creditInvoicesMap.has(docNum)) {
+        creditInvoicesMap.set(docNum, {
+          docNumber: docNum,
+          wdNumber: inv.wdNumber || '(No WD)',
+          amount: inv.amount || '0',
+          periodStart: inv.periodStart,
+          periodEnd: inv.periodEnd
+        });
+      }
+    }
+  });
+  
   // Render WD numbers list
   listDiv.innerHTML = '';
   
+  // Render Rental invoices section
+  const rentalSection = document.createElement('div');
+  rentalSection.style.marginBottom = '16px';
+  
+  const rentalHeader = document.createElement('div');
+  rentalHeader.style.fontWeight = '700';
+  rentalHeader.style.color = '#111827';
+  rentalHeader.style.fontSize = '14px';
+  rentalHeader.style.padding = '8px 0';
+  rentalHeader.style.borderBottom = '2px solid #3b82f6';
+  rentalHeader.style.marginBottom = '8px';
+  rentalHeader.textContent = 'Rental Invoices';
+  rentalSection.appendChild(rentalHeader);
+  
   if (wdNumberMap.size === 0) {
-    listDiv.innerHTML = '<p style="color:#6b7280;font-size:14px;">No WD numbers found for this unit in the selected month.</p>';
+    const noData = document.createElement('p');
+    noData.style.color = '#6b7280';
+    noData.style.fontSize = '13px';
+    noData.textContent = 'No rental invoices found for this unit in the selected month.';
+    rentalSection.appendChild(noData);
   } else {
     wdNumberMap.forEach(wdData => {
       const item = document.createElement('div');
@@ -5700,6 +7784,13 @@ function openUnitWdNumbersModal(unitId, year, month) {
       wdNumber.style.color = '#111827';
       wdNumber.textContent = wdData.wdNumber;
       
+      const amount = document.createElement('div');
+      amount.style.color = '#2563eb';
+      amount.style.fontSize = '12px';
+      amount.style.marginTop = '2px';
+      amount.style.fontWeight = '600';
+      amount.textContent = `Amount: ${formatCurrency(wdData.amount)}`;
+      
       const period = document.createElement('div');
       period.style.color = '#6b7280';
       period.style.fontSize = '12px';
@@ -5707,7 +7798,6 @@ function openUnitWdNumbersModal(unitId, year, month) {
       
       const formatDate = (dateStr) => {
         if (!dateStr) return '';
-        // Parse as local date to avoid timezone issues
         const parts = dateStr.split('-');
         if (parts.length === 3) {
           const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
@@ -5719,10 +7809,84 @@ function openUnitWdNumbersModal(unitId, year, month) {
       period.textContent = `${formatDate(wdData.periodStart)} - ${formatDate(wdData.periodEnd)}`;
       
       item.appendChild(wdNumber);
+      item.appendChild(amount);
       item.appendChild(period);
-      listDiv.appendChild(item);
+      rentalSection.appendChild(item);
     });
   }
+  
+  listDiv.appendChild(rentalSection);
+  
+  // Render Credit invoices section
+  const creditSection = document.createElement('div');
+  
+  const creditHeader = document.createElement('div');
+  creditHeader.style.fontWeight = '700';
+  creditHeader.style.color = '#111827';
+  creditHeader.style.fontSize = '14px';
+  creditHeader.style.padding = '8px 0';
+  creditHeader.style.borderBottom = '2px solid #ef4444';
+  creditHeader.style.marginBottom = '8px';
+  creditHeader.textContent = 'Credit Invoices';
+  creditSection.appendChild(creditHeader);
+  
+  if (creditInvoicesMap.size === 0) {
+    const noData = document.createElement('p');
+    noData.style.color = '#6b7280';
+    noData.style.fontSize = '13px';
+    noData.textContent = 'No credit invoices found for this unit in the selected month.';
+    creditSection.appendChild(noData);
+  } else {
+    creditInvoicesMap.forEach(creditData => {
+      const item = document.createElement('div');
+      item.style.padding = '10px';
+      item.style.borderBottom = '1px solid #e5e7eb';
+      item.style.fontSize = '14px';
+      
+      const docNumber = document.createElement('div');
+      docNumber.style.fontWeight = '600';
+      docNumber.style.color = '#111827';
+      docNumber.textContent = `Doc: ${creditData.docNumber}`;
+      
+      const wd = document.createElement('div');
+      wd.style.color = '#6b7280';
+      wd.style.fontSize = '12px';
+      wd.style.marginTop = '2px';
+      wd.textContent = `WD: ${creditData.wdNumber}`;
+      
+      const amount = document.createElement('div');
+      amount.style.color = '#ef4444';
+      amount.style.fontSize = '12px';
+      amount.style.marginTop = '2px';
+      amount.style.fontWeight = '600';
+      amount.textContent = `Amount: ${formatCurrency(creditData.amount)}`;
+      
+      const period = document.createElement('div');
+      period.style.color = '#6b7280';
+      period.style.fontSize = '12px';
+      period.style.marginTop = '4px';
+      
+      const formatDate = (dateStr) => {
+        if (!dateStr) return '';
+        const parts = dateStr.split('-');
+        if (parts.length === 3) {
+          const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+        return dateStr;
+      };
+      
+      period.textContent = `${formatDate(creditData.periodStart)} - ${formatDate(creditData.periodEnd)}`;
+      
+      item.appendChild(docNumber);
+      item.appendChild(wd);
+      item.appendChild(amount);
+      item.appendChild(period);
+      creditSection.appendChild(item);
+    });
+  }
+  
+  listDiv.appendChild(creditSection);
   
   modal.style.display = 'flex';
 }
@@ -5737,6 +7901,93 @@ function closeUnitWdNumbersModal() {
 const closeUnitWdNumbersBtn = qs('#closeUnitWdNumbersBtn');
 if (closeUnitWdNumbersBtn) {
   closeUnitWdNumbersBtn.addEventListener('click', closeUnitWdNumbersModal);
+}
+
+// ==================== VISUAL LABELS MODAL ====================
+function openVisualLabelsModal(){
+  const modal = qs('#visualLabelsModal');
+  if(modal){ modal.style.display = 'flex'; }
+}
+
+function closeVisualLabelsModal(){
+  const modal = qs('#visualLabelsModal');
+  if(modal){ modal.style.display = 'none'; }
+}
+
+const closeVisualLabelsBtn = qs('#closeVisualLabelsBtn');
+if(closeVisualLabelsBtn){
+  closeVisualLabelsBtn.addEventListener('click', closeVisualLabelsModal);
+}
+
+// ==================== UNIT COMMENTS ====================
+let currentCommentUnitId = null;
+let currentCommentUnit = null;
+let currentCommentMonthYear = null;
+// Track comments source context: 'overview' for Unit Overview tab, 'unit' for Unit Control
+let currentCommentsSource = null;
+
+function openCommentsModalFromWdNumbers(unitId, year, month) {
+  // Find the unit object
+  const unit = (state.units || []).find(u => 
+    (u.unitId || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase()
+  );
+  
+  if (!unit) return;
+  
+  // Store the month/year context
+  currentCommentMonthYear = { year, month };
+  // Mark source as Unit Overview
+  currentCommentsSource = 'overview';
+  
+  // Use the existing openUnitCommentsModal function with the unit
+  openUnitCommentsModal(unit);
+  
+  // Update the title to show the month/year context
+  const title = qs('#unitCommentsTitle');
+  if (title) {
+    const monthName = new Date(year, month).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    title.textContent = `Comments - ${unit.unitId || 'Unit'} (${monthName})`;
+  }
+}
+
+// Unit menu dropdown toggle
+const unitMenuBtn = qs('#unitMenuBtn');
+const unitMenuDropdown = qs('#unitMenuDropdown');
+if (unitMenuBtn && unitMenuDropdown) {
+  unitMenuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    unitMenuDropdown.style.display = unitMenuDropdown.style.display === 'none' ? 'block' : 'none';
+  });
+  
+  document.addEventListener('click', (e) => {
+    if (e.target !== unitMenuBtn && !unitMenuBtn.contains(e.target)) {
+      unitMenuDropdown.style.display = 'none';
+    }
+  });
+}
+
+const addCommentBtn = qs('#addCommentBtn');
+if (addCommentBtn) {
+  addCommentBtn.addEventListener('click', () => {
+    const unitWdNumbersModal = qs('#unitWdNumbersModal');
+    const titleEl = qs('#unitWdNumbersTitle');
+    
+    // Extract unit ID from title (format: "WD Numbers - UNIT_ID")
+    if (titleEl && unitWdNumbersModal && unitWdNumbersModal.style.display !== 'none') {
+      const titleText = titleEl.textContent || '';
+      const parts = titleText.split(' - ');
+      if (parts.length > 1) {
+        const unitId = parts[1].trim();
+        const year = window.currentWdNumbersYear;
+        const month = window.currentWdNumbersMonth;
+        closeUnitWdNumbersModal();
+        openCommentsModalFromWdNumbers(unitId, year, month);
+      }
+    }
+    
+    const unitMenuDropdown = qs('#unitMenuDropdown');
+    if (unitMenuDropdown) unitMenuDropdown.style.display = 'none';
+  });
 }
 
 // ==================== BULK DATA UPLOAD ====================

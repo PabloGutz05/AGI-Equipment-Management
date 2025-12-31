@@ -22,3 +22,6 @@ Start-Process -FilePath "index.html"
 
 Notes
 - This is intentionally minimal. If you want a packaged Electron/desktop app, or server-backed storage, tell me and I can scaffold that next.
+ - Report tab: the "Units With ≥2 Consecutive Months Without Invoicing" list excludes units whose Status is "Disabled".
+ - Report tab: counting for the above table starts in Jan 2022 (earlier months are ignored for streak calculation).
+ - Report tab: the consecutive-months counter considers only Rental invoices (other categories are ignored).
