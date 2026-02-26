@@ -110,12 +110,21 @@
           <button class="overview-tab" data-section="unitOverview">Unit Overview</button>
           <button class="overview-tab" data-section="leaseOverview">Lease Overview</button>
           <button class="overview-tab" data-section="report">Report</button>
+          <button class="overview-tab" data-section="anualOverview">Anual</button>
         </div>
 
         <div id="generalOverview" style="margin-top:12px"></div>
         <div id="unitOverview" style="display:none;margin-top:12px"></div>
         <div id="leaseOverview" style="display:none;margin-top:12px"></div>
         <div id="report" style="display:none;margin-top:12px"></div>
+        <div id="anualOverview" style="display:none;margin-top:12px">
+          <div class="annual-tabs" style="margin-top:0;display:flex;gap:8px;align-items:center">
+            <button class="annual-tab active-sub" data-annual="annualUnitLease">Unit/Lease</button>
+            <button class="annual-tab" data-annual="annualSupplier">Supplier</button>
+          </div>
+          <div id="annualUnitLease" style="margin-top:12px"></div>
+          <div id="annualSupplier" style="display:none;margin-top:12px"></div>
+        </div>
       </div>
 
   <div id="invoices" class="tab-panel active">
@@ -837,6 +846,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=10.9"></script>
+  <script src="app.js?v=11.1"></script>
 </body>
 </html>

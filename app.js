@@ -4548,27 +4548,29 @@ function renderReport(){
       CreatedDate: new Date()
     };
 
-    // Shared styles
+    // Shared professional styles
+    const baseFont = { name: 'Calibri', sz: 11 };
     const styles = {
       header: {
-        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        font: Object.assign({}, baseFont, { bold: true, color: { rgb: 'FFFFFF' } }),
         fill: { fgColor: { rgb: '0B74DE' } },
         alignment: { horizontal: 'center', vertical: 'center' },
-        border: { bottom: { style: 'thin', color: { rgb: 'E5E7EB' } } }
+        border: { left:{style:'thin',color:{rgb:'0B74DE'}}, right:{style:'thin',color:{rgb:'0B74DE'}}, top:{style:'thin',color:{rgb:'0B74DE'}}, bottom: { style: 'medium', color: { rgb: '0B74DE' } } }
       },
       title: {
-        font: { bold: true, sz: 16, color: { rgb: '0B74DE' } },
+        font: Object.assign({}, baseFont, { bold: true, sz: 16, color: { rgb: '0B74DE' } }),
         alignment: { horizontal: 'left', vertical: 'center' }
       },
-      info: { alignment: { vertical: 'center' } },
-      dayBase: { alignment: { horizontal: 'center', vertical: 'center' }, border: { outline: true, left: { style:'thin', color:{rgb:'DDDDDD'} }, right: { style:'thin', color:{rgb:'DDDDDD'} }, top: { style:'thin', color:{rgb:'DDDDDD'} }, bottom: { style:'thin', color:{rgb:'DDDDDD'} } } },
-      dayCovered: { fill: { fgColor: { rgb: 'DCFCE7' } }, font: { color: { rgb: '15803D' }, bold: true } },
-      dayOverlap: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: { color: { rgb: '991B1B' }, bold: true } },
-      dayNone: { fill: { fgColor: { rgb: 'FFFFFF' } }, font: { color: { rgb: '6B7280' } } },
-      dayCreditBorder: { border: { left: { style:'medium', color:{rgb:'EAB308'} }, right: { style:'medium', color:{rgb:'EAB308'} }, top: { style:'medium', color:{rgb:'EAB308'} }, bottom: { style:'medium', color:{rgb:'EAB308'} } }, font: { color: { rgb: 'EAB308' }, bold: true } },
-      // Disabled day styles
-      dayDisabled: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: { color: { rgb: '991B1B' }, bold: true } },
-      dayDisabledCovered: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: { color: { rgb: '15803D' }, bold: true }, border: { left: { style:'medium', color:{rgb:'16A34A'} }, right: { style:'medium', color:{rgb:'16A34A'} }, top: { style:'medium', color:{rgb:'16A34A'} }, bottom: { style:'medium', color:{rgb:'16A34A'} } } }
+      info: { alignment: { vertical: 'center' }, font: baseFont },
+      zebra: { fill: { fgColor: { rgb: 'F8FAFC' } } },
+      dayBase: { alignment: { horizontal: 'center', vertical: 'center' }, font: baseFont, border: { outline: true, left: { style:'thin', color:{rgb:'DDDDDD'} }, right: { style:'thin', color:{rgb:'DDDDDD'} }, top: { style:'thin', color:{rgb:'DDDDDD'} }, bottom: { style:'thin', color:{rgb:'DDDDDD'} } } },
+      dayCovered: { fill: { fgColor: { rgb: 'DCFCE7' } }, font: Object.assign({}, baseFont, { color: { rgb: '15803D' }, bold: true }) },
+      dayOverlap: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: Object.assign({}, baseFont, { color: { rgb: '991B1B' }, bold: true }) },
+      dayNone: { fill: { fgColor: { rgb: 'FFFFFF' } }, font: Object.assign({}, baseFont, { color: { rgb: '6B7280' } }) },
+      dayCreditBorder: { border: { left: { style:'medium', color:{rgb:'EAB308'} }, right: { style:'medium', color:{rgb:'EAB308'} }, top: { style:'medium', color:{rgb:'EAB308'} }, bottom: { style:'medium', color:{rgb:'EAB308'} } }, font: Object.assign({}, baseFont, { color: { rgb: 'EAB308' }, bold: true }) },
+      // Disabled day styles (Excel reflects disabled periods with red background)
+      dayDisabled: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: Object.assign({}, baseFont, { color: { rgb: '991B1B' }, bold: true }) },
+      dayDisabledCovered: { fill: { fgColor: { rgb: 'FEE2E2' } }, font: Object.assign({}, baseFont, { color: { rgb: '15803D' }, bold: true }), border: { left: { style:'medium', color:{rgb:'16A34A'} }, right: { style:'medium', color:{rgb:'16A34A'} }, top: { style:'medium', color:{rgb:'16A34A'} }, bottom: { style:'medium', color:{rgb:'16A34A'} } } }
     };
 
     function mergeStyles(...objs){
@@ -4592,7 +4594,7 @@ function renderReport(){
       const titleRow = [{ v: titleText, s: styles.title }].concat(Array.from({length: totalCols-1}, ()=> ({ v: '', s: styles.title })));
       const aoa = [ titleRow, headerRow.map(h => (typeof h === 'string' ? ({ v: h, s: styles.header }) : h)) ];
       unitsArr.forEach((u, idxRow) => {
-        const zebra = (idxRow % 2 === 1) ? { fill: { fgColor: { rgb: 'F8FAFC' } } } : null;
+        const zebra = (idxRow % 2 === 1) ? styles.zebra : null;
         const base = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational']
           .map(v => ({ v, s: mergeStyles(styles.info, zebra) }));
         const days = [];
@@ -4638,40 +4640,80 @@ function renderReport(){
       return ws;
     }
 
+    // Legend sheet to explain day styles
+    function buildLegendSheet(){
+      const aoa = [
+        [{ v: 'Legend', s: styles.title }],
+        [{ v: 'Style', s: styles.header }, { v: 'Meaning', s: styles.header }],
+        [{ v: 'Green', s: styles.dayCovered }, { v: 'Covered (single rental)' }],
+        [{ v: 'Red highlight', s: styles.dayOverlap }, { v: 'Overlap (2+ rentals)' }],
+        [{ v: 'Yellow border', s: styles.dayCreditBorder }, { v: 'Credit day' }],
+        [{ v: 'Red background', s: styles.dayDisabled }, { v: 'Disabled period' }],
+        [{ v: 'Red background + Green border', s: styles.dayDisabledCovered }, { v: 'Disabled period with coverage' }]
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!rows'] = [{ hpt: 22 }, { hpt: 18 }];
+      ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
+      ws['!cols'] = [{wch:24},{wch:40}];
+      ws['!merges'] = [{ s: { r:0, c:0 }, e: { r:0, c: 1 } }];
+      return ws;
+    }
+
     // Full Coverage sheet
     if(computedFullyCovered.length){
       const wsFull = buildSheetData(computedFullyCovered, (u,d)=>{
-        const cov = computedCoverageMap.get(u.id || u.unitId) || [];
-        return { covered: !!cov[d-1], overlap: false, credit: false };
+        const key = (u.id || u.unitId);
+        const cov = computedCoverageMap.get(key) || [];
+        const counts = computedRentalCountsMap.get(key) || [];
+        const creditDays = computedCreditMap.get(key) || [];
+        const overlap = (counts[d-1] > 1);
+        const covered = !!cov[d-1];
+        const periods = getDisabledPeriods(u) || [];
+        const disabled = isDateInDisabledPeriod(year, month, d, periods);
+        return { covered, overlap, credit: !!creditDays[d-1], disabled };
       }, 'Full Coverage');
       XLSX.utils.book_append_sheet(wb, wsFull, 'Full Coverage');
     }
     // Missing Coverage sheet
     if(computedMissingUnits.length){
       const wsMissing = buildSheetData(computedMissingUnits, (u,d)=>{
-        const cov = computedCoverageMapMissing.get(u.id || u.unitId) || [];
-        return { covered: !!cov[d-1], overlap: false, credit: false };
+        const key = (u.id || u.unitId);
+        const cov = computedCoverageMapMissing.get(key) || [];
+        const counts = computedRentalCountsMap.get(key) || [];
+        const creditDays = computedCreditMap.get(key) || [];
+        const overlap = (counts[d-1] > 1);
+        const covered = !!cov[d-1];
+        // Disabled detection via status history
+        const periods = getDisabledPeriods(u) || [];
+        const disabled = isDateInDisabledPeriod(year, month, d, periods);
+        return { covered, overlap, credit: !!creditDays[d-1], disabled };
       }, 'Missing Coverage');
       XLSX.utils.book_append_sheet(wb, wsMissing, 'Missing Coverage');
     }
     // Overlaps sheet
     if(computedOverlapUnits.length){
       const wsOverlap = buildSheetData(computedOverlapUnits, (u,d)=>{
-        const overlaps = computedOverlapMap.get(u.id || u.unitId) || [];
-        const covered = computedRentalCoveredMap.get(u.id || u.unitId) || [];
-        return { covered: !!covered[d-1], overlap: !!overlaps[d-1], credit: false };
+        const key = (u.id || u.unitId);
+        const overlaps = computedOverlapMap.get(key) || [];
+        const covered = computedRentalCoveredMap.get(key) || [];
+        const periods = getDisabledPeriods(u) || [];
+        const disabled = isDateInDisabledPeriod(year, month, d, periods);
+        return { covered: !!covered[d-1], overlap: !!overlaps[d-1], credit: false, disabled };
       }, 'Overlaps');
       XLSX.utils.book_append_sheet(wb, wsOverlap, 'Overlaps');
     }
     // Credit sheet
     if(computedCreditUnits.length){
       const wsCredit = buildSheetData(computedCreditUnits, (u,d)=>{
-        const creditDays = computedCreditMap.get(u.id || u.unitId) || [];
-        const counts = computedRentalCountsMap.get(u.id || u.unitId) || [];
+        const key = (u.id || u.unitId);
+        const creditDays = computedCreditMap.get(key) || [];
+        const counts = computedRentalCountsMap.get(key) || [];
         const overlap = (counts[d-1] > 1);
         const covered = (counts[d-1] === 1);
         const credit = !!creditDays[d-1];
-        return { covered, overlap, credit };
+        const periods = getDisabledPeriods(u) || [];
+        const disabled = isDateInDisabledPeriod(year, month, d, periods);
+        return { covered, overlap, credit, disabled };
       }, 'Credit Days');
       XLSX.utils.book_append_sheet(wb, wsCredit, 'Credit Days');
     }
@@ -4686,6 +4728,12 @@ function renderReport(){
       }, 'Disabled + Covered');
       XLSX.utils.book_append_sheet(wb, wsDisabled, 'Disabled + Covered');
     }
+
+    // Legend sheet (always append last)
+    try{
+      const wsLegend = buildLegendSheet();
+      XLSX.utils.book_append_sheet(wb, wsLegend, 'Legend');
+    }catch(e){}
 
     // Consecutive Months Without Invoicing sheet
     if(computedNoInvoiceRows.length){
@@ -5003,20 +5051,54 @@ function renderReport(){
           tr.appendChild(td);
         });
 
-        // Day squares, using Unit Overview style (20px squares)
+        // Day squares with visual statuses (covered, overlap, credit, disabled)
         const cov = coverageMap.get(u.id || u.unitId) || [];
+        const counts = rentalCountsArrayForUnit(u, year, month) || [];
+        const creditDays = creditArrayForUnit(u, year, month) || [];
+        const disabledPeriods = getDisabledPeriods(u) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div');
           square.style.width = '20px'; square.style.height = '20px'; square.style.border = '1px solid #ddd'; square.style.borderRadius = '3px';
           square.style.display = 'flex'; square.style.alignItems = 'center'; square.style.justifyContent = 'center'; square.style.fontSize = '9px';
           square.textContent = d;
-          if(cov[d-1]){ // covered day => green
+          const covered = !!cov[d-1];
+          const overlap = (counts[d-1] > 1);
+          const credit = !!creditDays[d-1];
+          const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+
+          // Match Unit Overview: red cell background during disabled periods
+          if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
+
+          if(credit){
+            // Credit day: yellow frame/text; background reflects overlap or single coverage
+            square.style.borderColor = '#eab308';
+            square.style.borderWidth = '2px';
+            square.style.color = '#eab308';
+            square.style.fontWeight = '700';
+            if(overlap){ square.style.backgroundColor = '#fee2e2'; }
+            else if(covered){ square.style.backgroundColor = '#dcfce7'; }
+            else { square.style.backgroundColor = '#ffffff'; }
+          } else if(overlap){
+            // Overlap rental coverage: red border + light red background
+            square.style.backgroundColor = '#fee2e2';
+            square.style.borderColor = '#dc2626';
+            square.style.color = '#991b1b';
+            square.style.fontWeight = '600';
+          } else if(covered){
+            // Single rental coverage: green highlight
             square.style.backgroundColor = '#dcfce7';
             square.style.borderColor = '#16a34a';
             square.style.color = '#15803d';
             square.style.fontWeight = '600';
+          } else if(isDisabled){
+            // Disabled but not covered: white square with red border
+            square.style.backgroundColor = '#ffffff';
+            square.style.borderColor = '#991b1b';
+            square.style.color = '#dc2626';
+            square.style.fontWeight = '600';
           } else {
+            // No coverage
             square.style.backgroundColor = '#fff';
             square.style.color = '#6b7280';
           }
@@ -5033,7 +5115,7 @@ function renderReport(){
 
     // --- Missing coverage table ---
     // Compute units that are not fully covered
-    const missingUnits = [];
+    let missingUnits = [];
     const coverageMapMissing = new Map();
     units.forEach(u => {
       const cov = coverageArrayForUnit(u, year, month);
@@ -5042,6 +5124,9 @@ function renderReport(){
         coverageMapMissing.set(u.id || u.unitId, cov);
       }
     });
+
+    // Only include operational units in the Missing Coverage table
+    missingUnits = missingUnits.filter(u => ((u.status || 'Operational') === 'Operational'));
 
     // Sort handling for missing table
     state.meta.reportSimple.sortMissing = state.meta.reportSimple.sortMissing || { column: 'unitId', ascending: true };
@@ -5121,6 +5206,23 @@ function renderReport(){
     headerRowMissing.appendChild(thPeriodMissing);
     theadMissing.appendChild(headerRowMissing);
 
+    // Pre-compute additional visual states for Missing Coverage (overlap, credit, disabled periods)
+    const rentalCountsMapMissing = new Map();
+    const creditMapMissing = new Map();
+    const disabledPeriodsMapMissing = new Map();
+    missingUnits.forEach(u => {
+      const key = (u.id || u.unitId);
+      try{
+        rentalCountsMapMissing.set(key, rentalCountsArrayForUnit(u, year, month));
+      }catch(e){ rentalCountsMapMissing.set(key, []); }
+      try{
+        creditMapMissing.set(key, creditArrayForUnit(u, year, month));
+      }catch(e){ creditMapMissing.set(key, []); }
+      try{
+        disabledPeriodsMapMissing.set(key, getDisabledPeriods(u));
+      }catch(e){ disabledPeriodsMapMissing.set(key, []); }
+    });
+
     if(missingUnits.length === 0){
       const tr = document.createElement('tr'); const td = document.createElement('td');
       td.colSpan = headerDefsMissing.length + daysInMonth + 1; td.textContent = 'All units have full coverage for the selected month.'; td.className = 'small-muted'; td.style.padding='12px';
@@ -5177,16 +5279,54 @@ function renderReport(){
         });
 
         const cov = coverageMapMissing.get(u.id || u.unitId) || [];
+        const counts = rentalCountsMapMissing.get(u.id || u.unitId) || [];
+        const creditDays = creditMapMissing.get(u.id || u.unitId) || [];
+        const disabledPeriods = disabledPeriodsMapMissing.get(u.id || u.unitId) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div');
           square.style.width = '20px'; square.style.height = '20px'; square.style.border = '1px solid #ddd'; square.style.borderRadius = '3px';
           square.style.display = 'flex'; square.style.alignItems = 'center'; square.style.justifyContent = 'center'; square.style.fontSize = '9px';
           square.textContent = d;
-          if(cov[d-1]){
-            square.style.backgroundColor = '#dcfce7'; square.style.borderColor = '#16a34a'; square.style.color = '#15803d'; square.style.fontWeight = '600';
+          const covered = !!cov[d-1];
+          const overlap = (counts[d-1] > 1);
+          const credit = !!creditDays[d-1];
+          const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+
+          // Match Unit Overview: red cell background during disabled periods
+          if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
+
+          if(credit){
+            // Credit day: yellow frame/text; background reflects overlap or single coverage
+            square.style.borderColor = '#eab308';
+            square.style.borderWidth = '2px';
+            square.style.color = '#eab308';
+            square.style.fontWeight = '700';
+            if(overlap){ square.style.backgroundColor = '#fee2e2'; }
+            else if(covered){ square.style.backgroundColor = '#dcfce7'; }
+            else { square.style.backgroundColor = '#ffffff'; }
+          } else if(overlap){
+            // Overlap rental coverage: red border + light red background
+            square.style.backgroundColor = '#fee2e2';
+            square.style.borderColor = '#dc2626';
+            square.style.color = '#991b1b';
+            square.style.fontWeight = '600';
+          } else if(covered){
+            // Single rental coverage: green highlight
+            square.style.backgroundColor = '#dcfce7';
+            square.style.borderColor = '#16a34a';
+            square.style.color = '#15803d';
+            square.style.fontWeight = '600';
+          } else if(isDisabled){
+            // Disabled but not covered: white square with red border
+            square.style.backgroundColor = '#ffffff';
+            square.style.borderColor = '#991b1b';
+            square.style.color = '#dc2626';
+            square.style.fontWeight = '600';
           } else {
-            square.style.backgroundColor = '#fff'; square.style.color = '#6b7280';
+            // No coverage
+            square.style.backgroundColor = '#fff';
+            square.style.color = '#6b7280';
           }
           tdDay.appendChild(square);
           tr.appendChild(tdDay);
@@ -5309,11 +5449,21 @@ function renderReport(){
 
         const overlaps = overlapMap.get(u.id || u.unitId) || [];
         const covered = rentalCoveredMap.get(u.id || u.unitId) || [];
+        const disabledPeriods = getDisabledPeriods(u) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
-          if(overlaps[d-1]){ square.style.backgroundColor='#fee2e2'; square.style.borderColor='#dc2626'; square.style.color='#991b1b'; square.style.fontWeight='600'; }
-          else if(covered[d-1]){ square.style.backgroundColor='#dcfce7'; square.style.borderColor='#16a34a'; square.style.color='#15803d'; square.style.fontWeight='600'; }
+          const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+          if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
+          if(overlaps[d-1]){
+            square.style.backgroundColor='#fee2e2'; square.style.borderColor='#dc2626'; square.style.color='#991b1b'; square.style.fontWeight='600';
+          }
+          else if(covered[d-1]){
+            square.style.backgroundColor='#dcfce7'; square.style.borderColor='#16a34a'; square.style.color='#15803d'; square.style.fontWeight='600';
+          }
+          else if(isDisabled){
+            square.style.backgroundColor='#ffffff'; square.style.borderColor='#991b1b'; square.style.color='#dc2626'; square.style.fontWeight='600';
+          }
           else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
           tdDay.appendChild(square); tr.appendChild(tdDay);
         }
@@ -5429,17 +5579,21 @@ function renderReport(){
 
         const creditDays = creditMap.get(u.id || u.unitId) || [];
         const counts = rentalCountsMap.get(u.id || u.unitId) || [];
+        const disabledPeriods = getDisabledPeriods(u) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
+          const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+          if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
           if(creditDays[d-1]){
             square.style.borderColor='#eab308'; square.style.borderWidth='2px'; square.style.color='#eab308'; square.style.fontWeight='700';
             if(counts[d-1] > 1){ square.style.backgroundColor='#fee2e2'; square.style.borderColor='#eab308'; }
             else if(counts[d-1] === 1){ square.style.backgroundColor='#dcfce7'; }
-            else { square.style.backgroundColor='#fff'; }
+            else { square.style.backgroundColor='#ffffff'; }
           } else {
             if(counts[d-1] > 1){ square.style.backgroundColor='#fee2e2'; square.style.borderColor='#dc2626'; square.style.color='#991b1b'; square.style.fontWeight='600'; }
             else if(counts[d-1] === 1){ square.style.backgroundColor='#dcfce7'; square.style.borderColor='#16a34a'; square.style.color='#15803d'; square.style.fontWeight='600'; }
+            else if(isDisabled){ square.style.backgroundColor='#ffffff'; square.style.borderColor='#991b1b'; square.style.color='#dc2626'; square.style.fontWeight='600'; }
             else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
           }
           tdDay.appendChild(square); tr.appendChild(tdDay);
@@ -6448,7 +6602,7 @@ updateLeaseSeasonalVisibility();
 
 // --- Overview sub-tab wiring (General Overview / Unit Overview / Lease Overview / Report) ---
 function showOverviewSection(sectionId){
-  const sections = ['generalOverview','unitOverview','leaseOverview','report'];
+  const sections = ['generalOverview','unitOverview','leaseOverview','report','anualOverview'];
   sections.forEach(s => {
     const el = qs('#'+s);
     if(!el) return;
@@ -6464,11 +6618,31 @@ function showOverviewSection(sectionId){
     else if(sectionId === 'unitOverview'){ renderUnitOverview(); }
     else if(sectionId === 'leaseOverview'){ renderLeaseOverview(); }
     else if(sectionId === 'report'){ renderReport(); }
+    else if(sectionId === 'anualOverview'){ renderAnualOverview(); }
   }catch(e){ /* ignore render errors */ }
+      if(sec === 'anualOverview') renderAnualOverview();
 }
 
 function initOverviewSubtabs(){
   state.meta = state.meta || {};
+
+// --- Annual Overview placeholder ---
+function renderAnualOverview(){
+  const el = qs('#anualOverview'); if(!el) return;
+  el.innerHTML = '';
+  const container = document.createElement('div');
+  container.style.cssText = 'padding:10px;border:1px solid #eef2f7;border-radius:6px;';
+  const title = document.createElement('div');
+  title.style.fontWeight = '600';
+  title.textContent = 'Annual Overview';
+  const desc = document.createElement('div');
+  desc.className = 'small-muted';
+  desc.style.marginTop = '6px';
+  desc.textContent = 'This section is a placeholder for annual summaries.';
+  container.appendChild(title);
+  container.appendChild(desc);
+  el.appendChild(container);
+}
   // Default to Report so users immediately see the report tables
   const defaultSection = state.meta.overviewSection || 'report';
   document.querySelectorAll('.overview-tab').forEach(btn => {
