@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>AGI Leases Migration</title>
+<title>AGI Full Migration Tool</title>
 <style>
   body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
   h1 { color: #1a56db; }
@@ -10,34 +10,56 @@
   button { background: #1a56db; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 10px; }
   button:disabled { background: #aaa; cursor: not-allowed; }
   button:hover:not(:disabled) { background: #1440a0; }
-  .log { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 13px; height: 300px; overflow-y: auto; margin-top: 16px; }
+  .log { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 13px; height: 400px; overflow-y: auto; margin-top: 16px; }
   .log .ok { color: #4ec9b0; }
   .log .err { color: #f44747; }
   .log .info { color: #9cdcfe; }
+  .log .section { color: #dcdcaa; font-weight: bold; }
   input[type=file] { margin-top: 8px; }
-  progress { width: 100%; height: 20px; margin-top: 10px; }
+  progress { width: 100%; height: 24px; margin-top: 10px; border-radius: 4px; }
   .warning { background: #fff3cd; border-left: 4px solid #f59e0b; padding: 12px; border-radius: 4px; margin-bottom: 16px; }
+  .success { background: #dcfce7; border-left: 4px solid #16a34a; padding: 12px; border-radius: 4px; margin-top: 16px; display: none; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; }
+  .stat { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center; }
+  .stat-number { font-size: 24px; font-weight: 700; color: #1a56db; }
+  .stat-label { font-size: 12px; color: #6b7280; margin-top: 4px; }
 </style>
 </head>
 <body>
-<h1>🔧 AGI Leases Migration</h1>
-<div class="warning">⚠️ Make sure you cleared the leases tab in Google Sheets first (keeping headers). This will import all 229 leases.</div>
+<h1>🚀 AGI Full Data Migration Tool</h1>
+<div class="warning">
+  ⚠️ <strong>Before running:</strong> Make sure you cleared ALL data rows from every tab in Google Sheets (invoices, units, leases, users, meta) keeping only row 1 headers in each. Do NOT run this more than once.
+</div>
 
 <div class="card">
-  <h2>Select your latest JSON file</h2>
+  <h2>Step 1 — Select your latest JSON file</h2>
+  <p>Select your most recent backup: <code>agi_vehicle_lease_2026-05-28T14_11_47.json</code></p>
   <input type="file" id="jsonFile" accept=".json">
 </div>
 
 <div class="card">
-  <h2>Run Leases Migration</h2>
-  <button id="startBtn" disabled>Start Leases Migration</button>
+  <h2>Step 2 — Run Full Migration</h2>
+  <p>This will migrate all data in this order: Registries → Units → Leases → Users → Meta</p>
+  <button id="startBtn" disabled>🚀 Start Full Migration</button>
   <progress id="progress" value="0" max="100" style="display:none"></progress>
+
+  <div class="stats" id="statsPanel" style="display:none">
+    <div class="stat"><div class="stat-number" id="statRegistries">0</div><div class="stat-label">Registries</div></div>
+    <div class="stat"><div class="stat-number" id="statUnits">0</div><div class="stat-label">Units</div></div>
+    <div class="stat"><div class="stat-number" id="statLeases">0</div><div class="stat-label">Leases</div></div>
+    <div class="stat"><div class="stat-number" id="statUsers">0</div><div class="stat-label">Users</div></div>
+    <div class="stat"><div class="stat-number" id="statMeta">—</div><div class="stat-label">Meta/Config</div></div>
+    <div class="stat"><div class="stat-number" id="statTime">0s</div><div class="stat-label">Time</div></div>
+  </div>
+
   <div class="log" id="log"></div>
+  <div class="success" id="successMsg">🎉 Migration complete! All data is now in Google Sheets. You can close this tool.</div>
 </div>
 
 <script>
 const BRIDGE_URL = 'https://script.google.com/macros/s/AKfycbwyQmfI665PCuvEM8zsJ0pmjwm2QNPtXvqkq02xEELaVoWEowVmqqgw1ILqDXNEZka2/exec';
-const BATCH_SIZE = 50;
+const BATCH_SIZE = 25;
+let startTime = null;
 
 function log(msg, type='info'){
   const el = document.getElementById('log');
@@ -48,13 +70,44 @@ function log(msg, type='info'){
   el.scrollTop = el.scrollHeight;
 }
 
+function setProgress(pct){
+  document.getElementById('progress').value = pct;
+}
+
+function setStat(id, val){
+  const el = document.getElementById(id);
+  if(el) el.textContent = val;
+}
+
 async function post(payload){
   const res = await fetch(BRIDGE_URL, {
     method: 'POST',
     body: JSON.stringify(payload),
     headers: { 'Content-Type': 'text/plain' }
   });
-  return res.json();
+  const data = await res.json();
+  if(!data.success) throw new Error(data.error || 'Bridge error');
+  return data.data;
+}
+
+async function migrateSheet(sheetName, records, progressStart, progressEnd){
+  if(!records || records.length === 0){
+    log('⏭ ' + sheetName + ': no records, skipping', 'info');
+    return 0;
+  }
+  log('', 'section');
+  log('━━━ Migrating ' + sheetName + ': ' + records.length + ' records ━━━', 'section');
+  let sent = 0;
+  while(sent < records.length){
+    const batch = records.slice(sent, sent + BATCH_SIZE);
+    await post({ action: 'bulkSave', sheet: sheetName, data: batch });
+    sent += batch.length;
+    const pct = progressStart + Math.round((sent / records.length) * (progressEnd - progressStart));
+    setProgress(pct);
+    log('  ✅ ' + sheetName + ': ' + sent + '/' + records.length, 'ok');
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return records.length;
 }
 
 document.getElementById('jsonFile').addEventListener('change', e => {
@@ -67,17 +120,74 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   const btn = document.getElementById('startBtn');
   btn.disabled = true;
   document.getElementById('progress').style.display = 'block';
+  document.getElementById('statsPanel').style.display = 'grid';
   document.getElementById('log').innerHTML = '';
+  document.getElementById('successMsg').style.display = 'none';
+  startTime = Date.now();
 
   try {
     log('📂 Reading JSON file...', 'info');
     const text = await file.text();
     const data = JSON.parse(text);
-    const leases = data.leases || [];
-    log('✅ Found ' + leases.length + ' leases', 'ok');
+    log('✅ File loaded successfully', 'ok');
 
-    // Map leases to correct field names matching Google Sheets headers
-    const mapped = leases.map(l => ({
+    const registries = data.registries || [];
+    const units = data.units || [];
+    const leases = data.leases || [];
+    const users = data.users || [];
+    const meta = data.meta || {};
+
+    log('📊 Found: ' + registries.length + ' registries, ' + units.length + ' units, ' + leases.length + ' leases, ' + users.length + ' users', 'info');
+
+    // --- REGISTRIES ---
+    const mappedRegistries = registries.map(r => ({
+      id: r.id || '',
+      seq: r.seq || 0,
+      wdNumber: r.wdNumber || '',
+      docNumber: r.docNumber || '',
+      category: r.category || '',
+      totalAmount: r.totalAmount || '',
+      unitCount: r.unitCount || 0,
+      units: JSON.stringify(r.units || []),
+      periodStart: r.periodStart || '',
+      periodEnd: r.periodEnd || '',
+      submittedDate: r.submittedDate || '',
+      createdAt: r.createdAt || '',
+      comments: JSON.stringify(r.comments || []),
+      lease: r.lease || '',
+      company: r.company || '',
+      supplier: r.supplier || '',
+      arrangement: r.arrangement || '',
+      invoicing: r.invoicing || ''
+    }));
+    const regCount = await migrateSheet('invoices', mappedRegistries, 0, 40);
+    setStat('statRegistries', regCount);
+
+    // --- UNITS ---
+    const mappedUnits = units.map(u => ({
+      id: u.id || '',
+      lease: u.lease || '',
+      company: u.company || '',
+      supplier: u.supplier || '',
+      arrangement: u.arrangement || '',
+      invoicing: u.invoicing || '',
+      unitId: u.unitId || '',
+      monthly: u.monthly || '',
+      description: u.description || '',
+      notes: u.notes || '',
+      status: u.status || 'Operational',
+      disabledDate: u.disabledDate || '',
+      enabledDate: u.enabledDate || '',
+      statusHistory: JSON.stringify(u.statusHistory || []),
+      comments: JSON.stringify(u.comments || []),
+      overviewComments: JSON.stringify(u.overviewComments || []),
+      createdAt: u.createdAt || ''
+    }));
+    const unitCount = await migrateSheet('units', mappedUnits, 40, 65);
+    setStat('statUnits', unitCount);
+
+    // --- LEASES ---
+    const mappedLeases = leases.map(l => ({
       id: l.id || '',
       leaseNumber: l.leaseNumber || '',
       company: l.company || '',
@@ -89,25 +199,44 @@ document.getElementById('startBtn').addEventListener('click', async () => {
       fromDate: l.fromDate || '',
       toDate: l.toDate || ''
     }));
+    const leaseCount = await migrateSheet('leases', mappedLeases, 65, 80);
+    setStat('statLeases', leaseCount);
 
-    log('📤 Migrating ' + mapped.length + ' leases in batches...', 'info');
-    let sent = 0;
-    while(sent < mapped.length){
-      const batch = mapped.slice(sent, sent + BATCH_SIZE);
-      const result = await post({ action: 'bulkSave', sheet: 'leases', data: batch });
-      if(!result.success) throw new Error('Batch failed: ' + JSON.stringify(result));
-      sent += batch.length;
-      const pct = Math.round((sent/mapped.length)*100);
-      document.getElementById('progress').value = pct;
-      log('  ✅ ' + sent + '/' + mapped.length + ' leases saved', 'ok');
-      await new Promise(r => setTimeout(r, 500));
-    }
+    // --- USERS ---
+    const mappedUsers = users.map(u => ({
+      id: u.id || '',
+      username: u.username || '',
+      password: u.password || '',
+      firstName: u.firstName || '',
+      lastName: u.lastName || '',
+      role: u.role || 'Operator',
+      createdAt: u.createdAt || ''
+    }));
+    const userCount = await migrateSheet('users', mappedUsers, 80, 90);
+    setStat('statUsers', userCount);
 
-    log('🎉 Leases migration complete!', 'ok');
-    log('You can now close this tool.', 'info');
+    // --- META ---
+    log('', 'section');
+    log('━━━ Saving Meta/Configuration ━━━', 'section');
+    await post({ action: 'saveMeta', data: meta });
+    setStat('statMeta', '✅');
+    setProgress(100);
+    log('✅ Meta/Configuration saved', 'ok');
+
+    // Final stats
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    setStat('statTime', elapsed + 's');
+
+    log('', 'ok');
+    log('🎉 MIGRATION COMPLETE!', 'ok');
+    log('Registries: ' + regCount + ' | Units: ' + unitCount + ' | Leases: ' + leaseCount + ' | Users: ' + userCount, 'ok');
+    log('Total time: ' + elapsed + ' seconds', 'info');
+
+    document.getElementById('successMsg').style.display = 'block';
 
   } catch(err) {
     log('❌ Error: ' + err.message, 'err');
+    log('Please check your connection and try again.', 'err');
     btn.disabled = false;
   }
 });
