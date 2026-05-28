@@ -1,4 +1,4 @@
-// AGI Vehicle Lease Management — Google Sheets backend
+// Simple SPA with localStorage persistence and import/export JSON
 const STORAGE_KEY = 'agi_vehicle_lease_v1';
 
 const defaultData = {
@@ -11,7 +11,7 @@ const defaultData = {
   meta: { createdAt: new Date().toISOString(), registrySeq: 0 }
 };
 
-let state = JSON.parse(JSON.stringify(defaultData));
+let state = loadState();
 
 // --- Tabs ---
 document.querySelectorAll('.tab').forEach(btn => {
@@ -161,39 +161,17 @@ if(loginForm){
     const username = fd.get('username') || '';
     const password = fd.get('password') || '';
     // Master account (case-sensitive)
-if(username === 'Master' && password === 'Master'){
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
-      showApp(true);
-      updateHeaderTitleForMenu(true);
-      updateExportImportVisibility(true);
-      updateUserInfoDisplay();
-      loadStateFromDB();
-      return;
+    if(username === 'Master' && password === 'Master'){
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
+  showApp(true); renderAll(); syncTabLabels(); updateHeaderTitleForMenu(true); updateExportImportVisibility(true); updateUserInfoDisplay(); return;
     }
-    // check users in state — first do a fresh load to validate credentials
-    const tryLogin = async () => {
-      try {
-        showLoadingOverlay('Signing in...');
-        const users = await DB.get({ action: 'getAll', sheet: 'users' });
-        hideLoadingOverlay();
-        const u = (users||[]).find(x=> x.username === username && x.password === password);
-        if(u){
-          sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username}));
-          showApp(true);
-          updateExportImportVisibility(true);
-          updateUserInfoDisplay();
-          loadStateFromDB();
-          return;
-        }
-        alert('Invalid credentials');
-      } catch(e) {
-        hideLoadingOverlay();
-        alert('Login error: ' + e.message);
-      }
-    };
-    tryLogin();
+    // check users in state (password must match and case-sensitive)
+    const u = (state.users||[]).find(x=> x.username === username && x.password === password);
+  if(u){ sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username})); showApp(true); renderAll(); syncTabLabels(); applyRoleRestrictions(); updateExportImportVisibility(true); updateUserInfoDisplay(); return; }
+    alert('Invalid credentials');
   });
 }
+
 // logout
 const logoutBtn = qs('#logoutBtn'); if(logoutBtn){ logoutBtn.addEventListener('click', ()=>{ sessionStorage.removeItem(SESSION_KEY); showApp(false); updateUserInfoDisplay(); }); }
 
@@ -3011,31 +2989,22 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
-// --- Persistence (Google Sheets) ---
+// --- Persistence ---
 function saveState(){
-  try{
-    DB.saveAll(state).catch(e => console.error('DB save error:', e));
+  try{ 
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); 
     try{ window.dispatchEvent(new Event('agi:stateSaved')); }catch(ev){}
-  }catch(e){ console.error('Error saving state:', e); }
+  }catch(e){ alert('Error saving data: '+e.message); }
 }
 
 function loadState(){
-  return JSON.parse(JSON.stringify(defaultData));
-}
-
-async function loadStateFromDB(){
-  try {
-    const loaded = await DB.loadAll();
-    state = loaded;
-    renderAll();
-    syncTabLabels();
-    applyRoleRestrictions();
-    updateHeaderTitleForMenu(false);
-    updateExportImportVisibility(false);
-    updateUserInfoDisplay();
-  } catch(e) {
-    alert('Error loading data from Google Sheets: ' + e.message + '\n\nPlease check your connection and refresh.');
-  }
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return JSON.parse(JSON.stringify(defaultData));
+    const parsed = JSON.parse(raw);
+    // ensure shape
+    return Object.assign(JSON.parse(JSON.stringify(defaultData)), parsed);
+  }catch(e){ console.error('Failed to load state', e); return JSON.parse(JSON.stringify(defaultData)); }
 }
 
 function clearAllData(){
