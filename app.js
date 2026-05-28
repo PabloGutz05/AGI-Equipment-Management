@@ -3044,9 +3044,44 @@ async function loadStateFromDB(){
     try{ renderRentalList(); }catch(e){}
     try{ renderArrangementList(); }catch(e){}
     try{ renderPaymentList(); }catch(e){}
+    // Start auto-refresh if not already running
+    startAutoRefresh();
   } catch(e) {
     alert('Error loading data from Google Sheets: ' + e.message + '\n\nPlease check your connection and refresh.');
   }
+}
+
+let _autoRefreshTimer = null;
+function startAutoRefresh(){
+  if(_autoRefreshTimer) return; // already running
+  _autoRefreshTimer = setInterval(async ()=>{
+    try{
+      // Only refresh if user is logged in and app is visible
+      if(!isAuthenticated()) return;
+      const root = qs('#appRoot');
+      if(!root || root.style.display === 'none') return;
+      // Silent refresh — load new data without showing the loading overlay
+      const [registries, units, leases, users, meta] = await Promise.all([
+        DB.get({ action: 'getAll', sheet: 'invoices' }),
+        DB.get({ action: 'getAll', sheet: 'units' }),
+        DB.get({ action: 'getAll', sheet: 'leases' }),
+        DB.get({ action: 'getAll', sheet: 'users' }),
+        DB.get({ action: 'getMeta' })
+      ]);
+      // Only update if we got valid data
+      if(!registries || !units || !leases) return;
+      const newState = await DB.loadAll();
+      state = newState;
+      renderAll();
+      try{ syncLeaseCompanyOptions(); }catch(e){}
+      try{ syncLeaseSupplierOptions(); }catch(e){}
+      try{ syncLeaseArrangementOptions(); }catch(e){}
+      try{ syncLeaseInvoicingOptions(); }catch(e){}
+      try{ syncInvoiceCategoryOptions(); }catch(e){}
+      try{ syncInvoiceLeaseOptions(); }catch(e){}
+      try{ syncUnitLeaseOptions(); }catch(e){}
+    }catch(e){ /* silent fail on auto-refresh */ }
+  }, 30000); // every 30 seconds
 }
 
 function clearAllData(){
