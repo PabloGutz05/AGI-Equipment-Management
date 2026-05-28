@@ -22,31 +22,11 @@ Start-Process -FilePath "index.html"
 
 Notes
 - This is intentionally minimal. If you want a packaged Electron/desktop app, or server-backed storage, tell me and I can scaffold that next.
-
----
-## Publish to GitHub Pages (automatic)
-
-I included a GitHub Actions workflow at `.github/workflows/gh-pages.yml` which will publish the repository root to the `gh-pages` branch whenever you push to `main`.
-
-Steps:
-
-1. Create a GitHub repository and push your project to `main` (use the commands below from your project folder):
-
-```powershell
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin <your-remote-url>
-git branch -M main
-git push -u origin main
-```
-
-2. On GitHub, open the repository Settings -> Pages and set the source to the `gh-pages` branch (the workflow will create and update it) or select `main`/`/ (root)` if you prefer.
-
-3. After pushing to `main`, the Actions tab will show the workflow running. When finished the site will be live at:
-	`https://<your-github-username>.github.io/<repo>/`
-
-If you'd like I can also:
-- Add a small `deploy` script to package.json
-- Customize the workflow to publish only a `docs/` folder instead of the root
-
+ - Report tab: the "Units With ≥2 Consecutive Months Without Invoicing" list excludes units whose Status is "Disabled".
+ - Report tab: the "Units Missing Coverage" table includes only units whose Status is "Operational" (disabled units are excluded).
+ - Report tab: the "Units Missing Coverage" table visually marks days with other statuses: Overlap (red), Credit (yellow border), Covered (green), and Disabled periods (red border on white when not covered).
+ - Report tab: the "Units Fully Covered" table also displays day-level statuses for Overlap (red), Credit (yellow border), and Disabled periods (red cell background; green square if covered, white square with red border if not), in addition to Covered (green).
+ - Report tab: the "Units with Yellow Frame Dates (Credit)" table mirrors Unit Overview formatting for disabled periods (red cell background) and shows overlap/coverage consistently.
+ - Report tab: the "Units with Red Highlighted Dates (Overlaps)" table mirrors Unit Overview formatting for disabled periods (red cell background) and shows covered/disabled states consistently.
+ - Report tab: counting for the above table starts in Jan 2022 (earlier months are ignored for streak calculation).
+ - Report tab: the consecutive-months counter considers only Rental invoices (other categories are ignored).

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AGI Data Migration Tool</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
+  h1 { color: #1a56db; }
+  .card { background: white; border-radius: 8px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+  button { background: #1a56db; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 10px; }
+  button:disabled { background: #aaa; cursor: not-allowed; }
+  button:hover:not(:disabled) { background: #1440a0; }
+  .log { background: #1e1e1e; color: #d4d4d4; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 13px; height: 300px; overflow-y: auto; margin-top: 16px; }
+  .log .ok { color: #4ec9b0; }
+  .log .err { color: #f44747; }
+  .log .info { color: #9cdcfe; }
+  input[type=file] { margin-top: 8px; }
+  progress { width: 100%; height: 20px; margin-top: 10px; }
+  .warning { background: #fff3cd; border-left: 4px solid #f59e0b; padding: 12px; border-radius: 4px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>🚀 AGI Data Migration Tool</h1>
+<div class="warning">⚠️ Run this tool only once. It will import all your JSON data into Google Sheets. Do not close the tab while migration is running.</div>
+
+<div class="card">
+  <h2>Step 1 — Select your JSON file</h2>
+  <p>Select your latest backup file: <code>agi_vehicle_lease_2026-05-27T21_05_15.json</code></p>
+  <input type="file" id="jsonFile" accept=".json">
+</div>
+
+<div class="card">
+  <h2>Step 2 — Run Migration</h2>
+  <p>This will send your data to Google Sheets in batches. It may take 2-5 minutes.</p>
+  <button id="startBtn" disabled>Start Migration</button>
+  <progress id="progress" value="0" max="100" style="display:none"></progress>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+const BRIDGE_URL = 'https://script.google.com/macros/s/AKfycbwyQmfI665PCuvEM8zsJ0pmjwm2QNPtXvqkq02xEELaVoWEowVmqqgw1ILqDXNEZka2/exec';
+const BATCH_SIZE = 50;
+
+function log(msg, type='info'){
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = type;
+  line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function post(payload){
+  const res = await fetch(BRIDGE_URL, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Content-Type': 'text/plain' }
+  });
+  return res.json();
+}
+
+async function migrateSheet(name, records){
+  if(!records || records.length === 0){ log('⏭ ' + name + ': no records, skipping', 'info'); return; }
+  log('📤 Migrating ' + name + ': ' + records.length + ' records...', 'info');
+  let sent = 0;
+  while(sent < records.length){
+    const batch = records.slice(sent, sent + BATCH_SIZE);
+    const processed = batch.map(r => {
+      const obj = {};
+      Object.keys(r).forEach(k => {
+        const v = r[k];
+        obj[k] = Array.isArray(v) || typeof v === 'object' ? JSON.stringify(v) : (v === null || v === undefined ? '' : v);
+      });
+      return obj;
+    });
+    const result = await post({ action: 'bulkSave', sheet: name, data: processed });
+    if(!result.success) throw new Error('Failed on ' + name + ' batch: ' + JSON.stringify(result));
+    sent += batch.length;
+    log('  ✅ ' + name + ': ' + sent + '/' + records.length + ' saved', 'ok');
+    updateProgress();
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+
+let totalBatches = 0;
+let completedBatches = 0;
+function updateProgress(){
+  completedBatches++;
+  const pct = totalBatches > 0 ? Math.round((completedBatches/totalBatches)*100) : 0;
+  document.getElementById('progress').value = pct;
+}
+
+document.getElementById('jsonFile').addEventListener('change', e => {
+  document.getElementById('startBtn').disabled = !e.target.files.length;
+});
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+  const file = document.getElementById('jsonFile').files[0];
+  if(!file) return;
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  document.getElementById('progress').style.display = 'block';
+  document.getElementById('log').innerHTML = '';
+
+  try {
+    log('📂 Reading JSON file...', 'info');
+    const text = await file.text();
+    const data = JSON.parse(text);
+    log('✅ File loaded successfully', 'ok');
+
+    const invoices = data.registries || [];
+    const units = data.units || [];
+    const leases = data.leases || [];
+    const users = data.users || [];
+    const meta = data.meta || {};
+
+    totalBatches = Math.ceil(invoices.length/BATCH_SIZE) +
+                  Math.ceil(units.length/BATCH_SIZE) +
+                  Math.ceil(leases.length/BATCH_SIZE) +
+                  Math.ceil(users.length/BATCH_SIZE) + 1;
+
+    log('📊 Found: ' + invoices.length + ' invoices, ' + units.length + ' units, ' + leases.length + ' leases, ' + users.length + ' users', 'info');
+
+    await migrateSheet('invoices', invoices);
+    await migrateSheet('units', units);
+    await migrateSheet('leases', leases);
+    await migrateSheet('users', users);
+
+    log('⚙️ Saving meta/configuration...', 'info');
+    const metaResult = await post({ action: 'saveMeta', data: meta });
+    if(!metaResult.success) throw new Error('Meta save failed');
+    log('✅ Meta saved', 'ok');
+    updateProgress();
+
+    document.getElementById('progress').value = 100;
+    log('🎉 Migration complete! All data is now in Google Sheets.', 'ok');
+    log('You can now close this tool.', 'info');
+
+  } catch(err) {
+    log('❌ Error: ' + err.message, 'err');
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

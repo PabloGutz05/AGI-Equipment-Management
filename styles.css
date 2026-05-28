@@ -6,10 +6,10 @@
 }
 *{box-sizing:border-box}
 body{font-family:Segoe UI, Roboto, Arial, sans-serif;background:var(--bg);color:#111;margin:0;padding:0}
-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;background:linear-gradient(90deg,#0b74de22,transparent);border-bottom:1px solid #e6e9ee}
+header{display:flex;align-items:center;justify-content:space-between;padding:20px;background:linear-gradient(90deg,#0b74de22,transparent);border-bottom:1px solid #e6e9ee}
 header h1{margin:0;font-size:18px}
 .brand{display:flex;align-items:center;gap:12px}
-.brand img#agiLogo{width:42px;height:42px;object-fit:contain;display:block}
+.brand img#agiLogo{width:60px;height:60px;object-fit:contain;display:block}
 .brand{text-decoration:none;color:inherit}
 .brand:focus, .brand:hover{outline:0;opacity:0.95}
 .brand:focus{box-shadow:0 0 0 3px rgba(11,116,222,0.12);border-radius:8px}
@@ -32,15 +32,21 @@ header h1{margin:0;font-size:18px}
   cursor:pointer;
 }
 .actions > .file-label{background:var(--card)}
+.actions > .file-label:hover{background: rgba(0,0,0,0.06); color: #000}
 .file-label input{display:none}
 button{background:var(--accent);color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer}
+/* Global hover/active transition for buttons: use a light-gray hover background and slight press effect */
+button{transition:background 140ms ease, transform 120ms ease}
+button:hover{background: rgba(0,0,0,0.06) !important; color: #000 !important}
+button:active{background: rgba(0,0,0,0.08) !important; color: #000 !important; transform:translateY(1px)}
+button:focus{color: #000 !important}
 button[title]{background:#f97316}
 .layout{display:flex;gap:12px;padding:20px}
-.tabs{display:flex;flex-direction:column;gap:8px;width:var(--tabs-width,220px);flex:0 0 var(--tabs-width,220px)}
-.tab{background:var(--card);border:1px solid #e6e9ee;padding:10px;border-radius:6px;text-align:left}
+.tabs{display:flex;flex-direction:column;gap:8px;width:var(--tabs-width,280px);flex:0 0 var(--tabs-width,280px)}
+.tab{background:var(--card);border:1px solid #e6e9ee;padding:14px;border-radius:6px;text-align:left}
 .tab.active{border-left:4px solid var(--accent);font-weight:600}
 .tab{display:flex;flex-direction:column;align-items:flex-start}
-.tab-title{font-weight:600;font-size:14px}
+.tab-title{font-weight:600;font-size:14px;color:#374151}
 .tab-desc{font-size:12px;color:var(--muted);margin-top:4px}
 
 .role-group{display:inline-flex;gap:6px;align-items:center}
@@ -52,8 +58,14 @@ button[title]{background:#f97316}
 .tab-panel.active{display:block}
 .inline-form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .inline-form input{padding:8px;border:1px solid #e6e9ee;border-radius:6px}
+.inline-form select{padding:8px;border:1px solid #000;border-radius:6px;background:#fff;font-size:14px;color:#000;height:36px}
 .inline-form input[type="date"]{height:36px;padding:6px 8px}
 .inline-form input::placeholder{color:var(--muted);opacity:1;font-size:13px}
+.inline-form .searchable-select-wrapper input{padding:8px;border:1px solid #000;border-radius:6px;background:#fff;font-size:14px;color:#000;height:36px;min-width:180px}
+.inline-form .searchable-select-wrapper input::placeholder{color:#000;opacity:0.6}
+
+/* Apply black border and text to all select elements */
+select{padding:8px;border:1px solid #000;border-radius:6px;background:#fff;font-size:14px;color:#000}
 .list{list-style:none;padding:0;margin:0}
 .list li{padding:10px;border-bottom:1px solid #f1f3f5;display:flex;justify-content:space-between}
 
@@ -75,6 +87,17 @@ button[title]{background:#f97316}
 #unitTable td:nth-child(8), #unitTable td:nth-child(9){max-width:260px;white-space:normal;word-break:break-word}
 #unitTable .dev-actions{justify-content:flex-end}
 #unitTable button{padding:6px 8px;border-radius:6px;border:0;cursor:pointer}
+
+/* Lease table styling - adaptive full width */
+#leaseTable{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:12px;table-layout:auto}
+#leaseTable thead th{background:transparent;padding:10px 12px;text-align:left;color:#333;font-size:13px}
+#leaseTable tbody td{background:#fff;padding:12px;border:1px solid #eef2f7;vertical-align:top}
+#leaseTable tbody tr td:first-child{font-weight:600}
+#leaseTable tbody tr:nth-child(even) td{background:#fcfdff}
+#leaseTable tbody tr:hover td{background:#f8fbff}
+#leaseTable td{font-size:14px;color:#111}
+#leaseTable td:nth-child(8){font-size:12px;color:#6b7280;white-space:nowrap}
+#leaseTable button{padding:6px 8px;border-radius:6px;border:0;cursor:pointer}
 
 /* Invoice table styling for legibility */
 #invoiceTable{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:12px}
@@ -156,7 +179,7 @@ footer{padding:12px;text-align:center;color:var(--muted)}
   align-items:center;
   justify-content:center;
   padding:20px;
-  background: rgba(0,0,0,0.28);
+  background:url('EmielPlane.jpg') center/cover no-repeat;
   z-index: 1000;
 }
 .login-card{
@@ -183,7 +206,7 @@ footer{padding:12px;text-align:center;color:var(--muted)}
 }
 
 /* AGI Process Menu styles */
-.process-menu{position:fixed;left:0;right:0;top:var(--header-height,72px);height:calc(100vh - var(--header-height,72px));display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.12);z-index:900}
+.process-menu{position:fixed;left:0;right:0;top:var(--header-height,72px);height:calc(100vh - var(--header-height,72px));display:flex;align-items:center;justify-content:center;background:url('EvaPlane.jpg') center/cover no-repeat;z-index:900}
 .process-card{background:var(--card);width:760px;max-width:calc(100% - 40px);padding:22px;border-radius:10px;box-shadow:0 12px 30px rgba(2,6,23,0.08);border:1px solid #eef3f9}
 .process-card h2{margin:0 0 6px 0;font-size:20px}
 .process-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px}
@@ -203,6 +226,130 @@ footer{padding:12px;text-align:center;color:var(--muted)}
 .month-square .month-label{position:relative;z-index:2;font-weight:600;font-size:12px;text-align:center;color:#111}
 .month-square[aria-disabled="true"]{opacity:0.6}
 .month-square:focus{outline:0;box-shadow:0 0 0 3px rgba(22,163,74,0.08)}
+
+/* Unit overview grid and day squares */
+.unit-grid{overflow:auto;margin-top:8px}
+.unit-grid .grid-row{display:grid;align-items:center;gap:6px;margin-top:6px}
+.unit-label{font-size:13px;padding:6px 8px;background:#fff;border:1px solid #eef2f7;border-radius:6px}
+.day-square{width:36px;height:36px;border-radius:6px;border:1px solid #eef2f7;background:#fff;display:flex;align-items:center;justify-content:center;font-size:12px}
+.day-square.header{font-weight:700;background:#f8fafc;border-color:#e6eef9}
+.day-invoiced{background:#dcfce7;border-color:#16a34a}
+.day-disabled{background:#fef3c7;border-color:#f59e0b}
+.day-invoiced.start{ border-top-left-radius:8px; border-bottom-left-radius:8px; }
+.day-invoiced.end{ border-top-right-radius:8px; border-bottom-right-radius:8px; }
+.day-invoiced.start.end{ border-radius:8px; }
+
+/* Submitted registries marker: additive small blue dot so it doesn't override invoiced color */
+.day-submitted{position:relative}
+.day-submitted::after{content:'';position:absolute;right:6px;bottom:6px;width:8px;height:8px;border-radius:50%;background:#0b74de;box-shadow:0 0 0 2px rgba(11,116,222,0.12)}
+
+/* Unit dropdown panel: position absolute so it doesn't push form layout when opened */
+.unit-dropdown{position:relative;display:inline-block}
+.unit-dropdown .dropdown-toggle{min-width:120px}
+.unit-dropdown .dropdown-panel{position:absolute;left:0;top:calc(100% + 6px);z-index:60;width:320px;max-height:220px;overflow:auto;padding:8px;border:1px solid #e6eef6;border-radius:8px;background:#fff;box-shadow:0 8px 20px rgba(2,6,23,0.08)}
+
+/* Keep the comment textarea and invoice action buttons stable to avoid layout shift */
+.inline-form textarea{width:320px;min-width:260px;max-width:480px;resize:vertical;padding:8px;border:1px solid #e6e9ee;border-radius:6px}
+.unit-dropdown .dropdown-toggle, .inline-form button[type="submit"]{
+  min-width:140px;
+  height:36px;
+  padding:8px 12px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+.inline-form button[type="submit"], .inline-form button[type="button"]{min-width:120px}
+
+@media(max-width:700px){
+  .unit-dropdown .dropdown-panel{position:static;width:100%;box-shadow:none;margin-top:6px}
+  .inline-form textarea{width:100%;min-width:0}
+  .inline-form button[type="submit"], .inline-form button[type="button"]{min-width:80px}
+}
+
+/* Modal for comment editing */
+.modal{position:fixed;inset:0;z-index:120;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.modal-backdrop{position:absolute;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.28)}
+/* center the dialog exactly in the viewport */
+.modal-dialog{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;padding:16px;border-radius:8px;max-width:560px;width:100%;box-shadow:0 12px 30px rgba(2,6,23,0.12);z-index:121;max-height:80vh;overflow:auto}
+.modal-content{position:relative;background:#fff;padding:20px;border-radius:8px;box-shadow:0 12px 30px rgba(2,6,23,0.12);z-index:121;max-height:80vh;overflow-y:auto}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #e6e9ee}
+.modal-dialog h3{margin:0 0 8px 0}
+.info-button{background:#eef6ff;color:#0b74de;border:1px solid #dbeefe;padding:8px 12px;border-radius:6px;cursor:pointer}
+
+/* Utility button styles to match invoice submit and saved states */
+.btn-primary{background:var(--accent);color:#fff;border:0}
+.btn-warning{background:#f97316;color:#fff;border:0}
+
+/* Ensure Add Comment button matches Add Invoice size and alignment */
+#invoiceCommentBtn{min-width:140px;height:36px;padding:8px 12px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px}
+
+/* Force Add Comment button to use primary blue even if global button[title] rule applies */
+#invoiceCommentBtn, #invoiceCommentBtn.btn-primary {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border: 0 !important;
+}
+#invoiceCommentBtn:hover{ 
+  background: rgba(0,0,0,0.06) !important; 
+  color: #000 !important; 
+}
+
+/* Legends: make titles bold and black for information boxes */
+.lease-legend, .category-legend, .unit-legend, .wd-legend, .amount-legend, .period-legend, .submitted-legend, .comment-legend {
+  color: #111 !important;
+  font-weight: 700;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.invoice-doc-primary { font-weight: 600; color: #111; }
+
+/* Lease overview list */
+.lease-list{margin-top:8px;border-collapse:separate;border-spacing:0 8px;width:100%}
+.lease-row{display:grid;grid-template-columns:220px 1fr 160px 140px;gap:8px;align-items:center;padding:8px;border-radius:8px;background:#fff;border:1px solid #eef2f7}
+.lease-row.highlighted{background:#dcfce7;border-color:#16a34a}
+.lease-row.header div{cursor:pointer}
+.lease-row.header div:hover{opacity:0.95}
+.sort-indicator{margin-left:6px;font-size:11px;color:var(--muted)}
+.lease-row .small-muted{font-size:12px;color:var(--muted)}
+
+/* Compact lease 'more' button: match background (transparent) so it blends inline
+   with the lease label. Provide subtle hover/focus styles for affordance. */
+.lease-more-btn{
+  /* main background matches page background so the control visually blends */
+  background: var(--bg);
+  border: 0;
+  color: inherit;
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin-left: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.lease-more-btn:hover{ background: var(--bg); }
+.lease-more-btn:focus{ outline: 0; box-shadow: 0 0 0 3px rgba(11,116,222,0.12); }
+
+/* Stronger override for buttons that have a title attribute (there is a
+   global rule `button[title]{background:#f97316}`); ensure the compact
+   lease more button never becomes orange. Use more specific selector and
+   !important to reliably override previously-declared rules. */
+button.lease-more-btn, button.lease-more-btn[title] {
+  background: var(--bg) !important;
+  color: inherit !important;
+  border: 0 !important;
+}
+button.lease-more-btn:hover, button.lease-more-btn[title]:hover{
+  /* slightly darker gray for hover affordance */
+  background: rgba(0,0,0,0.06) !important;
+}
+
+/* Searchable select dropdown styles */
+.searchable-select-wrapper{position:relative;display:inline-block;min-width:180px}
+.searchable-select-wrapper input[readonly]{cursor:pointer}
+.searchable-dropdown{position:absolute;left:0;top:calc(100% + 4px);z-index:100;background:#fff;border:1px solid #e6e9ee;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.08);min-width:100%;width:max-content;max-width:400px}
+.searchable-dropdown input[type="text"]{outline:none}
+.searchable-dropdown input[type="text"]:focus{border-bottom-color:#0b74de}
 
 
 
