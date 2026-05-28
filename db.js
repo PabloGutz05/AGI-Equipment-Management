@@ -3,7 +3,6 @@ const DB_URL = 'https://script.google.com/macros/s/AKfycbwyQmfI665PCuvEM8zsJ0pmj
 
 const DB = {
 
-  // --- Core fetch ---
   async post(payload) {
     const res = await fetch(DB_URL, {
       method: 'POST',
@@ -23,7 +22,6 @@ const DB = {
     return data.data;
   },
 
-  // --- Load all data ---
   async loadAll() {
     try {
       showLoadingOverlay('Loading your data...');
@@ -35,7 +33,6 @@ const DB = {
         DB.get({ action: 'getMeta' })
       ]);
 
-      // Parse registries
       const parsedRegistries = registries.map(r => ({
         ...r,
         id: String(r.id || ''),
@@ -53,7 +50,6 @@ const DB = {
         comments: DB.parseField(r.comments) || []
       }));
 
-      // Parse units — using correct field names from JSON
       const parsedUnits = units.map(u => ({
         ...u,
         id: String(u.id || ''),
@@ -75,25 +71,20 @@ const DB = {
         createdAt: String(u.createdAt || '')
       }));
 
-      // Parse leases
       const parsedLeases = leases.map(l => ({
         ...l,
         id: String(l.id || ''),
         leaseNumber: String(l.leaseNumber || ''),
         company: String(l.company || ''),
         supplier: String(l.supplier || ''),
-        category: String(l.category || ''),
-        invoicing: String(l.invoicing || ''),
         arrangement: String(l.arrangement || ''),
-        startDate: String(l.startDate || ''),
-        endDate: String(l.endDate || ''),
-        monthlyAmount: String(l.monthlyAmount || ''),
-        status: String(l.status || ''),
+        invoicing: String(l.invoicing || ''),
         notes: String(l.notes || ''),
-        createdAt: String(l.createdAt || '')
+        status: String(l.status || ''),
+        fromDate: String(l.fromDate || ''),
+        toDate: String(l.toDate || '')
       }));
 
-      // Parse users
       const parsedUsers = users.map(u => ({
         ...u,
         id: String(u.id || ''),
@@ -124,7 +115,6 @@ const DB = {
     }
   },
 
-  // --- Save entire state ---
   async saveAll(state) {
     try {
       await DB.post({ action: 'saveMeta', data: state.meta });
@@ -133,7 +123,6 @@ const DB = {
     }
   },
 
-  // --- Individual record operations ---
   async saveRegistry(record) {
     const data = {
       ...record,
@@ -204,7 +193,6 @@ const DB = {
     return DB.post({ action: 'delete', sheet: 'users', id });
   },
 
-  // --- Helper ---
   parseField(val) {
     if (Array.isArray(val)) return val;
     if (typeof val === 'object' && val !== null) return val;
