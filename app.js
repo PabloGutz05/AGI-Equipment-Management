@@ -162,8 +162,13 @@ if(loginForm){
     const password = fd.get('password') || '';
     // Master account (case-sensitive)
     if(username === 'Master' && password === 'Master'){
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
-  showApp(true); renderAll(); syncTabLabels(); updateHeaderTitleForMenu(true); updateExportImportVisibility(true); updateUserInfoDisplay(); return;
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
+      showApp(true);
+      updateHeaderTitleForMenu(true);
+      updateExportImportVisibility(true);
+      updateUserInfoDisplay();
+      loadStateFromDB();
+      return;
     }
     // check users in state — fetch fresh from Google Sheets to validate credentials
     const tryLogin = async () => {
