@@ -3053,14 +3053,45 @@ async function loadStateFromDB(){
 
 let _autoRefreshTimer = null;
 function startAutoRefresh(){
-  if(_autoRefreshTimer) return; // already running
+  if(_autoRefreshTimer) return;
+
+  // Add last-updated indicator to header
+  let lastUpdatedEl = qs('#lastUpdatedIndicator');
+  if(!lastUpdatedEl){
+    const header = document.querySelector('header .actions');
+    if(header){
+      lastUpdatedEl = document.createElement('span');
+      lastUpdatedEl.id = 'lastUpdatedIndicator';
+      lastUpdatedEl.style.cssText = 'font-size:11px;color:#9ca3af;margin-right:8px;align-self:center;';
+      lastUpdatedEl.textContent = 'Live';
+      header.insertBefore(lastUpdatedEl, header.firstChild);
+    }
+  }
+
+  function updateTimestamp(){
+    const el = qs('#lastUpdatedIndicator');
+    if(!el) return;
+    el.textContent = '🟢 Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  }
+
+  function isUserActive(){
+    // Check if user is focused on any input, textarea or select
+    const active = document.activeElement;
+    if(!active) return false;
+    const tag = active.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select';
+  }
+
   _autoRefreshTimer = setInterval(async ()=>{
     try{
-      // Only refresh if user is logged in and app is visible
       if(!isAuthenticated()) return;
       const root = qs('#appRoot');
       if(!root || root.style.display === 'none') return;
-      // Silent refresh — load new data without showing the loading overlay
+
+      // Skip refresh if user is actively typing
+      if(isUserActive()) return;
+
+      // Silent background fetch — no overlay, no interruption
       const [registries, units, leases, users, meta] = await Promise.all([
         DB.get({ action: 'getAll', sheet: 'invoices' }),
         DB.get({ action: 'getAll', sheet: 'units' }),
@@ -3068,20 +3099,85 @@ function startAutoRefresh(){
         DB.get({ action: 'getAll', sheet: 'users' }),
         DB.get({ action: 'getMeta' })
       ]);
-      // Only update if we got valid data
+
       if(!registries || !units || !leases) return;
-      const newState = await DB.loadAll();
-      state = newState;
-      renderAll();
-      try{ syncLeaseCompanyOptions(); }catch(e){}
-      try{ syncLeaseSupplierOptions(); }catch(e){}
-      try{ syncLeaseArrangementOptions(); }catch(e){}
-      try{ syncLeaseInvoicingOptions(); }catch(e){}
-      try{ syncInvoiceCategoryOptions(); }catch(e){}
-      try{ syncInvoiceLeaseOptions(); }catch(e){}
-      try{ syncUnitLeaseOptions(); }catch(e){}
-    }catch(e){ /* silent fail on auto-refresh */ }
-  }, 30000); // every 30 seconds
+
+      // Parse the fresh data using DB layer (without showing overlay)
+      const parsedRegistries = registries.map(r => ({
+        ...r,
+        id: String(r.id || ''),
+        seq: Number(r.seq) || 0,
+        wdNumber: String(r.wdNumber || ''),
+        docNumber: String(r.docNumber || ''),
+        category: String(r.category || ''),
+        totalAmount: String(r.totalAmount || ''),
+        lease: String(r.lease || ''),
+        periodStart: String(r.periodStart || ''),
+        periodEnd: String(r.periodEnd || ''),
+        submittedDate: String(r.submittedDate || ''),
+        createdAt: String(r.createdAt || ''),
+        units: DB.parseField(r.units),
+        comments: DB.parseField(r.comments) || []
+      }));
+
+      const parsedUnits = units.map(u => ({
+        ...u,
+        id: String(u.id || ''),
+        lease: String(u.lease || ''),
+        unitId: String(u.unitId || ''),
+        status: String(u.status || ''),
+        statusHistory: DB.parseField(u.statusHistory) || [],
+        comments: DB.parseField(u.comments) || [],
+        overviewComments: DB.parseField(u.overviewComments) || []
+      }));
+
+      const parsedLeases = leases.map(l => ({
+        ...l,
+        id: String(l.id || ''),
+        leaseNumber: String(l.leaseNumber || ''),
+        status: String(l.status || '')
+      }));
+
+      const parsedUsers = users.map(u => ({
+        ...u,
+        id: String(u.id || ''),
+        username: String(u.username || ''),
+        password: String(u.password || ''),
+        role: String(u.role || '')
+      }));
+
+      // Sanitize meta
+      const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
+      const stringFields = ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'];
+      stringFields.forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
+      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+      arrayFields.forEach(f => { if(!Array.isArray(sanitizedMeta[f])) sanitizedMeta[f] = []; });
+
+      // Update state silently
+      state.registries = parsedRegistries;
+      state.units = parsedUnits;
+      state.leases = parsedLeases;
+      state.users = parsedUsers;
+      state.meta = sanitizedMeta;
+
+      // Re-render only if user is still not active
+      if(!isUserActive()){
+        renderAll();
+        try{ syncLeaseCompanyOptions(); }catch(e){}
+        try{ syncLeaseSupplierOptions(); }catch(e){}
+        try{ syncLeaseArrangementOptions(); }catch(e){}
+        try{ syncLeaseInvoicingOptions(); }catch(e){}
+        try{ syncInvoiceCategoryOptions(); }catch(e){}
+        try{ syncInvoiceLeaseOptions(); }catch(e){}
+        try{ syncUnitLeaseOptions(); }catch(e){}
+      }
+
+      updateTimestamp();
+
+    }catch(e){ /* silent fail */ }
+  }, 30000);
+
+  updateTimestamp();
 }
 
 function clearAllData(){
