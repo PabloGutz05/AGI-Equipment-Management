@@ -11,7 +11,7 @@ const defaultData = {
   meta: { createdAt: new Date().toISOString(), registrySeq: 0 }
 };
 
-let state = loadState();
+let state = JSON.parse(JSON.stringify(defaultData));
 
 // --- Tabs ---
 document.querySelectorAll('.tab').forEach(btn => {
