@@ -44,7 +44,7 @@ function showApp(yes){
   setHeaderHeightVar();
   // If true, we don't immediately show the application: first present the AGI Process Menu
   const menu = qs('#agiProcessMenu');
-  if(yes){ if(menu) menu.style.display = 'flex'; if(root) root.style.display='none'; if(gate) gate.style.display='none'; if(logoutBtn) logoutBtn.style.display='inline-block'; applyRoleRestrictions(); }
+  if(yes){ if(menu) menu.style.display = 'flex'; if(root) root.style.display='none'; if(gate) gate.style.display='none'; if(logoutBtn) logoutBtn.style.display='inline-block'; if(refreshBtn) refreshBtn.style.display='inline-block'; applyRoleRestrictions(); }
   else {
     // show login gate
     if(root) root.style.display='none'; if(gate) gate.style.display='flex'; if(menu) menu.style.display = 'none'; if(logoutBtn) logoutBtn.style.display='none';
@@ -191,7 +191,7 @@ if(loginForm){
 }
 
 // logout
-const logoutBtn = qs('#logoutBtn'); if(logoutBtn){ logoutBtn.addEventListener('click', ()=>{ sessionStorage.removeItem(SESSION_KEY); showApp(false); updateUserInfoDisplay(); }); }
+const refreshBtn = qs('#refreshBtn'); if(refreshBtn){ refreshBtn.addEventListener('click', ()=>{ loadStateFromDB(); }); }
 
 // On load decide whether to show the app
 document.addEventListener('DOMContentLoaded', ()=>{ showApp(isAuthenticated()); if(isAuthenticated()) updateUserInfoDisplay(); });
@@ -3031,6 +3031,19 @@ async function loadStateFromDB(){
     updateHeaderTitleForMenu(false);
     updateExportImportVisibility(false);
     updateUserInfoDisplay();
+    // Sync all configuration dropdowns after data loads
+    try{ syncLeaseCompanyOptions(); }catch(e){}
+    try{ syncLeaseSupplierOptions(); }catch(e){}
+    try{ syncLeaseArrangementOptions(); }catch(e){}
+    try{ syncLeaseInvoicingOptions(); }catch(e){}
+    try{ syncInvoiceCategoryOptions(); }catch(e){}
+    try{ syncInvoiceLeaseOptions(); }catch(e){}
+    try{ syncUnitLeaseOptions(); }catch(e){}
+    try{ renderCompanyList(); }catch(e){}
+    try{ renderSupplierList(); }catch(e){}
+    try{ renderRentalList(); }catch(e){}
+    try{ renderArrangementList(); }catch(e){}
+    try{ renderPaymentList(); }catch(e){}
   } catch(e) {
     alert('Error loading data from Google Sheets: ' + e.message + '\n\nPlease check your connection and refresh.');
   }
