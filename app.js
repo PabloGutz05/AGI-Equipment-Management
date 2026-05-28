@@ -2991,22 +2991,31 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
-// --- Persistence ---
+// --- Persistence (Google Sheets) ---
 function saveState(){
-  try{ 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); 
+  try{
+    DB.saveAll(state).catch(e => console.error('DB save error:', e));
     try{ window.dispatchEvent(new Event('agi:stateSaved')); }catch(ev){}
-  }catch(e){ alert('Error saving data: '+e.message); }
+  }catch(e){ console.error('Error saving state:', e); }
 }
 
 function loadState(){
-  try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(!raw) return JSON.parse(JSON.stringify(defaultData));
-    const parsed = JSON.parse(raw);
-    // ensure shape
-    return Object.assign(JSON.parse(JSON.stringify(defaultData)), parsed);
-  }catch(e){ console.error('Failed to load state', e); return JSON.parse(JSON.stringify(defaultData)); }
+  return JSON.parse(JSON.stringify(defaultData));
+}
+
+async function loadStateFromDB(){
+  try {
+    const loaded = await DB.loadAll();
+    state = loaded;
+    renderAll();
+    syncTabLabels();
+    applyRoleRestrictions();
+    updateHeaderTitleForMenu(false);
+    updateExportImportVisibility(false);
+    updateUserInfoDisplay();
+  } catch(e) {
+    alert('Error loading data from Google Sheets: ' + e.message + '\n\nPlease check your connection and refresh.');
+  }
 }
 
 function clearAllData(){
