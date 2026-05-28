@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>AGI Data Migration Tool</title>
+<title>AGI Units Re-Migration</title>
 <style>
   body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
   h1 { color: #1a56db; }
@@ -20,19 +20,17 @@
 </style>
 </head>
 <body>
-<h1>🚀 AGI Data Migration Tool</h1>
-<div class="warning">⚠️ Run this tool only once. It will import all your JSON data into Google Sheets. Do not close the tab while migration is running.</div>
+<h1>🔧 AGI Units Re-Migration</h1>
+<div class="warning">⚠️ This will re-import only the units data with correct field mapping. Make sure you cleared the units tab in Google Sheets first (keeping headers).</div>
 
 <div class="card">
-  <h2>Step 1 — Select your JSON file</h2>
-  <p>Select your latest backup file: <code>agi_vehicle_lease_2026-05-27T21_05_15.json</code></p>
+  <h2>Select your latest JSON file</h2>
   <input type="file" id="jsonFile" accept=".json">
 </div>
 
 <div class="card">
-  <h2>Step 2 — Run Migration</h2>
-  <p>This will send your data to Google Sheets in batches. It may take 2-5 minutes.</p>
-  <button id="startBtn" disabled>Start Migration</button>
+  <h2>Run Units Migration</h2>
+  <button id="startBtn" disabled>Start Units Migration</button>
   <progress id="progress" value="0" max="100" style="display:none"></progress>
   <div class="log" id="log"></div>
 </div>
@@ -59,37 +57,6 @@ async function post(payload){
   return res.json();
 }
 
-async function migrateSheet(name, records){
-  if(!records || records.length === 0){ log('⏭ ' + name + ': no records, skipping', 'info'); return; }
-  log('📤 Migrating ' + name + ': ' + records.length + ' records...', 'info');
-  let sent = 0;
-  while(sent < records.length){
-    const batch = records.slice(sent, sent + BATCH_SIZE);
-    const processed = batch.map(r => {
-      const obj = {};
-      Object.keys(r).forEach(k => {
-        const v = r[k];
-        obj[k] = Array.isArray(v) || typeof v === 'object' ? JSON.stringify(v) : (v === null || v === undefined ? '' : v);
-      });
-      return obj;
-    });
-    const result = await post({ action: 'bulkSave', sheet: name, data: processed });
-    if(!result.success) throw new Error('Failed on ' + name + ' batch: ' + JSON.stringify(result));
-    sent += batch.length;
-    log('  ✅ ' + name + ': ' + sent + '/' + records.length + ' saved', 'ok');
-    updateProgress();
-    await new Promise(r => setTimeout(r, 500));
-  }
-}
-
-let totalBatches = 0;
-let completedBatches = 0;
-function updateProgress(){
-  completedBatches++;
-  const pct = totalBatches > 0 ? Math.round((completedBatches/totalBatches)*100) : 0;
-  document.getElementById('progress').value = pct;
-}
-
 document.getElementById('jsonFile').addEventListener('change', e => {
   document.getElementById('startBtn').disabled = !e.target.files.length;
 });
@@ -106,34 +73,44 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     log('📂 Reading JSON file...', 'info');
     const text = await file.text();
     const data = JSON.parse(text);
-    log('✅ File loaded successfully', 'ok');
-
-    const invoices = data.registries || [];
     const units = data.units || [];
-    const leases = data.leases || [];
-    const users = data.users || [];
-    const meta = data.meta || {};
+    log('✅ Found ' + units.length + ' units', 'ok');
 
-    totalBatches = Math.ceil(invoices.length/BATCH_SIZE) +
-                  Math.ceil(units.length/BATCH_SIZE) +
-                  Math.ceil(leases.length/BATCH_SIZE) +
-                  Math.ceil(users.length/BATCH_SIZE) + 1;
+    // Map units to correct field names
+    const mapped = units.map(u => ({
+      id: u.id || '',
+      lease: u.lease || '',
+      company: u.company || '',
+      supplier: u.supplier || '',
+      arrangement: u.arrangement || '',
+      invoicing: u.invoicing || '',
+      unitId: u.unitId || '',
+      monthly: u.monthly || '',
+      description: u.description || '',
+      notes: u.notes || '',
+      status: u.status || '',
+      disabledDate: u.disabledDate || '',
+      enabledDate: u.enabledDate || '',
+      statusHistory: JSON.stringify(u.statusHistory || []),
+      comments: JSON.stringify(u.comments || []),
+      overviewComments: JSON.stringify(u.overviewComments || []),
+      createdAt: u.createdAt || ''
+    }));
 
-    log('📊 Found: ' + invoices.length + ' invoices, ' + units.length + ' units, ' + leases.length + ' leases, ' + users.length + ' users', 'info');
+    log('📤 Migrating ' + mapped.length + ' units in batches...', 'info');
+    let sent = 0;
+    while(sent < mapped.length){
+      const batch = mapped.slice(sent, sent + BATCH_SIZE);
+      const result = await post({ action: 'bulkSave', sheet: 'units', data: batch });
+      if(!result.success) throw new Error('Batch failed: ' + JSON.stringify(result));
+      sent += batch.length;
+      const pct = Math.round((sent/mapped.length)*100);
+      document.getElementById('progress').value = pct;
+      log('  ✅ ' + sent + '/' + mapped.length + ' units saved', 'ok');
+      await new Promise(r => setTimeout(r, 500));
+    }
 
-    await migrateSheet('invoices', invoices);
-    await migrateSheet('units', units);
-    await migrateSheet('leases', leases);
-    await migrateSheet('users', users);
-
-    log('⚙️ Saving meta/configuration...', 'info');
-    const metaResult = await post({ action: 'saveMeta', data: meta });
-    if(!metaResult.success) throw new Error('Meta save failed');
-    log('✅ Meta saved', 'ok');
-    updateProgress();
-
-    document.getElementById('progress').value = 100;
-    log('🎉 Migration complete! All data is now in Google Sheets.', 'ok');
+    log('🎉 Units migration complete!', 'ok');
     log('You can now close this tool.', 'info');
 
   } catch(err) {

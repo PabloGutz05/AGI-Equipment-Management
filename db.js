@@ -35,7 +35,7 @@ const DB = {
         DB.get({ action: 'getMeta' })
       ]);
 
-      // Parse registries — ensure all fields are correct types
+      // Parse registries
       const parsedRegistries = registries.map(r => ({
         ...r,
         id: String(r.id || ''),
@@ -53,23 +53,29 @@ const DB = {
         comments: DB.parseField(r.comments) || []
       }));
 
-      // Parse units — ensure all fields are correct types
+      // Parse units — using correct field names from JSON
       const parsedUnits = units.map(u => ({
         ...u,
         id: String(u.id || ''),
-        unitNumber: String(u.unitNumber || ''),
+        lease: String(u.lease || ''),
         company: String(u.company || ''),
         supplier: String(u.supplier || ''),
-        leaseId: String(u.leaseId || ''),
-        category: String(u.category || ''),
-        status: String(u.status || ''),
-        location: String(u.location || ''),
-        costCenter: String(u.costCenter || ''),
+        arrangement: String(u.arrangement || ''),
+        invoicing: String(u.invoicing || ''),
+        unitId: String(u.unitId || ''),
+        monthly: String(u.monthly || ''),
+        description: String(u.description || ''),
         notes: String(u.notes || ''),
+        status: String(u.status || ''),
+        disabledDate: String(u.disabledDate || ''),
+        enabledDate: String(u.enabledDate || ''),
+        statusHistory: DB.parseField(u.statusHistory) || [],
+        comments: DB.parseField(u.comments) || [],
+        overviewComments: DB.parseField(u.overviewComments) || [],
         createdAt: String(u.createdAt || '')
       }));
 
-      // Parse leases — ensure all fields are correct types
+      // Parse leases
       const parsedLeases = leases.map(l => ({
         ...l,
         id: String(l.id || ''),
@@ -87,7 +93,7 @@ const DB = {
         createdAt: String(l.createdAt || '')
       }));
 
-      // Parse users — ensure all fields are correct types
+      // Parse users
       const parsedUsers = users.map(u => ({
         ...u,
         id: String(u.id || ''),
@@ -151,11 +157,23 @@ const DB = {
   },
 
   async saveUnit(record) {
-    return DB.post({ action: 'save', sheet: 'units', data: record });
+    const data = {
+      ...record,
+      statusHistory: Array.isArray(record.statusHistory) ? JSON.stringify(record.statusHistory) : (record.statusHistory || '[]'),
+      comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]'),
+      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]')
+    };
+    return DB.post({ action: 'save', sheet: 'units', data });
   },
 
   async updateUnit(record) {
-    return DB.post({ action: 'update', sheet: 'units', id: record.id, data: record });
+    const data = {
+      ...record,
+      statusHistory: Array.isArray(record.statusHistory) ? JSON.stringify(record.statusHistory) : (record.statusHistory || '[]'),
+      comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]'),
+      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]')
+    };
+    return DB.post({ action: 'update', sheet: 'units', id: record.id, data });
   },
 
   async deleteUnit(id) {
@@ -189,7 +207,8 @@ const DB = {
   // --- Helper ---
   parseField(val) {
     if (Array.isArray(val)) return val;
-    if (typeof val === 'string' && val.startsWith('[')) {
+    if (typeof val === 'object' && val !== null) return val;
+    if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
       try { return JSON.parse(val); } catch(e) { return []; }
     }
     return val;
