@@ -35,36 +35,69 @@ const DB = {
         DB.get({ action: 'getMeta' })
       ]);
 
-      // Parse arrays stored as JSON strings
+      // Parse registries — ensure all fields are correct types
       const parsedRegistries = registries.map(r => ({
         ...r,
+        id: String(r.id || ''),
+        seq: Number(r.seq) || 0,
+        wdNumber: String(r.wdNumber || ''),
+        docNumber: String(r.docNumber || ''),
+        category: String(r.category || ''),
+        totalAmount: String(r.totalAmount || ''),
+        lease: String(r.lease || ''),
+        periodStart: String(r.periodStart || ''),
+        periodEnd: String(r.periodEnd || ''),
+        submittedDate: String(r.submittedDate || ''),
+        createdAt: String(r.createdAt || ''),
         units: DB.parseField(r.units),
         comments: DB.parseField(r.comments) || []
       }));
 
+      // Parse units — ensure all fields are correct types
       const parsedUnits = units.map(u => ({
-  ...u,
-  unitNumber: String(u.unitNumber || ''),
-  company: String(u.company || ''),
-  supplier: String(u.supplier || ''),
-  leaseId: String(u.leaseId || ''),
-  category: String(u.category || ''),
-  status: String(u.status || ''),
-  location: String(u.location || ''),
-  costCenter: String(u.costCenter || ''),
-  notes: String(u.notes || '')
-}));
+        ...u,
+        id: String(u.id || ''),
+        unitNumber: String(u.unitNumber || ''),
+        company: String(u.company || ''),
+        supplier: String(u.supplier || ''),
+        leaseId: String(u.leaseId || ''),
+        category: String(u.category || ''),
+        status: String(u.status || ''),
+        location: String(u.location || ''),
+        costCenter: String(u.costCenter || ''),
+        notes: String(u.notes || ''),
+        createdAt: String(u.createdAt || '')
+      }));
+
+      // Parse leases — ensure all fields are correct types
       const parsedLeases = leases.map(l => ({
-  ...l,
-  leaseNumber: String(l.leaseNumber || ''),
-  company: String(l.company || ''),
-  supplier: String(l.supplier || ''),
-  category: String(l.category || ''),
-  invoicing: String(l.invoicing || ''),
-  arrangement: String(l.arrangement || ''),
-  status: String(l.status || '')
-}));
-      const parsedUsers = users.map(u => ({ ...u }));
+        ...l,
+        id: String(l.id || ''),
+        leaseNumber: String(l.leaseNumber || ''),
+        company: String(l.company || ''),
+        supplier: String(l.supplier || ''),
+        category: String(l.category || ''),
+        invoicing: String(l.invoicing || ''),
+        arrangement: String(l.arrangement || ''),
+        startDate: String(l.startDate || ''),
+        endDate: String(l.endDate || ''),
+        monthlyAmount: String(l.monthlyAmount || ''),
+        status: String(l.status || ''),
+        notes: String(l.notes || ''),
+        createdAt: String(l.createdAt || '')
+      }));
+
+      // Parse users — ensure all fields are correct types
+      const parsedUsers = users.map(u => ({
+        ...u,
+        id: String(u.id || ''),
+        username: String(u.username || ''),
+        password: String(u.password || ''),
+        firstName: String(u.firstName || ''),
+        lastName: String(u.lastName || ''),
+        role: String(u.role || ''),
+        createdAt: String(u.createdAt || '')
+      }));
 
       hideLoadingOverlay();
       return {
