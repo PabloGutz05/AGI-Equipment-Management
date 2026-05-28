@@ -165,10 +165,28 @@ if(loginForm){
   sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
   showApp(true); renderAll(); syncTabLabels(); updateHeaderTitleForMenu(true); updateExportImportVisibility(true); updateUserInfoDisplay(); return;
     }
-    // check users in state (password must match and case-sensitive)
-    const u = (state.users||[]).find(x=> x.username === username && x.password === password);
-  if(u){ sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username})); showApp(true); renderAll(); syncTabLabels(); applyRoleRestrictions(); updateExportImportVisibility(true); updateUserInfoDisplay(); return; }
-    alert('Invalid credentials');
+    // check users in state — fetch fresh from Google Sheets to validate credentials
+    const tryLogin = async () => {
+      try {
+        showLoadingOverlay('Signing in...');
+        const users = await DB.get({ action: 'getAll', sheet: 'users' });
+        hideLoadingOverlay();
+        const u = (users||[]).find(x=> x.username === username && x.password === password);
+        if(u){
+          sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username}));
+          showApp(true);
+          updateExportImportVisibility(true);
+          updateUserInfoDisplay();
+          loadStateFromDB();
+          return;
+        }
+        alert('Invalid credentials');
+      } catch(e) {
+        hideLoadingOverlay();
+        alert('Login error: ' + e.message);
+      }
+    };
+    tryLogin();
   });
 }
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>AGI Units Re-Migration</title>
+<title>AGI Leases Migration</title>
 <style>
   body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
   h1 { color: #1a56db; }
@@ -20,8 +20,8 @@
 </style>
 </head>
 <body>
-<h1>🔧 AGI Units Re-Migration</h1>
-<div class="warning">⚠️ This will re-import only the units data with correct field mapping. Make sure you cleared the units tab in Google Sheets first (keeping headers).</div>
+<h1>🔧 AGI Leases Migration</h1>
+<div class="warning">⚠️ Make sure you cleared the leases tab in Google Sheets first (keeping headers). This will import all 229 leases.</div>
 
 <div class="card">
   <h2>Select your latest JSON file</h2>
@@ -29,8 +29,8 @@
 </div>
 
 <div class="card">
-  <h2>Run Units Migration</h2>
-  <button id="startBtn" disabled>Start Units Migration</button>
+  <h2>Run Leases Migration</h2>
+  <button id="startBtn" disabled>Start Leases Migration</button>
   <progress id="progress" value="0" max="100" style="display:none"></progress>
   <div class="log" id="log"></div>
 </div>
@@ -73,44 +73,37 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     log('📂 Reading JSON file...', 'info');
     const text = await file.text();
     const data = JSON.parse(text);
-    const units = data.units || [];
-    log('✅ Found ' + units.length + ' units', 'ok');
+    const leases = data.leases || [];
+    log('✅ Found ' + leases.length + ' leases', 'ok');
 
-    // Map units to correct field names
-    const mapped = units.map(u => ({
-      id: u.id || '',
-      lease: u.lease || '',
-      company: u.company || '',
-      supplier: u.supplier || '',
-      arrangement: u.arrangement || '',
-      invoicing: u.invoicing || '',
-      unitId: u.unitId || '',
-      monthly: u.monthly || '',
-      description: u.description || '',
-      notes: u.notes || '',
-      status: u.status || '',
-      disabledDate: u.disabledDate || '',
-      enabledDate: u.enabledDate || '',
-      statusHistory: JSON.stringify(u.statusHistory || []),
-      comments: JSON.stringify(u.comments || []),
-      overviewComments: JSON.stringify(u.overviewComments || []),
-      createdAt: u.createdAt || ''
+    // Map leases to correct field names matching Google Sheets headers
+    const mapped = leases.map(l => ({
+      id: l.id || '',
+      leaseNumber: l.leaseNumber || '',
+      company: l.company || '',
+      supplier: l.supplier || '',
+      arrangement: l.arrangement || '',
+      invoicing: l.invoicing || '',
+      notes: l.notes || '',
+      status: l.status || 'Enabled',
+      fromDate: l.fromDate || '',
+      toDate: l.toDate || ''
     }));
 
-    log('📤 Migrating ' + mapped.length + ' units in batches...', 'info');
+    log('📤 Migrating ' + mapped.length + ' leases in batches...', 'info');
     let sent = 0;
     while(sent < mapped.length){
       const batch = mapped.slice(sent, sent + BATCH_SIZE);
-      const result = await post({ action: 'bulkSave', sheet: 'units', data: batch });
+      const result = await post({ action: 'bulkSave', sheet: 'leases', data: batch });
       if(!result.success) throw new Error('Batch failed: ' + JSON.stringify(result));
       sent += batch.length;
       const pct = Math.round((sent/mapped.length)*100);
       document.getElementById('progress').value = pct;
-      log('  ✅ ' + sent + '/' + mapped.length + ' units saved', 'ok');
+      log('  ✅ ' + sent + '/' + mapped.length + ' leases saved', 'ok');
       await new Promise(r => setTimeout(r, 500));
     }
 
-    log('🎉 Units migration complete!', 'ok');
+    log('🎉 Leases migration complete!', 'ok');
     log('You can now close this tool.', 'info');
 
   } catch(err) {
