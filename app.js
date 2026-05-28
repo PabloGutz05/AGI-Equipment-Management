@@ -641,7 +641,14 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       };
       state.registries = state.registries || [];
       state.registries.push(registry);
-      
+
+      // Save registry and invoices directly to Google Sheets
+      DB.saveRegistry(registry).catch(e => console.error('Registry save error:', e));
+      createdIds.forEach((invId, idx) => {
+        const inv = state.invoices.find(i => i.id === invId);
+        if(inv) DB.saveRegistry(inv).catch(e => console.error('Invoice save error:', e));
+      });
+
       // Save the registry ID to keep it expanded after rendering
       window.__newlyCreatedRegistryId = registry.id;
     }
@@ -1041,6 +1048,9 @@ qs('#unitForm').addEventListener('submit', e=>{
     state.units = state.units.map(u => u.id === editingId ? Object.assign({}, u, unitObj) : u);
   } else {
     state.units.push(unitObj);
+    DB.saveUnit(unitObj).catch(e => console.error('Unit save error:', e));
+  } else {
+    DB.updateUnit(unitObj).catch(e => console.error('Unit update error:', e));
   }
   saveState();
   renderUnits();
@@ -1151,6 +1161,9 @@ qs('#leaseForm').addEventListener('submit', e=>{
     state.leases = state.leases.map(l => l.id === editingId ? Object.assign({}, l, leaseObj) : l);
   } else {
     state.leases.push(leaseObj);
+    DB.saveLease(leaseObj).catch(e => console.error('Lease save error:', e));
+  } else {
+    DB.updateLease(leaseObj).catch(e => console.error('Lease update error:', e));
   }
   saveState();
   renderLeases();
@@ -1188,6 +1201,9 @@ qs('#userForm').addEventListener('submit', e=>{
     state.users = state.users.map(u => u.id === editingId ? Object.assign({}, u, userObj) : u);
   } else {
     state.users.push(userObj);
+    DB.saveUser(userObj).catch(e => console.error('User save error:', e));
+  } else {
+    DB.updateUser(userObj).catch(e => console.error('User update error:', e));
   }
   saveState();
   renderUsers();
