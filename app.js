@@ -1054,8 +1054,6 @@ qs('#unitForm').addEventListener('submit', e=>{
   } else {
     state.units.push(unitObj);
     DB.saveUnit(unitObj).catch(e => console.error('Unit save error:', e));
-  } else {
-    DB.updateUnit(unitObj).catch(e => console.error('Unit update error:', e));
   }
   saveState();
   renderUnits();
@@ -1167,8 +1165,6 @@ qs('#leaseForm').addEventListener('submit', e=>{
   } else {
     state.leases.push(leaseObj);
     DB.saveLease(leaseObj).catch(e => console.error('Lease save error:', e));
-  } else {
-    DB.updateLease(leaseObj).catch(e => console.error('Lease update error:', e));
   }
   saveState();
   renderLeases();
@@ -1207,8 +1203,6 @@ qs('#userForm').addEventListener('submit', e=>{
   } else {
     state.users.push(userObj);
     DB.saveUser(userObj).catch(e => console.error('User save error:', e));
-  } else {
-    DB.updateUser(userObj).catch(e => console.error('User update error:', e));
   }
   saveState();
   renderUsers();
