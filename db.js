@@ -43,7 +43,16 @@ const DB = {
       }));
 
       const parsedUnits = units.map(u => ({ ...u }));
-      const parsedLeases = leases.map(l => ({ ...l }));
+      const parsedLeases = leases.map(l => ({
+  ...l,
+  leaseNumber: String(l.leaseNumber || ''),
+  company: String(l.company || ''),
+  supplier: String(l.supplier || ''),
+  category: String(l.category || ''),
+  invoicing: String(l.invoicing || ''),
+  arrangement: String(l.arrangement || ''),
+  status: String(l.status || '')
+}));
       const parsedUsers = users.map(u => ({ ...u }));
 
       hideLoadingOverlay();
