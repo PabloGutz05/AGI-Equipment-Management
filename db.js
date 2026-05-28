@@ -42,7 +42,18 @@ const DB = {
         comments: DB.parseField(r.comments) || []
       }));
 
-      const parsedUnits = units.map(u => ({ ...u }));
+      const parsedUnits = units.map(u => ({
+  ...u,
+  unitNumber: String(u.unitNumber || ''),
+  company: String(u.company || ''),
+  supplier: String(u.supplier || ''),
+  leaseId: String(u.leaseId || ''),
+  category: String(u.category || ''),
+  status: String(u.status || ''),
+  location: String(u.location || ''),
+  costCenter: String(u.costCenter || ''),
+  notes: String(u.notes || '')
+}));
       const parsedLeases = leases.map(l => ({
   ...l,
   leaseNumber: String(l.leaseNumber || ''),
