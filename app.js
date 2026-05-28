@@ -185,11 +185,13 @@ const procManagementBtn = qs('#procManagement');
 const brandLink = qs('#brandLink');
 
 if(procVehicleBtn){ procVehicleBtn.addEventListener('click', ()=>{ // open Vehicle Leasing Management (existing appRoot)
-  const root = qs('#appRoot'); if(root) root.style.display = 'block'; if(procMenu) procMenu.style.display = 'none'; // ensure tabs are synced
-  syncTabLabels(); renderAll(); applyRoleRestrictions(); updateHeaderTitleForMenu(false); updateExportImportVisibility(false); updateUserInfoDisplay();
+  const root = qs('#appRoot'); if(root) root.style.display = 'block'; if(procMenu) procMenu.style.display = 'none';
+  updateHeaderTitleForMenu(false); updateExportImportVisibility(false); updateUserInfoDisplay();
   // Switch to Overview tab (Unit Overview)
   const overviewTab = Array.from(document.querySelectorAll('.tab')).find(t=>t.dataset.tab==='overview'); 
   if(overviewTab) overviewTab.click();
+  // Load fresh data from Google Sheets
+  loadStateFromDB();
 }); }
 
 if(procManagementBtn){ procManagementBtn.addEventListener('click', ()=>{ alert('Management process not yet implemented.'); }); }
