@@ -3099,8 +3099,113 @@ function startAutoRefresh(){
     return tag === 'input' || tag === 'textarea' || tag === 'select';
   }
 
+  let _refreshRunning = false;
+
   _autoRefreshTimer = setInterval(async ()=>{
+    // Skip if a refresh is already in progress
+    if(_refreshRunning) return;
     try{
+      _refreshRunning = true;
+      if(!isAuthenticated()) return;
+      const root = qs('#appRoot');
+      if(!root || root.style.display === 'none') return;
+      if(isUserActive()) return;
+
+      // Fetch with timeout — abort if takes more than 20 seconds
+      const fetchWithTimeout = (promise, ms=20000) => {
+        const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), ms)
+        );
+        return Promise.race([promise, timeout]);
+      };
+
+      const [registries, units, leases, users, meta] = await fetchWithTimeout(
+        Promise.all([
+          DB.get({ action: 'getAll', sheet: 'invoices' }),
+          DB.get({ action: 'getAll', sheet: 'units' }),
+          DB.get({ action: 'getAll', sheet: 'leases' }),
+          DB.get({ action: 'getAll', sheet: 'users' }),
+          DB.get({ action: 'getMeta' })
+        ])
+      );
+
+      if(!registries || !units || !leases) return;
+
+      const parsedRegistries = registries.map(r => ({
+        ...r,
+        id: String(r.id || ''),
+        seq: Number(r.seq) || 0,
+        wdNumber: String(r.wdNumber || ''),
+        docNumber: String(r.docNumber || ''),
+        category: String(r.category || ''),
+        totalAmount: String(r.totalAmount || ''),
+        lease: String(r.lease || ''),
+        periodStart: String(r.periodStart || '').slice(0,10),
+        periodEnd: String(r.periodEnd || '').slice(0,10),
+        submittedDate: String(r.submittedDate || '').slice(0,10),
+        createdAt: String(r.createdAt || ''),
+        units: DB.parseField(r.units),
+        comments: DB.parseField(r.comments) || []
+      }));
+
+      const parsedUnits = units.map(u => ({
+        ...u,
+        id: String(u.id || ''),
+        lease: String(u.lease || ''),
+        unitId: String(u.unitId || ''),
+        status: String(u.status || ''),
+        statusHistory: DB.parseField(u.statusHistory) || [],
+        comments: DB.parseField(u.comments) || [],
+        overviewComments: DB.parseField(u.overviewComments) || []
+      }));
+
+      const parsedLeases = leases.map(l => ({
+        ...l,
+        id: String(l.id || ''),
+        leaseNumber: String(l.leaseNumber || ''),
+        status: String(l.status || '')
+      }));
+
+      const parsedUsers = users.map(u => ({
+        ...u,
+        id: String(u.id || ''),
+        username: String(u.username || ''),
+        password: String(u.password || ''),
+        role: String(u.role || '')
+      }));
+
+      const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
+      const stringFields = ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'];
+      stringFields.forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
+      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+      arrayFields.forEach(f => { if(!Array.isArray(sanitizedMeta[f])) sanitizedMeta[f] = []; });
+
+      state.registries = parsedRegistries;
+      state.units = parsedUnits;
+      state.leases = parsedLeases;
+      state.users = parsedUsers;
+      state.meta = sanitizedMeta;
+
+      if(!isUserActive()){
+        renderAll();
+        try{ syncLeaseCompanyOptions(); }catch(e){}
+        try{ syncLeaseSupplierOptions(); }catch(e){}
+        try{ syncLeaseArrangementOptions(); }catch(e){}
+        try{ syncLeaseInvoicingOptions(); }catch(e){}
+        try{ syncInvoiceCategoryOptions(); }catch(e){}
+        try{ syncInvoiceLeaseOptions(); }catch(e){}
+        try{ syncUnitLeaseOptions(); }catch(e){}
+      }
+
+      updateTimestamp();
+
+    }catch(e){
+      // Silent fail — timeout or network error, try again next cycle
+      console.warn('Auto-refresh skipped:', e.message);
+    } finally {
+      _refreshRunning = false;
+    }
+  }, 30000);
       if(!isAuthenticated()) return;
       const root = qs('#appRoot');
       if(!root || root.style.display === 'none') return;
