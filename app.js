@@ -647,12 +647,8 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       state.registries = state.registries || [];
       state.registries.push(registry);
 
-      // Save registry and invoices directly to Google Sheets
+      // Save registry directly to Google Sheets
       DB.saveRegistry(registry).catch(e => console.error('Registry save error:', e));
-      createdIds.forEach((invId, idx) => {
-        const inv = state.invoices.find(i => i.id === invId);
-        if(inv) DB.saveRegistry(inv).catch(e => console.error('Invoice save error:', e));
-      });
 
       // Save the registry ID to keep it expanded after rendering
       window.__newlyCreatedRegistryId = registry.id;
@@ -3133,9 +3129,9 @@ function startAutoRefresh(){
         category: String(r.category || ''),
         totalAmount: String(r.totalAmount || ''),
         lease: String(r.lease || ''),
-        periodStart: String(r.periodStart || ''),
-        periodEnd: String(r.periodEnd || ''),
-        submittedDate: String(r.submittedDate || ''),
+        periodStart: String(r.periodStart || '').slice(0, 10),
+        periodEnd: String(r.periodEnd || '').slice(0, 10),
+        submittedDate: String(r.submittedDate || '').slice(0, 10),
         createdAt: String(r.createdAt || ''),
         units: DB.parseField(r.units),
         comments: DB.parseField(r.comments) || []
