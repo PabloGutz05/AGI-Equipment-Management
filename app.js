@@ -439,7 +439,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       alert('Please complete the following before submitting:\n- ' + missing.join('\n- '));
       return;
     }
-  }catch(err){ /* fail-open not allowed: validation should be robust */ }
+  }catch(err){ alert('Validation error: ' + err.message); return; }
   // New rule: only block submission when an existing invoice has the same
   // Lease, Category, Unit and WD Invoice number. If any of those differs,
   // allow the registration. Editing the same invoice is allowed.
@@ -1735,23 +1735,29 @@ function renderRegistries(keepOpenRegistryId){
       e.stopPropagation();
       menuPanel.style.display = 'none';
       if(confirm(`Delete registry ${r.seq}?`)){
-        // Delete the registry
+        // Delete registry from Google Sheets
+        DB.deleteRegistry(r.id).catch(e => console.error('Registry delete error:', e));
+
+        // Delete the registry from state
         state.registries = state.registries.filter(reg => reg.id !== r.id);
         
         // Also delete all invoices associated with this registry (matching WD number and units)
         const registryWdNumber = (r.wdNumber || '').toString().trim().toLowerCase();
         const registryUnits = Array.isArray(r.units) ? r.units.map(u => (u||'').toString().trim().toLowerCase()) : [];
+        const invoicesToDelete = [];
         
         state.invoices = (state.invoices || []).filter(inv => {
           const invWd = (inv.wdNumber || '').toString().trim().toLowerCase();
           const invUnit = (inv.unit || '').toString().trim().toLowerCase();
-          
-          // Remove invoice if it matches this registry's WD and is in the registry's units
           const matchesWd = invWd === registryWdNumber;
           const matchesUnit = registryUnits.includes(invUnit);
-          
-          // Keep invoice if it doesn't match both criteria
-          return !(matchesWd && matchesUnit);
+          if(matchesWd && matchesUnit){ invoicesToDelete.push(inv.id); return false; }
+          return true;
+        });
+
+        // Delete matching invoices from Google Sheets
+        invoicesToDelete.forEach(invId => {
+          DB.deleteRegistry(invId).catch(e => console.error('Invoice delete error:', e));
         });
         
         saveState();
