@@ -3101,24 +3101,21 @@ function startAutoRefresh(){
 
   let _refreshRunning = false;
 
+  const fetchWithTimeout = (promise, ms=25000) => {
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), ms)
+    );
+    return Promise.race([promise, timeout]);
+  };
+
   _autoRefreshTimer = setInterval(async ()=>{
-    // Skip if a refresh is already in progress
     if(_refreshRunning) return;
+    if(!isAuthenticated()) return;
+    const root = qs('#appRoot');
+    if(!root || root.style.display === 'none') return;
+
+    _refreshRunning = true;
     try{
-      _refreshRunning = true;
-      if(!isAuthenticated()) return;
-      const root = qs('#appRoot');
-      if(!root || root.style.display === 'none') return;
-      if(isUserActive()) return;
-
-      // Fetch with timeout — abort if takes more than 20 seconds
-      const fetchWithTimeout = (promise, ms=20000) => {
-        const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), ms)
-        );
-        return Promise.race([promise, timeout]);
-      };
-
       const [registries, units, leases, users, meta] = await fetchWithTimeout(
         Promise.all([
           DB.get({ action: 'getAll', sheet: 'invoices' }),
@@ -3129,9 +3126,9 @@ function startAutoRefresh(){
         ])
       );
 
-      if(!registries || !units || !leases) return;
+      if(!registries || !units || !leases){ _refreshRunning = false; return; }
 
-      const parsedRegistries = registries.map(r => ({
+      state.registries = registries.map(r => ({
         ...r,
         id: String(r.id || ''),
         seq: Number(r.seq) || 0,
@@ -3148,7 +3145,7 @@ function startAutoRefresh(){
         comments: DB.parseField(r.comments) || []
       }));
 
-      const parsedUnits = units.map(u => ({
+      state.units = units.map(u => ({
         ...u,
         id: String(u.id || ''),
         lease: String(u.lease || ''),
@@ -3159,14 +3156,14 @@ function startAutoRefresh(){
         overviewComments: DB.parseField(u.overviewComments) || []
       }));
 
-      const parsedLeases = leases.map(l => ({
+      state.leases = leases.map(l => ({
         ...l,
         id: String(l.id || ''),
         leaseNumber: String(l.leaseNumber || ''),
         status: String(l.status || '')
       }));
 
-      const parsedUsers = users.map(u => ({
+      state.users = users.map(u => ({
         ...u,
         id: String(u.id || ''),
         username: String(u.username || ''),
@@ -3175,37 +3172,18 @@ function startAutoRefresh(){
       }));
 
       const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
-      const stringFields = ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'];
-      stringFields.forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
-      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
-      arrayFields.forEach(f => { if(!Array.isArray(sanitizedMeta[f])) sanitizedMeta[f] = []; });
-
-      state.registries = parsedRegistries;
-      state.units = parsedUnits;
-      state.leases = parsedLeases;
-      state.users = parsedUsers;
+      ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
+      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => { if(!Array.isArray(sanitizedMeta[f])) sanitizedMeta[f] = []; });
       state.meta = sanitizedMeta;
 
-      if(!isUserActive()){
-        renderAll();
-        try{ syncLeaseCompanyOptions(); }catch(e){}
-        try{ syncLeaseSupplierOptions(); }catch(e){}
-        try{ syncLeaseArrangementOptions(); }catch(e){}
-        try{ syncLeaseInvoicingOptions(); }catch(e){}
-        try{ syncInvoiceCategoryOptions(); }catch(e){}
-        try{ syncInvoiceLeaseOptions(); }catch(e){}
-        try{ syncUnitLeaseOptions(); }catch(e){}
-      }
-
+      // Silent state update only — no renderAll() to avoid freezing large datasets
       updateTimestamp();
 
     }catch(e){
-      // Silent fail — timeout or network error, try again next cycle
       console.warn('Auto-refresh skipped:', e.message);
-    } finally {
-      _refreshRunning = false;
     }
-  }, 30000);
+    _refreshRunning = false;
+  }, 60000);
 
   updateTimestamp();
 }
