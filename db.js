@@ -98,6 +98,18 @@ const DB = {
       }));
 
       hideLoadingOverlay();
+      // Sanitize meta fields to ensure correct types
+      const sanitizedMeta = Object.assign(
+        { createdAt: new Date().toISOString(), registrySeq: 0 },
+        meta
+      );
+      const stringFields = ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'];
+      stringFields.forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
+      const numFields = ['unitOverviewMonth','unitOverviewYear','leaseOverviewMonth','leaseOverviewYear','registrySeq'];
+      numFields.forEach(f => { sanitizedMeta[f] = Number(sanitizedMeta[f]) || 0; });
+      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+      arrayFields.forEach(f => { if(!Array.isArray(sanitizedMeta[f])) sanitizedMeta[f] = []; });
+
       return {
         invoices: [],
         registries: parsedRegistries,
@@ -105,10 +117,7 @@ const DB = {
         leases: parsedLeases,
         users: parsedUsers,
         comments: {},
-        meta: Object.assign(
-          { createdAt: new Date().toISOString(), registrySeq: 0 },
-          meta
-        )
+        meta: sanitizedMeta
       };
     } catch (e) {
       hideLoadingOverlay();
