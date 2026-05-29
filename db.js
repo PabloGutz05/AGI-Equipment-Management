@@ -1,12 +1,13 @@
 // db.js — Google Sheets Database Layer for AGI Vehicle Lease Management
 const DB_URL = 'https://script.google.com/macros/s/AKfycbwyQmfI665PCuvEM8zsJ0pmjwm2QNPtXvqkq02xEELaVoWEowVmqqgw1ILqDXNEZka2/exec';
+const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
 const DB = {
 
   async post(payload) {
     const res = await fetch(DB_URL, {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({...payload, secret: DB_SECRET}),
       headers: { 'Content-Type': 'text/plain' }
     });
     const data = await res.json();
@@ -15,7 +16,7 @@ const DB = {
   },
 
   async get(params) {
-    const url = DB_URL + '?' + new URLSearchParams(params).toString();
+    const url = DB_URL + '?' + new URLSearchParams({...params, secret: DB_SECRET}).toString();
     const res = await fetch(url);
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'DB error');

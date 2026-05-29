@@ -34,6 +34,20 @@ document.querySelectorAll('.tab').forEach(btn => {
 
 // --- Authentication / Login Gate ---
 const SESSION_KEY = 'agi_session';
+const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
+let _sessionTimer = null;
+
+function startSessionTimer(){
+  if(_sessionTimer) clearTimeout(_sessionTimer);
+  _sessionTimer = setTimeout(()=>{
+    sessionStorage.removeItem(SESSION_KEY);
+    if(_sessionTimer) clearTimeout(_sessionTimer);
+    _sessionTimer = null;
+    alert('Your session has expired after 8 hours. Please sign in again.');
+    showApp(false);
+    updateUserInfoDisplay();
+  }, SESSION_TIMEOUT_MS);
+}
 function isAuthenticated(){
   try{ const s = sessionStorage.getItem(SESSION_KEY); return !!s; }catch(e){ return false; }
 }
@@ -163,6 +177,7 @@ if(loginForm){
     // Master account (case-sensitive)
     if(username === 'Master' && password === 'Master'){
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
+      startSessionTimer();
       showApp(true);
       updateHeaderTitleForMenu(true);
       updateExportImportVisibility(true);
@@ -179,6 +194,7 @@ if(loginForm){
         const u = (users||[]).find(x=> x.username === username && x.password === password);
         if(u){
           sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username}));
+          startSessionTimer();
           showApp(true);
           updateExportImportVisibility(true);
           updateUserInfoDisplay();
