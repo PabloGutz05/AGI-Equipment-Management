@@ -34,20 +34,6 @@ document.querySelectorAll('.tab').forEach(btn => {
 
 // --- Authentication / Login Gate ---
 const SESSION_KEY = 'agi_session';
-const SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000; // 8 hours
-let _sessionTimer = null;
-
-function startSessionTimer(){
-  if(_sessionTimer) clearTimeout(_sessionTimer);
-  _sessionTimer = setTimeout(()=>{
-    sessionStorage.removeItem(SESSION_KEY);
-    if(_sessionTimer) clearTimeout(_sessionTimer);
-    _sessionTimer = null;
-    alert('Your session has expired after 8 hours. Please sign in again.');
-    showApp(false);
-    updateUserInfoDisplay();
-  }, SESSION_TIMEOUT_MS);
-}
 function isAuthenticated(){
   try{ const s = sessionStorage.getItem(SESSION_KEY); return !!s; }catch(e){ return false; }
 }
@@ -177,7 +163,6 @@ if(loginForm){
     // Master account (case-sensitive)
     if(username === 'Master' && password === 'Master'){
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
-      startSessionTimer();
       showApp(true);
       updateHeaderTitleForMenu(true);
       updateExportImportVisibility(true);
@@ -194,7 +179,6 @@ if(loginForm){
         const u = (users||[]).find(x=> x.username === username && x.password === password);
         if(u){
           sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username}));
-          startSessionTimer();
           showApp(true);
           updateExportImportVisibility(true);
           updateUserInfoDisplay();
@@ -7595,7 +7579,8 @@ function handleUnitStatusChange(unitId){
     return;
   }
   
-  const unit = state.units[unitIndex];
+  // Use a deep copy to prevent reference issues with auto-refresh
+  const unit = JSON.parse(JSON.stringify(state.units[unitIndex]));
   console.log('Found unit at index', unitIndex, ':', unit);
   
   // Get the modal elements
@@ -7668,6 +7653,9 @@ function handleUnitStatusChange(unitId){
     
     // Update the unit in the state array
     state.units[unitIndex] = unit;
+    
+    // Save to Google Sheets immediately
+    DB.updateUnit(unit).catch(e => console.error('Unit status save error:', e));
     
     // Save and refresh
     saveState();
