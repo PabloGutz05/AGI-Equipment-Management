@@ -7315,7 +7315,8 @@ if(unitEditModal){
 let currentUnitForComments = null;
 
 function openUnitCommentsModal(unit){
-  currentUnitForComments = unit;
+  // Deep copy to prevent reference issues with auto-refresh
+  currentUnitForComments = JSON.parse(JSON.stringify(unit));
   const modal = qs('#unitCommentsModal');
   const title = qs('#unitCommentsTitle');
   if(!modal) return;
@@ -7541,17 +7542,26 @@ if(addUnitCommentBtn){
       currentUnitForComments.comments.push(commentObj);
     }
     
-    // Update the unit in state
+    // Always get fresh unit from state to avoid overwriting other changes
     const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
     if(unitIndex !== -1){
-      state.units[unitIndex] = currentUnitForComments;
+      // Merge comments into the latest state version
+      if(currentCommentsSource === 'overview'){
+        state.units[unitIndex].overviewComments = currentUnitForComments.overviewComments;
+      } else {
+        state.units[unitIndex].comments = currentUnitForComments.comments;
+      }
+      // Keep currentUnitForComments in sync
+      currentUnitForComments = JSON.parse(JSON.stringify(state.units[unitIndex]));
+      // Save to Google Sheets immediately
+      DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Comment save error:', e));
     }
     
     saveState();
     textarea.value = '';
     renderUnitComments();
-    renderUnits(); // Refresh the units table to show the new comment
-    renderUnitOverview(); // Refresh overview to update indicator
+    renderUnits();
+    renderUnitOverview();
     try{ if(typeof renderReport === 'function') renderReport(); }catch(e){}
   });
 }
@@ -7579,8 +7589,7 @@ function handleUnitStatusChange(unitId){
     return;
   }
   
-  // Use a deep copy to prevent reference issues with auto-refresh
-  const unit = JSON.parse(JSON.stringify(state.units[unitIndex]));
+  const unit = state.units[unitIndex];
   console.log('Found unit at index', unitIndex, ':', unit);
   
   // Get the modal elements
@@ -7653,9 +7662,6 @@ function handleUnitStatusChange(unitId){
     
     // Update the unit in the state array
     state.units[unitIndex] = unit;
-    
-    // Save to Google Sheets immediately
-    DB.updateUnit(unit).catch(e => console.error('Unit status save error:', e));
     
     // Save and refresh
     saveState();
