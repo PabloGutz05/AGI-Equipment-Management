@@ -7315,8 +7315,9 @@ if(unitEditModal){
 let currentUnitForComments = null;
 
 function openUnitCommentsModal(unit){
-  // Deep copy to prevent reference issues with auto-refresh
-  currentUnitForComments = JSON.parse(JSON.stringify(unit));
+  // Always get freshest version from state to avoid stale status/data
+  const freshUnit = state.units.find(u => u.id === unit.id || u.unitId === unit.unitId);
+  currentUnitForComments = JSON.parse(JSON.stringify(freshUnit || unit));
   const modal = qs('#unitCommentsModal');
   const title = qs('#unitCommentsTitle');
   if(!modal) return;
@@ -7542,21 +7543,20 @@ if(addUnitCommentBtn){
       currentUnitForComments.comments.push(commentObj);
     }
     
-    // Always get fresh unit from state to avoid overwriting other changes
+    // Only merge comments into freshest state — never overwrite status or other fields
     const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
     if(unitIndex !== -1){
-      // Merge comments into the latest state version
       if(currentCommentsSource === 'overview'){
         state.units[unitIndex].overviewComments = currentUnitForComments.overviewComments;
       } else {
         state.units[unitIndex].comments = currentUnitForComments.comments;
       }
-      // Keep currentUnitForComments in sync
+      // Keep modal in sync with latest state
       currentUnitForComments = JSON.parse(JSON.stringify(state.units[unitIndex]));
       // Save to Google Sheets immediately
       DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Comment save error:', e));
     }
-    
+
     saveState();
     textarea.value = '';
     renderUnitComments();
