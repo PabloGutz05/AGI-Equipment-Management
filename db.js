@@ -36,7 +36,7 @@ const DB = {
 
       const parsedRegistries = registries.map(r => ({
         ...r,
-        id: String(r.id || ''),
+        id: String(r[' '] || r.id || ''),
         seq: Number(r.seq) || 0,
         wdNumber: String(r.wdNumber || ''),
         docNumber: String(r.docNumber || ''),
