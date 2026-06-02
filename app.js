@@ -6915,7 +6915,8 @@ function syncRegistryUnitOptions(leaseVal, selectedUnits){
     checkbox.type = 'checkbox';
     checkbox.value = unitId;
     checkbox.style.cursor = 'pointer';
-    if(selectedUnits.includes(unitId)) checkbox.checked = true;
+    const normalizedSelected = selectedUnits.map(s => String(s).trim().toLowerCase());
+    if(normalizedSelected.includes(String(unitId).trim().toLowerCase())) checkbox.checked = true;
     
     const text = document.createElement('span');
     text.textContent = unitId;
@@ -7006,29 +7007,33 @@ function openRegistryEditModal(registry){
   qs('#editRegistryPeriodEnd').value = registry.periodEnd || '';
   qs('#editRegistrySubmitted').value = registry.submittedDate || '';
   
-  // Add lease change handler
+  // Add lease change handler - use the existing element, no cloneNode
   if(leaseSelect){
-    const newLeaseSelect = leaseSelect.cloneNode(true);
-    leaseSelect.parentNode.replaceChild(newLeaseSelect, leaseSelect);
-    newLeaseSelect.value = registryLease; // Restore value after cloning
-    
-    // Re-apply role restriction after cloning
+    // Re-apply role restriction
     if(userRole === 'Operator'){
-      newLeaseSelect.disabled = true;
-      newLeaseSelect.style.backgroundColor = '#f5f5f5';
-      newLeaseSelect.style.cursor = 'not-allowed';
-      newLeaseSelect.style.color = '#6b7280';
+      leaseSelect.disabled = true;
+      leaseSelect.style.backgroundColor = '#f5f5f5';
+      leaseSelect.style.cursor = 'not-allowed';
+      leaseSelect.style.color = '#6b7280';
     }
     
     // initial render of lease info panel
     try{ updateRegistryLeaseInfoPanel(registryLease); }catch(e){}
 
-    newLeaseSelect.addEventListener('change', () => {
+    // Remove old listeners by replacing with fresh element only for event
+    const freshLeaseSelect = leaseSelect.cloneNode(true);
+    leaseSelect.parentNode.replaceChild(freshLeaseSelect, leaseSelect);
+    freshLeaseSelect.value = registryLease;
+    if(userRole === 'Operator'){
+      freshLeaseSelect.disabled = true;
+      freshLeaseSelect.style.backgroundColor = '#f5f5f5';
+    }
+
+    freshLeaseSelect.addEventListener('change', () => {
       const container = qs('#editRegistryUnits');
       const currentlySelected = container ? Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value) : [];
-      if(typeof syncRegistryUnitOptions === 'function') syncRegistryUnitOptions(newLeaseSelect.value, currentlySelected);
-      // Update lease info panel on change
-      try{ updateRegistryLeaseInfoPanel(newLeaseSelect.value); }catch(e){}
+      if(typeof syncRegistryUnitOptions === 'function') syncRegistryUnitOptions(freshLeaseSelect.value, currentlySelected);
+      try{ updateRegistryLeaseInfoPanel(freshLeaseSelect.value); }catch(e){}
     });
   }
   
@@ -7108,7 +7113,8 @@ if(registryEditSaveBtn){
   registryEditSaveBtn.addEventListener('click', () => {
     const registryId = qs('#editRegistryId').value;
     const registry = state.registries.find(r => r.id === registryId);
-    if(!registry) return;
+    console.log('Registry save - ID:', registryId, 'Found:', !!registry);
+    if(!registry){ alert('Registry not found - please close and reopen the edit modal'); return; }
     
     // Update registry fields
     registry.wdNumber = qs('#editRegistryWD').value.trim();
