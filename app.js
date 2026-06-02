@@ -7113,12 +7113,12 @@ if(registryEditCancelBtn){
 
 const registryEditSaveBtn = qs('#registryEditSaveBtn');
 if(registryEditSaveBtn){
-  registryEditSaveBtn.addEventListener('click', () => {
+  registryEditSaveBtn.addEventListener('click', async () => {
     const registryId = qs('#editRegistryId').value;
     const registry = state.registries.find(r => r.id === registryId);
     console.log('Registry save - ID:', registryId, 'Found:', !!registry);
     if(!registry){ alert('Registry not found - please close and reopen the edit modal'); return; }
-    
+
     // Update registry fields
     registry.wdNumber = qs('#editRegistryWD').value.trim();
     registry.docNumber = qs('#editRegistryDoc').value.trim();
@@ -7128,15 +7128,25 @@ if(registryEditSaveBtn){
     registry.periodStart = qs('#editRegistryPeriodStart').value.trim();
     registry.periodEnd = qs('#editRegistryPeriodEnd').value.trim();
     registry.submittedDate = qs('#editRegistrySubmitted').value.trim();
-    
+
     // Get selected units from checkboxes
     const unitsContainer = qs('#editRegistryUnits');
     const checkedBoxes = unitsContainer ? Array.from(unitsContainer.querySelectorAll('input[type="checkbox"]:checked')) : [];
     registry.units = checkedBoxes.map(cb => String(cb.value).trim()).filter(v => v);
     registry.unitCount = registry.units.length;
 
-    // Save to Google Sheets immediately
-    DB.updateRegistry(registry).catch(e => console.error('Registry edit save error:', e));
+    // Save to Google Sheets and wait for confirmation before rendering
+    const saveBtn = qs('#registryEditSaveBtn');
+    if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
+    try {
+      await DB.updateRegistry(registry);
+    } catch(e) {
+      console.error('Registry edit save error:', e);
+      alert('Failed to save to Google Sheets: ' + e.message);
+      if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = 'Save Changes'; }
+      return;
+    }
+    if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = 'Save Changes'; }
 
     saveState();
     renderRegistries(registry.id);
@@ -7144,6 +7154,15 @@ if(registryEditSaveBtn){
     renderUnitOverview();
     renderLeaseOverview();
     renderOverview();
+
+    // Rebuild the Unit Detail Modal if it is currently open (it holds a stale snapshot)
+    try{
+      const detailModal = qs('#unitWdNumbersModal');
+      if(detailModal && detailModal.style.display !== 'none' && _unitDetailList && _unitDetailList.length > 0){
+        renderUnitDetailModal(_unitDetailList[_unitDetailIndex] || _unitDetailList[0]);
+      }
+    }catch(e){}
+
     closeRegistryEditModal();
   });
 }
