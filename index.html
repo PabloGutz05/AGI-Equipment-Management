@@ -648,20 +648,7 @@
           <input id="editUnitNotes" type="text" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
         </label>
         
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Status</span>
-          <select id="editUnitStatus" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
-            <option value="Operational">Operational</option>
-            <option value="Disabled">Disabled</option>
-          </select>
-        </label>
-        
-        <div id="editUnitDisabledDateContainer" style="display:none;">
-          <label style="display:flex;flex-direction:column;gap:4px;">
-            <span style="font-weight:600;font-size:13px;">Disabled Date</span>
-            <input id="editUnitDisabledDate" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
-          </label>
-        </div>
+        <!-- Status is managed via Disable/Enable button only, not editable here -->
         
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
           <button type="button" id="unitEditCancelBtn">Cancel</button>

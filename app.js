@@ -7271,7 +7271,7 @@ if(unitEditSaveBtn){
     // Get lease info
     const lease = state.leases.find(l => (l.leaseNumber === newLeaseValue) || (l.id === newLeaseValue));
     
-    // Update unit fields
+    // Update unit fields — only update editable fields, NEVER touch status/statusHistory
     unit.lease = newLeaseValue;
     unit.company = lease ? (lease.company || '') : '';
     unit.supplier = lease ? (lease.supplier || '') : '';
@@ -7286,14 +7286,11 @@ if(unitEditSaveBtn){
     })();
     unit.description = qs('#editUnitDesc').value.trim();
     unit.notes = qs('#editUnitNotes').value.trim();
-    unit.status = qs('#editUnitStatus').value;
-    
-    if(unit.status === 'Disabled'){
-      unit.disabledDate = qs('#editUnitDisabledDate').value || new Date().toISOString().slice(0,10);
-    } else {
-      delete unit.disabledDate;
-    }
-    
+    // NOTE: status is intentionally NOT updated here — use the Disable/Enable button instead
+
+    // Save to Google Sheets immediately
+    DB.updateUnit(unit).catch(e => console.error('Unit edit save error:', e));
+
     saveState();
     renderUnits();
     renderOverview();
@@ -7315,9 +7312,7 @@ if(unitEditModal){
 let currentUnitForComments = null;
 
 function openUnitCommentsModal(unit){
-  // Always get freshest version from state to avoid stale status/data
-  const freshUnit = state.units.find(u => u.id === unit.id || u.unitId === unit.unitId);
-  currentUnitForComments = JSON.parse(JSON.stringify(freshUnit || unit));
+  currentUnitForComments = unit;
   const modal = qs('#unitCommentsModal');
   const title = qs('#unitCommentsTitle');
   if(!modal) return;
@@ -7543,25 +7538,17 @@ if(addUnitCommentBtn){
       currentUnitForComments.comments.push(commentObj);
     }
     
-    // Only merge comments into freshest state — never overwrite status or other fields
+    // Update the unit in state
     const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
     if(unitIndex !== -1){
-      if(currentCommentsSource === 'overview'){
-        state.units[unitIndex].overviewComments = currentUnitForComments.overviewComments;
-      } else {
-        state.units[unitIndex].comments = currentUnitForComments.comments;
-      }
-      // Keep modal in sync with latest state
-      currentUnitForComments = JSON.parse(JSON.stringify(state.units[unitIndex]));
-      // Save to Google Sheets immediately
-      DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Comment save error:', e));
+      state.units[unitIndex] = currentUnitForComments;
     }
-
+    
     saveState();
     textarea.value = '';
     renderUnitComments();
-    renderUnits();
-    renderUnitOverview();
+    renderUnits(); // Refresh the units table to show the new comment
+    renderUnitOverview(); // Refresh overview to update indicator
     try{ if(typeof renderReport === 'function') renderReport(); }catch(e){}
   });
 }
