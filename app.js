@@ -7161,6 +7161,9 @@ try{ if(typeof initOverviewSubtabs === 'function') initOverviewSubtabs(); }catch
 function openUnitEditModal(unit){
   const modal = qs('#unitEditModal');
   if(!modal) return;
+  // Always use freshest version from state
+  const freshUnit = state.units.find(u => u.id === unit.id) || unit;
+  unit = JSON.parse(JSON.stringify(freshUnit));
   
   // Populate lease dropdown
   const leaseSelect = qs('#editUnitLease');
@@ -7328,7 +7331,9 @@ if(unitEditModal){
 let currentUnitForComments = null;
 
 function openUnitCommentsModal(unit){
-  currentUnitForComments = unit;
+  // Always get freshest version from state to avoid stale status/data
+  const freshUnit = state.units.find(u => u.id === unit.id || u.unitId === unit.unitId);
+  currentUnitForComments = JSON.parse(JSON.stringify(freshUnit || unit));
   const modal = qs('#unitCommentsModal');
   const title = qs('#unitCommentsTitle');
   if(!modal) return;
@@ -7474,10 +7479,20 @@ function renderUnitComments(){
           if(unitIndex !== -1){
             state.units[unitIndex] = currentUnitForComments;
           }
+          // Save merged comments to Sheets
+          const delUnitIdx = state.units.findIndex(u => u.id === currentUnitForComments.id);
+          if(delUnitIdx !== -1){
+            if(currentCommentsSource === 'overview'){
+              state.units[delUnitIdx].overviewComments = currentUnitForComments.overviewComments;
+            } else {
+              state.units[delUnitIdx].comments = currentUnitForComments.comments;
+            }
+            DB.updateUnit(state.units[delUnitIdx]).catch(e => console.error('Comment delete save error:', e));
+          }
           saveState();
           renderUnitComments();
-          renderUnits(); // Refresh units table (last comment column)
-          renderUnitOverview(); // Refresh overview to update the red ! indicator
+          renderUnits();
+          renderUnitOverview();
         }
       });
       header.appendChild(deleteBtn);
@@ -7554,17 +7569,23 @@ if(addUnitCommentBtn){
       currentUnitForComments.comments.push(commentObj);
     }
     
-    // Update the unit in state
+    // Only merge comments into freshest state — never overwrite status or other fields
     const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
     if(unitIndex !== -1){
-      state.units[unitIndex] = currentUnitForComments;
+      if(currentCommentsSource === 'overview'){
+        state.units[unitIndex].overviewComments = currentUnitForComments.overviewComments;
+      } else {
+        state.units[unitIndex].comments = currentUnitForComments.comments;
+      }
+      currentUnitForComments = JSON.parse(JSON.stringify(state.units[unitIndex]));
+      DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Comment save error:', e));
     }
-    
+
     saveState();
     textarea.value = '';
     renderUnitComments();
-    renderUnits(); // Refresh the units table to show the new comment
-    renderUnitOverview(); // Refresh overview to update indicator
+    renderUnits();
+    renderUnitOverview();
     try{ if(typeof renderReport === 'function') renderReport(); }catch(e){}
   });
 }
@@ -7665,8 +7686,10 @@ function handleUnitStatusChange(unitId){
     
     // Update the unit in the state array
     state.units[unitIndex] = unit;
-    
-    // Save and refresh
+
+    // Save to Google Sheets immediately
+    DB.updateUnit(unit).catch(e => console.error('Unit status save error:', e));
+
     saveState();
     console.log('State saved');
     
@@ -7844,6 +7867,7 @@ function openUnitStatusHistoryModal(unit) {
               }
             }
             
+            DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status date save error:', e));
             saveState();
             renderUnits();
             if(typeof renderUnitOverview === 'function') renderUnitOverview();
@@ -7861,6 +7885,7 @@ function openUnitStatusHistoryModal(unit) {
           state.units[unitIndex].statusHistory = state.units[unitIndex].statusHistory.filter(h => 
             !(h.status === entry.status && h.timestamp === entry.timestamp)
           );
+          DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status history delete error:', e));
           saveState();
           renderUnits();
           if(typeof renderUnitOverview === 'function') renderUnitOverview();
