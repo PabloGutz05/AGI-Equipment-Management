@@ -7650,10 +7650,7 @@ function handleUnitStatusChange(unitId){
     // Update the unit in the state array
     state.units[unitIndex] = unit;
     
-    // Save to Google Sheets immediately — critical to persist before auto-refresh
-    DB.updateUnit(unit).catch(e => console.error('Status change save error:', e));
-
-    // Save meta
+    // Save and refresh
     saveState();
     console.log('State saved');
     
@@ -7830,6 +7827,7 @@ function openUnitStatusHistoryModal(unit) {
               }
             }
             
+            DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status date save error:', e));
             saveState();
             renderUnits();
             if(typeof renderUnitOverview === 'function') renderUnitOverview();
@@ -7847,6 +7845,7 @@ function openUnitStatusHistoryModal(unit) {
           state.units[unitIndex].statusHistory = state.units[unitIndex].statusHistory.filter(h => 
             !(h.status === entry.status && h.timestamp === entry.timestamp)
           );
+          DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status history delete error:', e));
           saveState();
           renderUnits();
           if(typeof renderUnitOverview === 'function') renderUnitOverview();
