@@ -8094,10 +8094,12 @@ function buildUnitCoverageGrid(unit) {
     }
   }catch(e){}
 
-  // Find latest invoice month
-  let endDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  // End at current month by default; extend only if there is a future invoice
+  const _today = new Date();
+  const _currentMonthDate = new Date(_today.getFullYear(), _today.getMonth(), 1);
+  let endDate = new Date(_currentMonthDate);
   try{
-    let latestMs = 0;
+    let latestInvoiceDate = null;
     registries.forEach(reg => {
       const units = Array.isArray(reg.units) ? reg.units : [];
       const inReg = units.some(u => String(u).trim().toLowerCase() === unitIdNorm);
@@ -8106,10 +8108,11 @@ function buildUnitCoverageGrid(unit) {
         const parts = String(reg.periodEnd).split('-');
         if(parts.length >= 2){
           const d = new Date(parseInt(parts[0]), parseInt(parts[1])-1, 1);
-          if(d.getTime() > latestMs){ latestMs = d.getTime(); endDate = d; }
+          if(!latestInvoiceDate || d.getTime() > latestInvoiceDate.getTime()) latestInvoiceDate = d;
         }
       }
     });
+    if(latestInvoiceDate && latestInvoiceDate.getTime() > _currentMonthDate.getTime()) endDate = latestInvoiceDate;
   }catch(e){}
 
   // Build month list
