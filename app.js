@@ -2049,36 +2049,23 @@ function renderRegistries(keepOpenRegistryId){
 function renderUnits(){
   const tbody = qs('#unitList'); if(!tbody) return; tbody.innerHTML = '';
   
-  // Initialize all units with status history
+  // Initialize statusHistory only if truly missing — NEVER touch unit.status here
   (state.units || []).forEach(unit => {
     if(!unit.statusHistory || unit.statusHistory.length === 0){
-      // Check if this is a legacy disabled unit
       if(unit.status === 'Disabled' && unit.disabledDate){
-        // Create status history based on legacy data
         unit.statusHistory = [
-          {
-            status: 'Operational',
-            date: '2025-01-01',
-            changedBy: 'System',
-            timestamp: '2025-01-01T00:00:00.000Z'
-          },
-          {
-            status: 'Disabled',
-            date: unit.disabledDate,
-            changedBy: 'System',
-            timestamp: new Date(unit.disabledDate).toISOString()
-          }
+          { status: 'Operational', date: '2025-01-01', changedBy: 'System', timestamp: '2025-01-01T00:00:00.000Z' },
+          { status: 'Disabled', date: unit.disabledDate, changedBy: 'System', timestamp: new Date(unit.disabledDate).toISOString() }
+        ];
+      } else if(unit.status === 'Disabled'){
+        // Disabled but no disabledDate — preserve status, build minimal history
+        unit.statusHistory = [
+          { status: 'Disabled', date: new Date().toISOString().slice(0,10), changedBy: 'System', timestamp: new Date().toISOString() }
         ];
       } else {
-        // Default to operational
-        unit.statusHistory = [{
-          status: 'Operational',
-          date: '2025-01-01',
-          changedBy: 'System',
-          timestamp: '2025-01-01T00:00:00.000Z'
-        }];
-        if(!unit.status) unit.status = 'Operational';
-        if(!unit.enabledDate) unit.enabledDate = '2025-01-01';
+        // Only set Operational if status is genuinely empty/missing
+        unit.statusHistory = [{ status: 'Operational', date: '2025-01-01', changedBy: 'System', timestamp: '2025-01-01T00:00:00.000Z' }];
+        if(!unit.status) unit.status = 'Operational'; // Only set if blank, never overwrite
       }
     }
   });
@@ -3423,34 +3410,20 @@ function renderUnitOverview(){
   const el = qs('#unitOverview'); if(!el) return;
   el.innerHTML = '';
 
-  // Initialize all units with status history
+  // Initialize statusHistory only if truly missing — NEVER touch unit.status here
   (state.units || []).forEach(unit => {
     if(!unit.statusHistory || unit.statusHistory.length === 0){
-      // Check if this is a legacy disabled unit
       if(unit.status === 'Disabled' && unit.disabledDate){
-        // Create status history based on legacy data
         unit.statusHistory = [
-          {
-            status: 'Operational',
-            date: '2025-01-01',
-            changedBy: 'System',
-            timestamp: '2025-01-01T00:00:00.000Z'
-          },
-          {
-            status: 'Disabled',
-            date: unit.disabledDate,
-            changedBy: 'System',
-            timestamp: new Date(unit.disabledDate).toISOString()
-          }
+          { status: 'Operational', date: '2025-01-01', changedBy: 'System', timestamp: '2025-01-01T00:00:00.000Z' },
+          { status: 'Disabled', date: unit.disabledDate, changedBy: 'System', timestamp: new Date(unit.disabledDate).toISOString() }
+        ];
+      } else if(unit.status === 'Disabled'){
+        unit.statusHistory = [
+          { status: 'Disabled', date: new Date().toISOString().slice(0,10), changedBy: 'System', timestamp: new Date().toISOString() }
         ];
       } else {
-        // Default to operational
-        unit.statusHistory = [{
-          status: 'Operational',
-          date: '2025-01-01',
-          changedBy: 'System',
-          timestamp: '2025-01-01T00:00:00.000Z'
-        }];
+        unit.statusHistory = [{ status: 'Operational', date: '2025-01-01', changedBy: 'System', timestamp: '2025-01-01T00:00:00.000Z' }];
         if(!unit.status) unit.status = 'Operational';
       }
     }

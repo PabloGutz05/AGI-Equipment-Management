@@ -66,7 +66,7 @@ const DB = {
         status: String(u.status || ''),
         disabledDate: String(u.disabledDate || ''),
         enabledDate: String(u.enabledDate || ''),
-        statusHistory: DB.parseField(u.statusHistory) || [],
+        statusHistory: (()=>{ const v = DB.parseField(u.statusHistory); return Array.isArray(v) ? v : []; })(),
         comments: DB.parseField(u.comments) || [],
         overviewComments: DB.parseField(u.overviewComments) || [],
         createdAt: String(u.createdAt || '')
