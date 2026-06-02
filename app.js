@@ -1158,6 +1158,8 @@ qs('#leaseForm').addEventListener('submit', e=>{
 
   if(editingId){
     state.leases = state.leases.map(l => l.id === editingId ? Object.assign({}, l, leaseObj) : l);
+    const updatedLease = state.leases.find(l => l.id === editingId);
+    if(updatedLease) DB.updateLease(updatedLease).catch(e => console.error('Lease update error:', e));
   } else {
     state.leases.push(leaseObj);
     DB.saveLease(leaseObj).catch(e => console.error('Lease save error:', e));
@@ -1194,8 +1196,9 @@ qs('#userForm').addEventListener('submit', e=>{
   if(clash){ alert('Username already exists. Please choose another username.'); return; }
 
   if(editingId){
-    // replace
     state.users = state.users.map(u => u.id === editingId ? Object.assign({}, u, userObj) : u);
+    const updatedUser = state.users.find(u => u.id === editingId);
+    if(updatedUser) DB.updateUser(updatedUser).catch(e => console.error('User update error:', e));
   } else {
     state.users.push(userObj);
     DB.saveUser(userObj).catch(e => console.error('User save error:', e));
@@ -1564,6 +1567,7 @@ function renderInvoices(){
           const newComment = prompt('Enter comment for this invoice:', inv.comment || '');
           if(newComment !== null){
             inv.comment = newComment;
+            DB.updateRegistry(inv).catch(e => console.error('Invoice comment save error:', e));
             saveState();
             renderInvoices();
           }
@@ -1980,6 +1984,7 @@ function renderRegistries(keepOpenRegistryId){
               commentMenuPanel.style.display = 'none';
               if(confirm('Delete this comment?')){
                 r.comments.splice(commentIdx, 1);
+                DB.updateRegistry(r).catch(e => console.error('Registry comment delete error:', e));
                 saveState();
                 renderRegistries(r.id);
               }
@@ -2323,6 +2328,7 @@ function renderUnits(){
           save.addEventListener('click', ()=>{
             const v = input.value;
             if(v) state.units[actualIndex].disabledDate = v; else delete state.units[actualIndex].disabledDate;
+            DB.updateUnit(state.units[actualIndex]).catch(e => console.error('Unit date save error:', e));
             saveState(); renderUnits(); renderOverview();
           });
           cancel.addEventListener('click', ()=>{ renderDisabledDateFor(); });
@@ -2338,7 +2344,7 @@ function renderUnits(){
     });
 
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', ()=>{ if(!confirm('Delete this unit?')) return; state.units.splice(i,1); saveState(); renderUnits(); renderOverview(); });
+    delBtn.addEventListener('click', ()=>{ if(!confirm('Delete this unit?')) return; const deletedUnit = state.units[i]; state.units.splice(i,1); DB.deleteUnit(deletedUnit.id).catch(e => console.error('Unit delete error:', e)); saveState(); renderUnits(); renderOverview(); });
 
   tdActions.appendChild(editBtn); tdActions.appendChild(toggleBtn); tdActions.appendChild(delBtn);
 
@@ -2839,6 +2845,7 @@ function renderLeases(){
         state.leases[idx].status = 'Disabled';
         if(!state.leases[idx].disabledDate) state.leases[idx].disabledDate = new Date().toISOString().slice(0,10);
       }
+      DB.updateLease(state.leases[idx]).catch(e => console.error('Lease status save error:', e));
       saveState(); 
       renderLeases(); 
       renderOverview();
@@ -2852,6 +2859,7 @@ function renderLeases(){
       state.leases = state.leases.filter(x=>x.id !== l.id);
       state.units = (state.units || []).map(u => (u.lease === l.leaseNumber) ? Object.assign({}, u, { lease: '' }) : u);
       state.invoices = (state.invoices || []).map(inv => (inv.lease === l.leaseNumber) ? Object.assign({}, inv, { lease: '' }) : inv);
+      DB.deleteLease(l.id).catch(e => console.error('Lease delete error:', e));
       saveState(); renderLeases(); renderUnits(); renderInvoices(); renderOverview();
     });
 
@@ -2998,7 +3006,7 @@ function renderUsers(){
     tr.innerHTML = `<td>${idx+1}</td><td>${escapeHtml(u.firstName||'')}</td><td>${escapeHtml(u.lastName||'')}</td><td>${escapeHtml(u.username||'')}</td><td>${escapeHtml(u.role||'Operator')}</td><td><button class="edit" data-id="${u.id}">Edit</button> <button class="del" data-id="${u.id}">Delete</button></td>`;
     tbody.appendChild(tr);
   });
-  tbody.querySelectorAll('.del').forEach(b=>b.addEventListener('click', e=>{ const id=e.target.dataset.id; if(!confirm('Delete this user?')) return; state.users = state.users.filter(x=>x.id!==id); saveState(); renderUsers(); renderOverview(); }));
+  tbody.querySelectorAll('.del').forEach(b=>b.addEventListener('click', e=>{ const id=e.target.dataset.id; if(!confirm('Delete this user?')) return; DB.deleteUser(id).catch(e => console.error('User delete error:', e)); state.users = state.users.filter(x=>x.id!==id); saveState(); renderUsers(); renderOverview(); }));
   tbody.querySelectorAll('.edit').forEach(b=>b.addEventListener('click', e=>{
     const id = e.target.dataset.id; const u = state.users.find(x=>x.id===id); if(!u) return;
   const form = qs('#userForm');
@@ -7119,6 +7127,7 @@ if(registryEditSaveBtn){
     registry.units = checkedBoxes.map(cb => cb.value).filter(v => v);
     registry.unitCount = registry.units.length;
     
+    DB.updateRegistry(registry).catch(e => console.error('Registry edit save error:', e));
     saveState();
     renderRegistries(registry.id);
     renderInvoices();
@@ -7684,6 +7693,7 @@ function clearLegacyData(unitId) {
   if (unitIndex !== -1) {
     delete state.units[unitIndex].disabledDate;
     delete state.units[unitIndex].enabledDate;
+    DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Clear legacy data error:', e));
     saveState();
     renderUnits();
     if (typeof renderUnitOverview === 'function') renderUnitOverview();
@@ -7827,7 +7837,6 @@ function openUnitStatusHistoryModal(unit) {
               }
             }
             
-            DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status date save error:', e));
             saveState();
             renderUnits();
             if(typeof renderUnitOverview === 'function') renderUnitOverview();
@@ -7845,7 +7854,6 @@ function openUnitStatusHistoryModal(unit) {
           state.units[unitIndex].statusHistory = state.units[unitIndex].statusHistory.filter(h => 
             !(h.status === entry.status && h.timestamp === entry.timestamp)
           );
-          DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status history delete error:', e));
           saveState();
           renderUnits();
           if(typeof renderUnitOverview === 'function') renderUnitOverview();
