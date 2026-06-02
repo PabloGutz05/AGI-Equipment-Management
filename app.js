@@ -2246,7 +2246,8 @@ function renderUnits(){
   units.forEach((u, i)=>{
     const tr = document.createElement('tr');
     const tdIndex = document.createElement('td'); tdIndex.textContent = i+1;
-  const tdUnit = document.createElement('td'); tdUnit.innerHTML = `<strong>${escapeHtml(u.unitId || '')}</strong>`;
+  const tdUnit = document.createElement('td'); tdUnit.innerHTML = `<strong style="cursor:pointer;color:#0b74de;" title="View unit detail">${escapeHtml(u.unitId || '')}</strong>`;
+  tdUnit.querySelector('strong').addEventListener('click', (e)=>{ e.stopPropagation(); openUnitWdNumbersModal(u.unitId, new Date().getFullYear(), new Date().getMonth()); });
     const tdLease = document.createElement('td'); tdLease.textContent = u.lease || '';
     const tdCompany = document.createElement('td'); tdCompany.textContent = u.company || '';
     const tdSupplier = document.createElement('td'); tdSupplier.textContent = u.supplier || '';
@@ -7161,9 +7162,6 @@ try{ if(typeof initOverviewSubtabs === 'function') initOverviewSubtabs(); }catch
 function openUnitEditModal(unit){
   const modal = qs('#unitEditModal');
   if(!modal) return;
-  // Always use freshest version from state
-  const freshUnit = state.units.find(u => u.id === unit.id) || unit;
-  unit = JSON.parse(JSON.stringify(freshUnit));
   
   // Populate lease dropdown
   const leaseSelect = qs('#editUnitLease');
@@ -7331,9 +7329,7 @@ if(unitEditModal){
 let currentUnitForComments = null;
 
 function openUnitCommentsModal(unit){
-  // Always get freshest version from state to avoid stale status/data
-  const freshUnit = state.units.find(u => u.id === unit.id || u.unitId === unit.unitId);
-  currentUnitForComments = JSON.parse(JSON.stringify(freshUnit || unit));
+  currentUnitForComments = unit;
   const modal = qs('#unitCommentsModal');
   const title = qs('#unitCommentsTitle');
   if(!modal) return;
@@ -7479,20 +7475,10 @@ function renderUnitComments(){
           if(unitIndex !== -1){
             state.units[unitIndex] = currentUnitForComments;
           }
-          // Save merged comments to Sheets
-          const delUnitIdx = state.units.findIndex(u => u.id === currentUnitForComments.id);
-          if(delUnitIdx !== -1){
-            if(currentCommentsSource === 'overview'){
-              state.units[delUnitIdx].overviewComments = currentUnitForComments.overviewComments;
-            } else {
-              state.units[delUnitIdx].comments = currentUnitForComments.comments;
-            }
-            DB.updateUnit(state.units[delUnitIdx]).catch(e => console.error('Comment delete save error:', e));
-          }
           saveState();
           renderUnitComments();
-          renderUnits();
-          renderUnitOverview();
+          renderUnits(); // Refresh units table (last comment column)
+          renderUnitOverview(); // Refresh overview to update the red ! indicator
         }
       });
       header.appendChild(deleteBtn);
@@ -7569,23 +7555,17 @@ if(addUnitCommentBtn){
       currentUnitForComments.comments.push(commentObj);
     }
     
-    // Only merge comments into freshest state — never overwrite status or other fields
+    // Update the unit in state
     const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
     if(unitIndex !== -1){
-      if(currentCommentsSource === 'overview'){
-        state.units[unitIndex].overviewComments = currentUnitForComments.overviewComments;
-      } else {
-        state.units[unitIndex].comments = currentUnitForComments.comments;
-      }
-      currentUnitForComments = JSON.parse(JSON.stringify(state.units[unitIndex]));
-      DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Comment save error:', e));
+      state.units[unitIndex] = currentUnitForComments;
     }
-
+    
     saveState();
     textarea.value = '';
     renderUnitComments();
-    renderUnits();
-    renderUnitOverview();
+    renderUnits(); // Refresh the units table to show the new comment
+    renderUnitOverview(); // Refresh overview to update indicator
     try{ if(typeof renderReport === 'function') renderReport(); }catch(e){}
   });
 }
@@ -7686,10 +7666,8 @@ function handleUnitStatusChange(unitId){
     
     // Update the unit in the state array
     state.units[unitIndex] = unit;
-
-    // Save to Google Sheets immediately
-    DB.updateUnit(unit).catch(e => console.error('Unit status save error:', e));
-
+    
+    // Save and refresh
     saveState();
     console.log('State saved');
     
@@ -7867,7 +7845,6 @@ function openUnitStatusHistoryModal(unit) {
               }
             }
             
-            DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status date save error:', e));
             saveState();
             renderUnits();
             if(typeof renderUnitOverview === 'function') renderUnitOverview();
@@ -7885,7 +7862,6 @@ function openUnitStatusHistoryModal(unit) {
           state.units[unitIndex].statusHistory = state.units[unitIndex].statusHistory.filter(h => 
             !(h.status === entry.status && h.timestamp === entry.timestamp)
           );
-          DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Status history delete error:', e));
           saveState();
           renderUnits();
           if(typeof renderUnitOverview === 'function') renderUnitOverview();
@@ -7952,348 +7928,513 @@ if (statusHistoryModal) {
 }
 
 // ==================== WD NUMBERS MODAL ====================
+// ==================== UNIT DETAIL MODAL ====================
+// Tracks the filtered unit list for navigation
+let _unitDetailList = [];
+let _unitDetailIndex = 0;
+
 function openUnitWdNumbersModal(unitId, year, month) {
-  // Store the year/month for use by comment feature
   window.currentWdNumbersYear = year;
   window.currentWdNumbersMonth = month;
-  
-  const modal = qs('#unitWdNumbersModal');
-  const title = qs('#unitWdNumbersTitle');
-  const listDiv = qs('#unitWdNumbersList');
-  
-  if (!modal || !title || !listDiv) return;
-  
-  // Find the unit to display full information
-  const unit = (state.units || []).find(u => 
-    (u.unitId || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase()
-  );
-  
-  title.textContent = `WD Numbers - ${unitId}`;
-  
-  // Add unit information below title (as first child of modal-body, before the list)
-  const modalBody = listDiv.parentNode;
-  let unitInfoDiv = qs('#unitWdNumbersInfo');
-  if (!unitInfoDiv) {
-    unitInfoDiv = document.createElement('div');
-    unitInfoDiv.id = 'unitWdNumbersInfo';
-    unitInfoDiv.style.padding = '12px 20px';
-    unitInfoDiv.style.backgroundColor = '#f9fafb';
-    unitInfoDiv.style.borderBottom = '1px solid #e5e7eb';
-    unitInfoDiv.style.fontSize = '13px';
-    unitInfoDiv.style.color = '#374151';
-    modalBody.insertBefore(unitInfoDiv, listDiv);
+
+  // Build navigation list from current Unit Overview filtered/sorted units
+  try {
+    const tbody = qs('#unitOverview table tbody');
+    if(tbody){
+      _unitDetailList = Array.from(tbody.querySelectorAll('tr')).map(tr => {
+        const firstCell = tr.querySelector('td');
+        return firstCell ? (firstCell.textContent || '').trim().replace(/\s*!\s*$/, '').trim() : '';
+      }).filter(Boolean);
+    } else {
+      _unitDetailList = (state.units || []).map(u => u.unitId || '');
+    }
+  } catch(e) {
+    _unitDetailList = (state.units || []).map(u => u.unitId || '');
   }
-  
-  if (unit) {
-    // Get the most recent status and its date
-    let statusDate = 'N/A';
-    if (unit.statusHistory && unit.statusHistory.length > 0) {
-      const lastStatus = unit.statusHistory[unit.statusHistory.length - 1];
-      if (lastStatus.date) {
-        const dateParts = lastStatus.date.split('-');
-        if (dateParts.length === 3) {
-          const d = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]));
-          statusDate = d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
-        } else {
-          statusDate = lastStatus.date;
+
+  _unitDetailIndex = _unitDetailList.findIndex(id =>
+    String(id).trim().toLowerCase() === String(unitId).trim().toLowerCase()
+  );
+  if(_unitDetailIndex === -1) _unitDetailIndex = 0;
+
+  renderUnitDetailModal(unitId);
+
+  const modal = qs('#unitWdNumbersModal');
+  if(modal) modal.style.display = 'flex';
+}
+
+function renderUnitDetailModal(unitId) {
+  const unit = (state.units || []).find(u =>
+    String(u.unitId || '').trim().toLowerCase() === String(unitId || '').trim().toLowerCase()
+  );
+  if(!unit) return;
+
+  window.currentWdNumbersYear = window.currentWdNumbersYear || new Date().getFullYear();
+  window.currentWdNumbersMonth = window.currentWdNumbersMonth || new Date().getMonth();
+
+  // --- Header ---
+  const titleEl = qs('#unitDetailTitle');
+  if(titleEl) titleEl.textContent = unit.unitId || unitId;
+
+  const statusEl = qs('#unitDetailStatus');
+  if(statusEl){
+    const isDisabled = (unit.status || '').toLowerCase() === 'disabled';
+    statusEl.textContent = isDisabled ? 'Disabled' : 'Operational';
+    statusEl.style.background = isDisabled ? 'rgba(220,38,38,0.2)' : 'rgba(34,197,94,0.2)';
+    statusEl.style.color = isDisabled ? '#f87171' : '#4ade80';
+  }
+
+  // Navigation
+  const navEl = qs('#unitDetailNav');
+  if(navEl) navEl.textContent = `${_unitDetailIndex + 1} / ${_unitDetailList.length}`;
+
+  // Info grid
+  const infoEl = qs('#unitDetailInfo');
+  if(infoEl){
+    // Find operating since from statusHistory
+    let operatingSince = 'Jan 2025';
+    try{
+      const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
+      if(hist.length > 0){
+        const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
+        const d = new Date(firstOp.date);
+        operatingSince = d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+      }
+    }catch(e){}
+
+    const fields = [
+      { label: 'SUPPLIER', value: unit.supplier || '—' },
+      { label: 'LEASE', value: unit.lease || '—' },
+      { label: 'ARRANGEMENT', value: unit.arrangement || '—' },
+      { label: 'INVOICING', value: unit.invoicing || '—' },
+      { label: 'OPERATING SINCE', value: operatingSince },
+      { label: 'COMPANY', value: unit.company || '—' }
+    ];
+
+    infoEl.innerHTML = fields.map(f => `
+      <div>
+        <div style="font-size:10px;font-weight:700;color:#4b5563;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:3px;">${f.label}</div>
+        <div style="font-size:13px;font-weight:600;color:#e2e8f0;">${escapeHtml(f.value)}</div>
+      </div>
+    `).join('');
+  }
+
+  // --- Build coverage history grid ---
+  buildUnitCoverageGrid(unit);
+
+  // --- Stats footer ---
+  buildUnitStats(unit);
+
+  // --- Navigation buttons ---
+  const prevBtn = qs('#unitDetailPrev');
+  const nextBtn = qs('#unitDetailNext');
+  if(prevBtn){
+    prevBtn.onclick = () => {
+      if(_unitDetailIndex > 0){
+        _unitDetailIndex--;
+        renderUnitDetailModal(_unitDetailList[_unitDetailIndex]);
+      }
+    };
+    prevBtn.style.opacity = _unitDetailIndex === 0 ? '0.3' : '1';
+  }
+  if(nextBtn){
+    nextBtn.onclick = () => {
+      if(_unitDetailIndex < _unitDetailList.length - 1){
+        _unitDetailIndex++;
+        renderUnitDetailModal(_unitDetailList[_unitDetailIndex]);
+      }
+    };
+    nextBtn.style.opacity = _unitDetailIndex === _unitDetailList.length - 1 ? '0.3' : '1';
+  }
+}
+
+function buildUnitCoverageGrid(unit) {
+  const gridEl = qs('#unitDetailGrid');
+  const popupEl = qs('#unitDetailPopup');
+  if(!gridEl) return;
+  gridEl.innerHTML = '';
+  if(popupEl) popupEl.style.display = 'none';
+
+  const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
+  const invoices = state.invoices || [];
+  const registries = state.registries || [];
+
+  // Determine date range: from first operational date to latest invoice month
+  let startDate = new Date(2025, 0, 1); // fallback Jan 2025
+  try{
+    const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
+    if(hist.length > 0){
+      const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
+      const d = new Date(firstOp.date);
+      startDate = new Date(d.getFullYear(), d.getMonth(), 1);
+    }
+  }catch(e){}
+
+  // Find latest invoice month
+  let endDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  try{
+    let latestMs = 0;
+    registries.forEach(reg => {
+      const units = Array.isArray(reg.units) ? reg.units : [];
+      const inReg = units.some(u => String(u).trim().toLowerCase() === unitIdNorm);
+      if(!inReg) return;
+      if(reg.periodEnd){
+        const parts = String(reg.periodEnd).split('-');
+        if(parts.length >= 2){
+          const d = new Date(parseInt(parts[0]), parseInt(parts[1])-1, 1);
+          if(d.getTime() > latestMs){ latestMs = d.getTime(); endDate = d; }
         }
       }
-    }
-    
-    unitInfoDiv.innerHTML = `
-      <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;">
-        <div><strong>Lease:</strong> ${escapeHtml(unit.lease || 'N/A')}</div>
-        <div><strong>Company:</strong> ${escapeHtml(unit.company || 'N/A')}</div>
-        <div><strong>Supplier:</strong> ${escapeHtml(unit.supplier || 'N/A')}</div>
-        <div><strong>Arrangement:</strong> ${escapeHtml(unit.arrangement || 'N/A')}</div>
-        <div><strong>Invoicing:</strong> ${escapeHtml(unit.invoicing || 'N/A')}</div>
-        <div><strong>Monthly:</strong> ${unit.monthly ? formatCurrency(unit.monthly) : 'N/A'}</div>
-        <div style="grid-column:1/-1;"><strong>Description:</strong> ${escapeHtml(unit.description || 'N/A')}</div>
-        <div style="grid-column:1/-1;"><strong>Status:</strong> ${escapeHtml(unit.status || 'Operational')} - ${statusDate}</div>
-      </div>
-    `;
-  } else {
-    unitInfoDiv.innerHTML = '<div style="color:#6b7280;">Unit information not found.</div>';
+    });
+  }catch(e){}
+
+  // Build month list
+  const months = [];
+  let cur = new Date(startDate);
+  while(cur <= endDate){
+    months.push(new Date(cur));
+    cur.setMonth(cur.getMonth() + 1);
   }
-  
-  // Filter registries that cover this unit in the selected month (same logic as Unit Overview)
+
+  // Build table
+  const table = document.createElement('table');
+  table.style.cssText = 'border-collapse:collapse;font-size:11px;min-width:100%;';
+
+  months.forEach(monthDate => {
+    const y = monthDate.getFullYear();
+    const m = monthDate.getMonth();
+    const daysInMonth = new Date(y, m+1, 0).getDate();
+    const monthLabel = monthDate.toLocaleString('en-US', { month: 'short', year: '2-digit' });
+
+    const tr = document.createElement('tr');
+
+    // Month label cell
+    const tdMonth = document.createElement('td');
+    tdMonth.style.cssText = 'padding:2px 8px 2px 0;color:#6b7280;font-size:11px;font-weight:600;white-space:nowrap;cursor:pointer;min-width:48px;';
+    tdMonth.textContent = monthLabel;
+    tdMonth.title = 'Click to see all invoices this month';
+    tdMonth.addEventListener('mouseenter', () => tdMonth.style.color = '#60a5fa');
+    tdMonth.addEventListener('mouseleave', () => tdMonth.style.color = '#6b7280');
+    tdMonth.addEventListener('click', () => showMonthDetail(unit, y, m, popupEl));
+    tr.appendChild(tdMonth);
+
+    // Day cells
+    for(let d = 1; d <= daysInMonth; d++){
+      const tdDay = document.createElement('td');
+      tdDay.style.cssText = 'padding:1px;';
+
+      const sq = document.createElement('div');
+      const dayState = getDayState(unitIdNorm, y, m, d, registries, invoices, unit);
+
+      sq.style.cssText = `
+        width:16px;height:16px;border-radius:2px;
+        display:flex;align-items:center;justify-content:center;
+        font-size:8px;cursor:pointer;transition:transform 0.1s;
+        font-weight:600;
+      `;
+      sq.textContent = d;
+
+      // Apply colors matching existing system
+      if(dayState.disabled){
+        tdDay.style.background = '#7f1d1d';
+        if(dayState.covered){
+          sq.style.background = '#166534';
+          sq.style.color = '#4ade80';
+          sq.style.border = '1px solid #22c55e';
+        } else {
+          sq.style.background = '#1c0a0a';
+          sq.style.color = '#f87171';
+          sq.style.border = '1px solid #7f1d1d';
+        }
+      } else if(dayState.credit){
+        sq.style.background = dayState.overlap ? '#fee2e2' : (dayState.covered ? '#dcfce7' : '#fff');
+        sq.style.border = '2px solid #eab308';
+        sq.style.color = '#eab308';
+      } else if(dayState.overlap){
+        sq.style.background = '#7f1d1d';
+        sq.style.color = '#fca5a5';
+        sq.style.border = '1px solid #ef4444';
+      } else if(dayState.covered){
+        sq.style.background = '#14532d';
+        sq.style.color = '#4ade80';
+        sq.style.border = '1px solid #166534';
+      } else {
+        sq.style.background = '#111827';
+        sq.style.color = '#374151';
+        sq.style.border = '1px solid #1f2937';
+      }
+
+      sq.addEventListener('mouseenter', () => { sq.style.transform = 'scale(1.3)'; sq.style.zIndex = '10'; sq.style.position = 'relative'; });
+      sq.addEventListener('mouseleave', () => { sq.style.transform = ''; sq.style.zIndex = ''; sq.style.position = ''; });
+      sq.addEventListener('click', () => showDayDetail(unit, y, m, d, registries, invoices, popupEl));
+
+      tdDay.appendChild(sq);
+      tr.appendChild(tdDay);
+    }
+
+    table.appendChild(tr);
+  });
+
+  gridEl.appendChild(table);
+}
+
+function getDayState(unitIdNorm, y, m, d, registries, invoices, unit){
+  const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const result = { covered: false, overlap: false, credit: false, disabled: false, rentalCount: 0 };
+
+  // Check disabled
+  try{
+    const periods = getDisabledPeriods(unit);
+    result.disabled = isDateInDisabledPeriod(y, m, d, periods);
+  }catch(e){}
+
+  // Check registry coverage
+  registries.forEach(reg => {
+    const units = Array.isArray(reg.units) ? reg.units : [];
+    const inReg = units.some(u => String(u).trim().toLowerCase() === unitIdNorm);
+    if(!inReg) return;
+    if(!reg.periodStart || !reg.periodEnd) return;
+
+    const sp = String(reg.periodStart).split('-');
+    const ep = String(reg.periodEnd).split('-');
+    if(sp.length < 3 || ep.length < 3) return;
+
+    const start = `${sp[0]}-${sp[1].padStart(2,'0')}-${sp[2].padStart(2,'0')}`;
+    const end = `${ep[0]}-${ep[1].padStart(2,'0')}-${ep[2].padStart(2,'0')}`;
+    if(dateStr < start || dateStr > end) return;
+
+    let cat = String(reg.category || '').toLowerCase();
+    if(!cat){
+      const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
+      cat = inv ? String(inv.category||'').toLowerCase() : '';
+    }
+
+    if(cat === 'rental'){ result.rentalCount++; result.covered = true; }
+    if(cat === 'credit'){ result.credit = true; }
+  });
+
+  if(result.rentalCount > 1) result.overlap = true;
+  return result;
+}
+
+function showDayDetail(unit, y, m, d, registries, invoices, popupEl){
+  if(!popupEl) return;
+  const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
+  const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const monthName = new Date(y,m,d).toLocaleString('en-US', { month:'long', day:'numeric', year:'numeric' });
+
+  const matchingRegs = registries.filter(reg => {
+    const units = Array.isArray(reg.units) ? reg.units : [];
+    if(!units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return false;
+    if(!reg.periodStart || !reg.periodEnd) return false;
+    const sp = String(reg.periodStart).split('-');
+    const ep = String(reg.periodEnd).split('-');
+    if(sp.length < 3 || ep.length < 3) return false;
+    const start = `${sp[0]}-${sp[1].padStart(2,'0')}-${sp[2].padStart(2,'0')}`;
+    const end = `${ep[0]}-${ep[1].padStart(2,'0')}-${ep[2].padStart(2,'0')}`;
+    return dateStr >= start && dateStr <= end;
+  });
+
+  popupEl.style.display = 'block';
+  if(matchingRegs.length === 0){
+    popupEl.innerHTML = `<div style="color:#6b7280;font-size:13px;">No invoice covering <strong style="color:#e2e8f0;">${monthName}</strong></div>`;
+    return;
+  }
+
+  const fmtDate = (s) => {
+    if(!s) return '';
+    const p = String(s).split('-');
+    if(p.length < 3) return s;
+    return new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2])).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+  };
+
+  popupEl.innerHTML = `
+    <div style="font-size:12px;color:#6b7280;margin-bottom:10px;font-weight:600;">${monthName} — Invoice covering this day</div>
+    ${matchingRegs.map(reg => {
+      const matchInv = invoices.find(i =>
+        String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase() &&
+        String(i.unit||'').trim().toLowerCase() === unitIdNorm
+      );
+      const amount = matchInv ? matchInv.amount : reg.totalAmount;
+      return `
+        <div style="background:#0f1117;border:1px solid #1e2535;border-radius:8px;padding:12px;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="font-size:13px;font-weight:700;color:#60a5fa;">📄 ${escapeHtml(reg.wdNumber||'')}</span>
+            <span style="font-size:11px;color:#4b5563;">Supplier: ${escapeHtml(reg.lease||'')}</span>
+          </div>
+          <div style="font-size:11px;color:#6b7280;">📅 ${fmtDate(reg.periodStart)} — ${fmtDate(reg.periodEnd)}</div>
+          <div style="font-size:15px;font-weight:700;color:#4ade80;margin-top:6px;">${formatCurrency(amount||'0')}</div>
+          ${reg.category ? `<div style="margin-top:4px;"><span style="font-size:10px;background:#1e2535;color:#9ca3af;padding:2px 8px;border-radius:10px;">${escapeHtml(reg.category)}</span></div>` : ''}
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
+function showMonthDetail(unit, y, m, popupEl){
+  if(!popupEl) return;
+  const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
+  const monthName = new Date(y,m,1).toLocaleString('en-US', { month:'long', year:'numeric' });
   const registries = state.registries || [];
   const invoices = state.invoices || [];
-  const wdNumberMap = new Map();
-  const creditInvoicesMap = new Map();
-  
-  registries.forEach(reg => {
-    // Check if this unit is in the registry's units array
-    const units = reg.units || [];
-    const unitIdLower = (unitId || '').toString().trim().toLowerCase();
-    
-    const isInRegistry = units.some(unitStr => {
-      const regUnit = (unitStr || '').toString().trim().toLowerCase();
-      return regUnit === unitIdLower;
-    });
-    
-    if (!isInRegistry) return;
-    
-    // Check if registry or matching invoice has Rental category
-    let category = '';
-    
-    if(reg.category){
-      category = reg.category.toString().trim().toLowerCase();
-    } else {
-      // Fallback to invoice category
-      const matchingInvoice = invoices.find(inv => {
-        const invWd = (inv.wdNumber || '').toString().trim().toLowerCase();
-        const regWd = (reg.wdNumber || '').toString().trim().toLowerCase();
-        return invWd === regWd;
-      });
-      if(matchingInvoice){
-        category = (matchingInvoice.category || '').toString().trim().toLowerCase();
-      }
-    }
-    
-    const hasRentalCategory = category === 'rental';
-    if (!hasRentalCategory) return;
-    
-    // Check if registry period overlaps with selected month
-    if (!reg.periodStart || !reg.periodEnd) return;
-    
-    const startParts = reg.periodStart.split('-');
-    const endParts = reg.periodEnd.split('-');
-    const startDate = new Date(parseInt(startParts[0]), parseInt(startParts[1]) - 1, parseInt(startParts[2]));
-    const endDate = new Date(parseInt(endParts[0]), parseInt(endParts[1]) - 1, parseInt(endParts[2]));
-    
-    if(isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return;
-    
-    // Check if any day in the period falls in the selected month/year
-    let coversMonth = false;
-    const currentDate = new Date(startDate);
-    while(currentDate <= endDate){
-      if(currentDate.getFullYear() === year && currentDate.getMonth() === month){
-        coversMonth = true;
-        break;
-      }
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-    
-    if (!coversMonth) return;
-    
-    // Add to map with period from matching invoice
-    const wd = (reg.wdNumber || '').toString().trim() || '(No WD Number)';
-    if (!wdNumberMap.has(wd)) {
-      // Find matching invoice to get the correct period
-      const matchingInvoice = invoices.find(inv => {
-        const invWd = (inv.wdNumber || '').toString().trim().toLowerCase();
-        const regWd = wd.toLowerCase();
-        const invUnit = (inv.unit || '').toString().trim().toLowerCase();
-        return invWd === regWd && invUnit === unitIdLower;
-      });
-      
-      wdNumberMap.set(wd, {
-        wdNumber: wd,
-        amount: matchingInvoice ? matchingInvoice.amount : '0',
-        periodStart: matchingInvoice ? matchingInvoice.periodStart : reg.periodStart,
-        periodEnd: matchingInvoice ? matchingInvoice.periodEnd : reg.periodEnd
-      });
-    }
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+
+  const matchingRegs = registries.filter(reg => {
+    const units = Array.isArray(reg.units) ? reg.units : [];
+    if(!units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return false;
+    if(!reg.periodStart || !reg.periodEnd) return false;
+    const sp = String(reg.periodStart).split('-');
+    const ep = String(reg.periodEnd).split('-');
+    if(sp.length < 3 || ep.length < 3) return false;
+    const start = new Date(parseInt(sp[0]), parseInt(sp[1])-1, parseInt(sp[2]));
+    const end = new Date(parseInt(ep[0]), parseInt(ep[1])-1, parseInt(ep[2]));
+    const mStart = new Date(y, m, 1);
+    const mEnd = new Date(y, m, daysInMonth);
+    return start <= mEnd && end >= mStart;
   });
-  
-  // Also find credit invoices for this unit that overlap with the selected month
-  invoices.forEach(inv => {
-    const invUnit = (inv.unit || '').toString().trim().toLowerCase();
-    const unitIdLower = (unitId || '').toString().trim().toLowerCase();
-    
-    if (invUnit !== unitIdLower) return;
-    
-    const category = (inv.category || '').toString().trim().toLowerCase();
-    if (category === 'credit') {
-      // Check if invoice period overlaps with selected month
-      if (!inv.periodStart || !inv.periodEnd) return;
-      
-      const startParts = inv.periodStart.split('-');
-      const endParts = inv.periodEnd.split('-');
-      const startDate = new Date(parseInt(startParts[0]), parseInt(startParts[1]) - 1, parseInt(startParts[2]));
-      const endDate = new Date(parseInt(endParts[0]), parseInt(endParts[1]) - 1, parseInt(endParts[2]));
-      
-      if(isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return;
-      
-      // Check if any day in the period falls in the selected month/year
-      let coversMonth = false;
-      const currentDate = new Date(startDate);
-      while(currentDate <= endDate){
-        if(currentDate.getFullYear() === year && currentDate.getMonth() === month){
-          coversMonth = true;
-          break;
-        }
-        currentDate.setDate(currentDate.getDate() + 1);
-      }
-      
-      if (!coversMonth) return;
-      
-      // Add to credit invoices map
-      const docNum = (inv.docNumber || inv.wdNumber || '(No Doc Number)').toString().trim();
-      if (!creditInvoicesMap.has(docNum)) {
-        creditInvoicesMap.set(docNum, {
-          docNumber: docNum,
-          wdNumber: inv.wdNumber || '(No WD)',
-          amount: inv.amount || '0',
-          periodStart: inv.periodStart,
-          periodEnd: inv.periodEnd
-        });
-      }
+
+  popupEl.style.display = 'block';
+
+  if(matchingRegs.length === 0){
+    popupEl.innerHTML = `<div style="color:#6b7280;font-size:13px;">No invoices found for <strong style="color:#e2e8f0;">${monthName}</strong></div>`;
+    return;
+  }
+
+  const fmtDate = (s) => {
+    if(!s) return '';
+    const p = String(s).split('-');
+    if(p.length < 3) return s;
+    return new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2])).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+  };
+
+  popupEl.innerHTML = `
+    <div style="font-size:12px;color:#6b7280;margin-bottom:10px;font-weight:600;">${monthName} — All invoices (${matchingRegs.length})</div>
+    ${matchingRegs.map(reg => {
+      const matchInv = invoices.find(i =>
+        String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase() &&
+        String(i.unit||'').trim().toLowerCase() === unitIdNorm
+      );
+      const amount = matchInv ? matchInv.amount : reg.totalAmount;
+      return `
+        <div style="background:#0f1117;border:1px solid #1e2535;border-radius:8px;padding:12px;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+            <span style="font-size:13px;font-weight:700;color:#60a5fa;">📄 ${escapeHtml(reg.wdNumber||'')}</span>
+            <span style="font-size:11px;background:#1e2535;color:#9ca3af;padding:2px 8px;border-radius:10px;">${escapeHtml(reg.category||'')}</span>
+          </div>
+          <div style="font-size:11px;color:#6b7280;">📅 ${fmtDate(reg.periodStart)} — ${fmtDate(reg.periodEnd)}</div>
+          <div style="font-size:15px;font-weight:700;color:#4ade80;margin-top:6px;">${formatCurrency(amount||'0')}</div>
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
+function buildUnitStats(unit){
+  const statsEl = qs('#unitDetailStats');
+  if(!statsEl) return;
+
+  const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
+  const registries = state.registries || [];
+  const invoices = state.invoices || [];
+
+  // Build month range same as grid
+  let startDate = new Date(2025, 0, 1);
+  try{
+    const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
+    if(hist.length > 0){
+      const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
+      const d = new Date(firstOp.date);
+      startDate = new Date(d.getFullYear(), d.getMonth(), 1);
     }
+  }catch(e){}
+
+  let endDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  try{
+    let latestMs = 0;
+    registries.forEach(reg => {
+      const units = Array.isArray(reg.units) ? reg.units : [];
+      if(!units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return;
+      if(reg.periodEnd){
+        const parts = String(reg.periodEnd).split('-');
+        if(parts.length >= 2){
+          const d = new Date(parseInt(parts[0]), parseInt(parts[1])-1, 1);
+          if(d.getTime() > latestMs){ latestMs = d.getTime(); endDate = d; }
+        }
+      }
+    });
+  }catch(e){}
+
+  const months = [];
+  let cur = new Date(startDate);
+  while(cur <= endDate){ months.push(new Date(cur)); cur.setMonth(cur.getMonth()+1); }
+
+  let monthsCovered = 0, monthsMissing = 0, creditMonths = 0, totalDaysBilled = 0;
+
+  months.forEach(monthDate => {
+    const y = monthDate.getFullYear();
+    const m = monthDate.getMonth();
+    const daysInMonth = new Date(y, m+1, 0).getDate();
+    let hasCoverage = false;
+    let hasCredit = false;
+
+    registries.forEach(reg => {
+      const units = Array.isArray(reg.units) ? reg.units : [];
+      if(!units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return;
+      if(!reg.periodStart || !reg.periodEnd) return;
+      const sp = String(reg.periodStart).split('-');
+      const ep = String(reg.periodEnd).split('-');
+      if(sp.length < 3 || ep.length < 3) return;
+      const start = new Date(parseInt(sp[0]), parseInt(sp[1])-1, parseInt(sp[2]));
+      const end = new Date(parseInt(ep[0]), parseInt(ep[1])-1, parseInt(ep[2]));
+      const mStart = new Date(y, m, 1);
+      const mEnd = new Date(y, m, daysInMonth);
+      if(start > mEnd || end < mStart) return;
+
+      let cat = String(reg.category||'').toLowerCase();
+      if(!cat){
+        const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
+        cat = inv ? String(inv.category||'').toLowerCase() : '';
+      }
+      if(cat === 'rental'){
+        hasCoverage = true;
+        // Count days overlap with month
+        const effectiveStart = start < mStart ? mStart : start;
+        const effectiveEnd = end > mEnd ? mEnd : end;
+        const days = Math.floor((effectiveEnd - effectiveStart) / 86400000) + 1;
+        totalDaysBilled += Math.max(0, days);
+      }
+      if(cat === 'credit') hasCredit = true;
+    });
+
+    if(hasCoverage) monthsCovered++;
+    else monthsMissing++;
+    if(hasCredit) creditMonths++;
   });
-  
-  // Render WD numbers list
-  listDiv.innerHTML = '';
-  
-  // Render Rental invoices section
-  const rentalSection = document.createElement('div');
-  rentalSection.style.marginBottom = '16px';
-  
-  const rentalHeader = document.createElement('div');
-  rentalHeader.style.fontWeight = '700';
-  rentalHeader.style.color = '#111827';
-  rentalHeader.style.fontSize = '14px';
-  rentalHeader.style.padding = '8px 0';
-  rentalHeader.style.borderBottom = '2px solid #3b82f6';
-  rentalHeader.style.marginBottom = '8px';
-  rentalHeader.textContent = 'Rental Invoices';
-  rentalSection.appendChild(rentalHeader);
-  
-  if (wdNumberMap.size === 0) {
-    const noData = document.createElement('p');
-    noData.style.color = '#6b7280';
-    noData.style.fontSize = '13px';
-    noData.textContent = 'No rental invoices found for this unit in the selected month.';
-    rentalSection.appendChild(noData);
-  } else {
-    wdNumberMap.forEach(wdData => {
-      const item = document.createElement('div');
-      item.style.padding = '10px';
-      item.style.borderBottom = '1px solid #e5e7eb';
-      item.style.fontSize = '14px';
-      
-      const wdNumber = document.createElement('div');
-      wdNumber.style.fontWeight = '600';
-      wdNumber.style.color = '#111827';
-      wdNumber.textContent = wdData.wdNumber;
-      
-      const amount = document.createElement('div');
-      amount.style.color = '#2563eb';
-      amount.style.fontSize = '12px';
-      amount.style.marginTop = '2px';
-      amount.style.fontWeight = '600';
-      amount.textContent = `Amount: ${formatCurrency(wdData.amount)}`;
-      
-      const period = document.createElement('div');
-      period.style.color = '#6b7280';
-      period.style.fontSize = '12px';
-      period.style.marginTop = '4px';
-      
-      const formatDate = (dateStr) => {
-        if (!dateStr) return '';
-        const parts = dateStr.split('-');
-        if (parts.length === 3) {
-          const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        }
-        return dateStr;
-      };
-      
-      period.textContent = `${formatDate(wdData.periodStart)} - ${formatDate(wdData.periodEnd)}`;
-      
-      item.appendChild(wdNumber);
-      item.appendChild(amount);
-      item.appendChild(period);
-      rentalSection.appendChild(item);
-    });
-  }
-  
-  listDiv.appendChild(rentalSection);
-  
-  // Render Credit invoices section
-  const creditSection = document.createElement('div');
-  
-  const creditHeader = document.createElement('div');
-  creditHeader.style.fontWeight = '700';
-  creditHeader.style.color = '#111827';
-  creditHeader.style.fontSize = '14px';
-  creditHeader.style.padding = '8px 0';
-  creditHeader.style.borderBottom = '2px solid #ef4444';
-  creditHeader.style.marginBottom = '8px';
-  creditHeader.textContent = 'Credit Invoices';
-  creditSection.appendChild(creditHeader);
-  
-  if (creditInvoicesMap.size === 0) {
-    const noData = document.createElement('p');
-    noData.style.color = '#6b7280';
-    noData.style.fontSize = '13px';
-    noData.textContent = 'No credit invoices found for this unit in the selected month.';
-    creditSection.appendChild(noData);
-  } else {
-    creditInvoicesMap.forEach(creditData => {
-      const item = document.createElement('div');
-      item.style.padding = '10px';
-      item.style.borderBottom = '1px solid #e5e7eb';
-      item.style.fontSize = '14px';
-      
-      const docNumber = document.createElement('div');
-      docNumber.style.fontWeight = '600';
-      docNumber.style.color = '#111827';
-      docNumber.textContent = `Doc: ${creditData.docNumber}`;
-      
-      const wd = document.createElement('div');
-      wd.style.color = '#6b7280';
-      wd.style.fontSize = '12px';
-      wd.style.marginTop = '2px';
-      wd.textContent = `WD: ${creditData.wdNumber}`;
-      
-      const amount = document.createElement('div');
-      amount.style.color = '#ef4444';
-      amount.style.fontSize = '12px';
-      amount.style.marginTop = '2px';
-      amount.style.fontWeight = '600';
-      amount.textContent = `Amount: ${formatCurrency(creditData.amount)}`;
-      
-      const period = document.createElement('div');
-      period.style.color = '#6b7280';
-      period.style.fontSize = '12px';
-      period.style.marginTop = '4px';
-      
-      const formatDate = (dateStr) => {
-        if (!dateStr) return '';
-        const parts = dateStr.split('-');
-        if (parts.length === 3) {
-          const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        }
-        return dateStr;
-      };
-      
-      period.textContent = `${formatDate(creditData.periodStart)} - ${formatDate(creditData.periodEnd)}`;
-      
-      item.appendChild(docNumber);
-      item.appendChild(wd);
-      item.appendChild(amount);
-      item.appendChild(period);
-      creditSection.appendChild(item);
-    });
-  }
-  
-  listDiv.appendChild(creditSection);
-  
-  modal.style.display = 'flex';
+
+  const stats = [
+    { value: monthsCovered, label: 'Months covered', color: '#4ade80' },
+    { value: monthsMissing, label: 'Months missing', color: '#f87171' },
+    { value: creditMonths, label: 'Credits', color: '#fbbf24' },
+    { value: totalDaysBilled, label: 'Days billed', color: '#60a5fa' }
+  ];
+
+  statsEl.innerHTML = stats.map((s, i) => `
+    <div style="padding:14px 16px;text-align:center;${i < 3 ? 'border-right:1px solid #1e2535;' : ''}">
+      <div style="font-size:22px;font-weight:800;color:${s.color};letter-spacing:-0.5px;">${s.value}</div>
+      <div style="font-size:11px;color:#4b5563;margin-top:3px;font-weight:500;">${s.label}</div>
+    </div>
+  `).join('');
 }
 
 function closeUnitWdNumbersModal() {
   const modal = qs('#unitWdNumbersModal');
-  if (modal) {
-    modal.style.display = 'none';
-  }
+  if(modal) modal.style.display = 'none';
+  const popupEl = qs('#unitDetailPopup');
+  if(popupEl) popupEl.style.display = 'none';
 }
 
 const closeUnitWdNumbersBtn = qs('#closeUnitWdNumbersBtn');
-if (closeUnitWdNumbersBtn) {
+if(closeUnitWdNumbersBtn){
   closeUnitWdNumbersBtn.addEventListener('click', closeUnitWdNumbersModal);
 }
 
