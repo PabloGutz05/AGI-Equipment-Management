@@ -1047,6 +1047,8 @@ qs('#unitForm').addEventListener('submit', e=>{
   };
   if(editingId){
     state.units = state.units.map(u => u.id === editingId ? Object.assign({}, u, unitObj) : u);
+    const updatedUnit = state.units.find(u => u.id === editingId);
+    if(updatedUnit) DB.updateUnit(updatedUnit).catch(e => console.error('Unit edit save error:', e));
   } else {
     state.units.push(unitObj);
     DB.saveUnit(unitObj).catch(e => console.error('Unit save error:', e));
@@ -7474,6 +7476,7 @@ function renderUnitComments(){
           });
           if(unitIndex !== -1){
             state.units[unitIndex] = currentUnitForComments;
+            DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Unit comment delete error:', e));
           }
           saveState();
           renderUnitComments();
@@ -7559,8 +7562,9 @@ if(addUnitCommentBtn){
     const unitIndex = state.units.findIndex(u => u.id === currentUnitForComments.id);
     if(unitIndex !== -1){
       state.units[unitIndex] = currentUnitForComments;
+      DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Unit comment save error:', e));
     }
-    
+
     saveState();
     textarea.value = '';
     renderUnitComments();
@@ -7666,7 +7670,8 @@ function handleUnitStatusChange(unitId){
     
     // Update the unit in the state array
     state.units[unitIndex] = unit;
-    
+    DB.updateUnit(unit).catch(e => console.error('Unit status change error:', e));
+
     // Save and refresh
     saveState();
     console.log('State saved');
