@@ -2412,7 +2412,7 @@ function renderUnits(){
       if(userRole === 'Operator'){
         const mComment = document.createElement('button'); mComment.type = 'button'; mComment.textContent = 'Comment'; mComment.style.display='block'; mComment.style.width='100%';
         moreMenu.appendChild(mComment);
-        mComment.addEventListener('click', ()=>{ openUnitCommentsModal(u); moreMenu.style.display='none'; });
+        mComment.addEventListener('click', (ev)=>{ ev.stopPropagation(); openUnitCommentsModal(u); moreMenu.style.display='none'; });
       } else {
         // Manager, Developer, Master: show all options
         const mEdit = document.createElement('button'); mEdit.type = 'button'; mEdit.textContent = 'Edit'; mEdit.style.display='block'; mEdit.style.width='100%'; mEdit.style.marginBottom='6px';
@@ -2421,10 +2421,10 @@ function renderUnits(){
         const mDel = document.createElement('button'); mDel.type = 'button'; mDel.textContent = 'Delete'; mDel.style.display='block'; mDel.style.width='100%';
         moreMenu.appendChild(mEdit); moreMenu.appendChild(mComment); moreMenu.appendChild(mToggle); moreMenu.appendChild(mDel);
         
-        mEdit.addEventListener('click', ()=>{ try{ editBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-        mComment.addEventListener('click', ()=>{ openUnitCommentsModal(u); moreMenu.style.display='none'; });
-        mToggle.addEventListener('click', ()=>{ try{ toggleBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-        mDel.addEventListener('click', ()=>{ try{ delBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+        mEdit.addEventListener('click', (ev)=>{ ev.stopPropagation(); try{ editBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+        mComment.addEventListener('click', (ev)=>{ ev.stopPropagation(); openUnitCommentsModal(u); moreMenu.style.display='none'; });
+        mToggle.addEventListener('click', (ev)=>{ ev.stopPropagation(); try{ toggleBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+        mDel.addEventListener('click', (ev)=>{ ev.stopPropagation(); try{ delBtn.click(); }catch(e){} moreMenu.style.display='none'; });
       }
       
       moreWrap.appendChild(moreMenu);
