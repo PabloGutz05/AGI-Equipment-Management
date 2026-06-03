@@ -2421,10 +2421,10 @@ function renderUnits(){
         const mDel = document.createElement('button'); mDel.type = 'button'; mDel.textContent = 'Delete'; mDel.style.display='block'; mDel.style.width='100%';
         moreMenu.appendChild(mEdit); moreMenu.appendChild(mComment); moreMenu.appendChild(mToggle); moreMenu.appendChild(mDel);
         
-        mEdit.addEventListener('click', (ev)=>{ ev.stopPropagation(); try{ editBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-        mComment.addEventListener('click', (ev)=>{ ev.stopPropagation(); openUnitCommentsModal(u); moreMenu.style.display='none'; });
-        mToggle.addEventListener('click', (ev)=>{ ev.stopPropagation(); try{ toggleBtn.click(); }catch(e){} moreMenu.style.display='none'; });
-        mDel.addEventListener('click', (ev)=>{ ev.stopPropagation(); try{ delBtn.click(); }catch(e){} moreMenu.style.display='none'; });
+        mEdit.addEventListener('click', (ev)=>{ ev.stopPropagation(); moreMenu.style.display='none'; openUnitEditModal(u); });
+        mComment.addEventListener('click', (ev)=>{ ev.stopPropagation(); moreMenu.style.display='none'; openUnitCommentsModal(u); });
+        mToggle.addEventListener('click', (ev)=>{ ev.stopPropagation(); moreMenu.style.display='none'; handleUnitStatusChange(u.unitId || u.id); });
+        mDel.addEventListener('click', (ev)=>{ ev.stopPropagation(); moreMenu.style.display='none'; if(!confirm('Delete this unit?')) return; const deletedUnit = state.units[i]; state.units.splice(i,1); DB.deleteUnit(deletedUnit.id).catch(e => console.error('Unit delete error:', e)); saveState(); renderUnits(); renderOverview(); });
       }
       
       moreWrap.appendChild(moreMenu);
