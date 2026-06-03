@@ -1768,9 +1768,15 @@ function renderRegistries(keepOpenRegistryId){
         renderUnitOverview();
         renderLeaseOverview();
         renderOverview();
+        try{
+          const detailModal = qs('#unitWdNumbersModal');
+          if(detailModal && detailModal.style.display !== 'none' && _unitDetailList && _unitDetailList.length > 0){
+            renderUnitDetailModal(_unitDetailList[_unitDetailIndex] || _unitDetailList[0]);
+          }
+        }catch(e){}
       }
     });
-    
+
     menuPanel.appendChild(editBtn);
     menuPanel.appendChild(deleteBtn);
     
@@ -5090,6 +5096,8 @@ function renderReport(){
     const fullyCovered = [];
     const coverageMap = new Map();
     units.forEach(u => {
+      // Skip units disabled before this month started (day 1 is already in a disabled period)
+      if(isDateInDisabledPeriod(year, month, 1, getDisabledPeriods(u))) return;
       const cov = coverageArrayForUnit(u, year, month);
       if(cov.every(Boolean)){
         fullyCovered.push(u);
@@ -5316,8 +5324,8 @@ function renderReport(){
       }
     });
 
-    // Only include operational units in the Missing Coverage table
-    missingUnits = missingUnits.filter(u => ((u.status || 'Operational') === 'Operational'));
+    // Exclude units that were already disabled before this month started (day 1 in a disabled period)
+    missingUnits = missingUnits.filter(u => !isDateInDisabledPeriod(year, month, 1, getDisabledPeriods(u)));
 
     // Sort handling for missing table
     state.meta.reportSimple.sortMissing = state.meta.reportSimple.sortMissing || { column: 'unitId', ascending: true };
@@ -7203,24 +7211,10 @@ function openUnitEditModal(unit){
   qs('#editUnitMonthly').value = unit.monthly ? Number(unit.monthly).toFixed(2) : '';
   qs('#editUnitDesc').value = unit.description || '';
   qs('#editUnitNotes').value = unit.notes || '';
-  qs('#editUnitStatus').value = unit.status || 'Operational';
-  
+
   // Update readonly fields based on selected lease
   updateUnitEditLeaseInfo(unit.lease || '');
-  
-  // Show/hide disabled date based on status
-  const statusSelect = qs('#editUnitStatus');
-  const disabledDateContainer = qs('#editUnitDisabledDateContainer');
-  const disabledDateInput = qs('#editUnitDisabledDate');
-  
-  if(unit.status === 'Disabled'){
-    disabledDateContainer.style.display = 'block';
-    disabledDateInput.value = unit.disabledDate || new Date().toISOString().slice(0,10);
-  } else {
-    disabledDateContainer.style.display = 'none';
-    disabledDateInput.value = '';
-  }
-  
+
   // Add lease change handler
   if(leaseSelect){
     const newLeaseSelect = leaseSelect.cloneNode(true);
@@ -7228,23 +7222,6 @@ function openUnitEditModal(unit){
     newLeaseSelect.value = unit.lease || '';
     newLeaseSelect.addEventListener('change', () => {
       updateUnitEditLeaseInfo(newLeaseSelect.value);
-    });
-  }
-  
-  // Add status change handler
-  if(statusSelect){
-    const newStatusSelect = statusSelect.cloneNode(true);
-    statusSelect.parentNode.replaceChild(newStatusSelect, statusSelect);
-    newStatusSelect.value = unit.status || 'Operational';
-    newStatusSelect.addEventListener('change', () => {
-      if(newStatusSelect.value === 'Disabled'){
-        disabledDateContainer.style.display = 'block';
-        if(!disabledDateInput.value){
-          disabledDateInput.value = new Date().toISOString().slice(0,10);
-        }
-      } else {
-        disabledDateContainer.style.display = 'none';
-      }
     });
   }
   
