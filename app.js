@@ -40,17 +40,17 @@ function isAuthenticated(){
 
 function showApp(yes){
   const root = qs('#appRoot'); const gate = qs('#loginGate'); const logoutBtn = qs('#logoutBtn');
+  const reloadBtn = qs('#reloadDataBtn');
   // ensure CSS variable for header height is set so the login overlay doesn't overlap the header
   setHeaderHeightVar();
   // If true, we don't immediately show the application: first present the AGI Process Menu
   const menu = qs('#agiProcessMenu');
-  if(yes){ if(menu) menu.style.display = 'flex'; if(root) root.style.display='none'; if(gate) gate.style.display='none'; if(logoutBtn) logoutBtn.style.display='inline-block'; if(refreshBtn) refreshBtn.style.display='inline-block'; applyRoleRestrictions(); }
+  if(yes){ if(menu) menu.style.display = 'flex'; if(root) root.style.display='none'; if(gate) gate.style.display='none'; if(logoutBtn) logoutBtn.style.display='inline-block'; if(reloadBtn) reloadBtn.style.display='inline-block'; applyRoleRestrictions(); }
   else {
     // show login gate
-    if(root) root.style.display='none'; if(gate) gate.style.display='flex'; if(menu) menu.style.display = 'none'; if(logoutBtn) logoutBtn.style.display='none';
+    if(root) root.style.display='none'; if(gate) gate.style.display='flex'; if(menu) menu.style.display = 'none'; if(logoutBtn) logoutBtn.style.display='none'; if(reloadBtn) reloadBtn.style.display='none';
     // when on the login page we must hide export/import controls and clear data button
     updateExportImportVisibility(true);
-    const clearDataBtn = qs('#clearDataBtn'); if(clearDataBtn) clearDataBtn.style.display = 'none';
     // ensure header title is default when showing login
     updateHeaderTitleForMenu(false);
     // disable brand link while on login page so it cannot open the process menu
@@ -196,7 +196,7 @@ if(loginForm){
 }
 
 // logout
-const refreshBtn = qs('#refreshBtn'); if(refreshBtn){ refreshBtn.addEventListener('click', ()=>{ loadStateFromDB(); }); }
+const reloadDataBtn = qs('#reloadDataBtn'); if(reloadDataBtn){ reloadDataBtn.addEventListener('click', ()=>{ loadStateFromDB(); }); }
 
 // On load decide whether to show the app
 document.addEventListener('DOMContentLoaded', ()=>{ showApp(isAuthenticated()); if(isAuthenticated()) updateUserInfoDisplay(); });
@@ -3058,6 +3058,14 @@ async function loadStateFromDB(){
   try {
     const loaded = await DB.loadAll();
     state = loaded;
+
+    // Warn if everything came back empty — likely a Google Sheets connectivity problem
+    const looksEmpty = loaded.units.length === 0 && loaded.registries.length === 0 && loaded.leases.length === 0;
+    if(looksEmpty){
+      const retry = confirm('No data was received from Google Sheets.\n\nThis usually means the connection timed out or Google is temporarily unavailable.\n\nClick OK to retry, or Cancel to continue with an empty view.');
+      if(retry){ loadStateFromDB(); return; }
+    }
+
     renderAll();
     syncTabLabels();
     applyRoleRestrictions();

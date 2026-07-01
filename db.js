@@ -4,12 +4,21 @@ const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
 const DB = {
 
+  _fetchWithTimeout(fetchPromise, ms = 30000) {
+    return Promise.race([
+      fetchPromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Request timed out after ' + (ms/1000) + 's — Google Sheets may be unavailable')), ms)
+      )
+    ]);
+  },
+
   async post(payload) {
-    const res = await fetch(DB_URL, {
+    const res = await DB._fetchWithTimeout(fetch(DB_URL, {
       method: 'POST',
       body: JSON.stringify({...payload, secret: DB_SECRET}),
       headers: { 'Content-Type': 'text/plain' }
-    });
+    }));
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'DB error');
     return data.data;
@@ -17,7 +26,7 @@ const DB = {
 
   async get(params) {
     const url = DB_URL + '?' + new URLSearchParams({...params, secret: DB_SECRET}).toString();
-    const res = await fetch(url);
+    const res = await DB._fetchWithTimeout(fetch(url));
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'DB error');
     return data.data;
