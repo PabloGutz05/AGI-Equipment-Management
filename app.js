@@ -3042,9 +3042,37 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
+// --- Config list protection (Sheets is the only source of truth) ---
+// Snapshot of what Sheets returned on last load. Never stored in localStorage.
+const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+let _sheetConfigSnapshot = {};
+// Set to true only by Developer-tab handlers before calling saveState() for a config change.
+let _configChangeIntentional = false;
+
+function _updateSheetConfigSnapshot(){
+  _CFG_FIELDS.forEach(f => {
+    _sheetConfigSnapshot[f] = Array.isArray(state.meta[f]) ? state.meta[f].slice() : [];
+  });
+}
+
 // --- Persistence (Google Sheets) ---
 function saveState(){
   try{
+    if(_configChangeIntentional){
+      // User explicitly changed a config list — update the snapshot to match and allow the save.
+      _updateSheetConfigSnapshot();
+      _configChangeIntentional = false;
+    } else {
+      // Regular save (month change, registry edit, etc.) — never let it overwrite Sheets
+      // config lists with empty arrays. Restore from snapshot if something corrupted memory.
+      _CFG_FIELDS.forEach(f => {
+        if((!Array.isArray(state.meta[f]) || state.meta[f].length === 0)
+           && Array.isArray(_sheetConfigSnapshot[f]) && _sheetConfigSnapshot[f].length > 0){
+          console.warn('[Save guard] Prevented writing empty "' + f + '" to Sheets — restored from snapshot');
+          state.meta[f] = _sheetConfigSnapshot[f].slice();
+        }
+      });
+    }
     DB.saveAll(state).catch(e => console.error('DB save error:', e));
     try{ window.dispatchEvent(new Event('agi:stateSaved')); }catch(ev){}
   }catch(e){ console.error('Error saving state:', e); }
@@ -3065,6 +3093,9 @@ async function loadStateFromDB(){
       const retry = confirm('No data was received from Google Sheets.\n\nThis usually means the connection timed out or Google is temporarily unavailable.\n\nClick OK to retry, or Cancel to continue with an empty view.');
       if(retry){ loadStateFromDB(); return; }
     }
+
+    // Record what Sheets actually returned — this becomes the reference for the save guard.
+    _updateSheetConfigSnapshot();
 
     renderAll();
     syncTabLabels();
@@ -3199,12 +3230,14 @@ function startAutoRefresh(){
       ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
       ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => {
         const v = sanitizedMeta[f];
-        if(Array.isArray(v)){ return; }
-        if(typeof v === 'string' && v.trim().startsWith('[')){
+        if(Array.isArray(v)){ /* already parsed */ }
+        else if(typeof v === 'string' && v.trim().startsWith('[')){
           try{ sanitizedMeta[f] = JSON.parse(v); }catch(e){ sanitizedMeta[f] = []; }
         } else { sanitizedMeta[f] = []; }
       });
       state.meta = sanitizedMeta;
+      // Keep snapshot in sync with what Sheets just returned
+      _updateSheetConfigSnapshot();
 
       // Silent state update only — no renderAll() to avoid freezing large datasets
       updateTimestamp();
@@ -6451,7 +6484,7 @@ function renderCompanyList(){
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this company?')) return; state.meta.devCompanies.splice(i,1); saveState(); renderCompanyList();
+      if(!confirm('Delete this company?')) return; state.meta.devCompanies.splice(i,1); _configChangeIntentional=true; saveState(); renderCompanyList();
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6480,7 +6513,7 @@ if(saveDevBtn){
     } else {
       state.meta.devCompanies.push(v);
     }
-    saveState();
+    _configChangeIntentional = true; saveState();
     renderCompanyList();
     if(devCompanyInput) devCompanyInput.value = '';
   });
@@ -6525,7 +6558,7 @@ function renderRentalList(){
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this rental?')) return; state.meta.devRentals.splice(i,1); saveState(); renderRentalList(); if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
+      if(!confirm('Delete this rental?')) return; state.meta.devRentals.splice(i,1); _configChangeIntentional=true; saveState(); renderRentalList(); if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6560,7 +6593,7 @@ if(saveRentalBtn){
     } else {
       state.meta.devRentals.push(v);
     }
-    saveState();
+    _configChangeIntentional = true; saveState();
     renderRentalList();
     if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
     if(devRentalInput) devRentalInput.value = '';
@@ -6594,7 +6627,7 @@ function renderSupplierList(){
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this supplier?')) return; state.meta.devSuppliers.splice(i,1); saveState(); renderSupplierList();
+      if(!confirm('Delete this supplier?')) return; state.meta.devSuppliers.splice(i,1); _configChangeIntentional=true; saveState(); renderSupplierList();
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6623,7 +6656,7 @@ if(saveSupplierBtn){
     } else {
       state.meta.devSuppliers.push(v);
     }
-    saveState();
+    _configChangeIntentional = true; saveState();
     renderSupplierList();
     if(devSupplierInput) devSupplierInput.value = '';
   });
@@ -6667,7 +6700,7 @@ function renderPaymentList(){
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this invoicing type?')) return; state.meta.devPayments.splice(i,1); saveState(); renderPaymentList();
+      if(!confirm('Delete this invoicing type?')) return; state.meta.devPayments.splice(i,1); _configChangeIntentional=true; saveState(); renderPaymentList();
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6696,7 +6729,7 @@ if(savePaymentBtn){
     } else {
       state.meta.devPayments.push(v);
     }
-    saveState();
+    _configChangeIntentional = true; saveState();
     renderPaymentList();
     if(devPaymentInput) devPaymentInput.value = '';
   });
@@ -6726,7 +6759,7 @@ function renderArrangementList(){
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this arrangement?')) return; state.meta.devArrangements.splice(i,1); saveState(); renderArrangementList();
+      if(!confirm('Delete this arrangement?')) return; state.meta.devArrangements.splice(i,1); _configChangeIntentional=true; saveState(); renderArrangementList();
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6755,7 +6788,7 @@ if(saveArrangementBtn){
     } else {
       state.meta.devArrangements.push(v);
     }
-    saveState();
+    _configChangeIntentional = true; saveState();
     renderArrangementList();
     if(devArrangementInput) devArrangementInput.value = '';
   });
