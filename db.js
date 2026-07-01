@@ -117,7 +117,15 @@ const DB = {
       const numFields = ['unitOverviewMonth','unitOverviewYear','leaseOverviewMonth','leaseOverviewYear','registrySeq'];
       numFields.forEach(f => { sanitizedMeta[f] = Number(sanitizedMeta[f]) || 0; });
       const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
-      arrayFields.forEach(f => { if(!Array.isArray(sanitizedMeta[f])) sanitizedMeta[f] = []; });
+      arrayFields.forEach(f => {
+        const v = sanitizedMeta[f];
+        if(Array.isArray(v)){ return; } // already parsed
+        if(typeof v === 'string' && v.trim().startsWith('[')){
+          try{ sanitizedMeta[f] = JSON.parse(v); }catch(e){ sanitizedMeta[f] = []; }
+        } else {
+          sanitizedMeta[f] = [];
+        }
+      });
 
       return {
         invoices: [],

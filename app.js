@@ -3197,7 +3197,13 @@ function startAutoRefresh(){
 
       const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
       ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
-      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => { if(!Array.isArray(sanitizedMeta[f])) sanitizedMeta[f] = []; });
+      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => {
+        const v = sanitizedMeta[f];
+        if(Array.isArray(v)){ return; }
+        if(typeof v === 'string' && v.trim().startsWith('[')){
+          try{ sanitizedMeta[f] = JSON.parse(v); }catch(e){ sanitizedMeta[f] = []; }
+        } else { sanitizedMeta[f] = []; }
+      });
       state.meta = sanitizedMeta;
 
       // Silent state update only — no renderAll() to avoid freezing large datasets
