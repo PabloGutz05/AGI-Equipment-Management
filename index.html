@@ -21,12 +21,6 @@
       </div>
     </a>
     <div class="actions">
-      <button id="exportBtn">Export JSON</button>
-      <label class="file-label">
-        Import JSON
-        <input type="file" id="importInput" accept="application/json">
-      </label>
-      <button id="clearDataBtn" style="color: #dc2626;">Clear Data</button>
       <button id="reloadDataBtn" style="display:none" title="Reload data from Google Sheets">↺ Reload</button>
       <button id="logoutBtn" style="display:none">Logout</button>
     </div>
@@ -371,7 +365,17 @@
       <div id="developer" class="tab-panel">
         <h2>Developer</h2>
         <div class="small-muted" style="margin-bottom:20px;">Upload data directly to each tab using the buttons below.</div>
-        
+
+        <!-- Data Management Actions -->
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:24px;padding:16px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;">
+          <button id="exportBtn" style="padding:8px 18px;background:#0b74de;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">Export JSON</button>
+          <label class="file-label" style="padding:8px 18px;background:#0b74de;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;display:inline-flex;align-items:center;">
+            Import JSON
+            <input type="file" id="importInput" accept="application/json" style="display:none;">
+          </label>
+          <button id="clearDataBtn" style="padding:8px 18px;background:#fff;color:#dc2626;border:1px solid #dc2626;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;margin-left:auto;">Clear Data</button>
+        </div>
+
         <!-- Download All Data Button -->
         <div style="background:#10b981;color:#fff;border:1px solid #059669;padding:16px;border-radius:8px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;">
           <div>

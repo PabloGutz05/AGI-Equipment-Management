@@ -49,8 +49,7 @@ function showApp(yes){
   else {
     // show login gate
     if(root) root.style.display='none'; if(gate) gate.style.display='flex'; if(menu) menu.style.display = 'none'; if(logoutBtn) logoutBtn.style.display='none'; if(reloadBtn) reloadBtn.style.display='none';
-    // when on the login page we must hide export/import controls and clear data button
-    updateExportImportVisibility(true);
+    updateExportImportVisibility();
     // ensure header title is default when showing login
     updateHeaderTitleForMenu(false);
     // disable brand link while on login page so it cannot open the process menu
@@ -61,26 +60,13 @@ function showApp(yes){
   // update header title according to menu visibility
   const menuVisible = !!menu && menu.style.display !== 'none';
   updateHeaderTitleForMenu(menuVisible);
-  // hide export/import controls and clear data button when menu visible, otherwise show them
-  updateExportImportVisibility(menuVisible);
-  const clearDataBtn = qs('#clearDataBtn');
-  if(clearDataBtn){
-    if(menuVisible){
-      clearDataBtn.style.display = 'none';
-    } else {
-      // Only show if role allows (will be controlled by applyRoleRestrictions)
-      applyRoleRestrictions();
-    }
-  }
+  updateExportImportVisibility();
+  if(!menuVisible) applyRoleRestrictions();
   // ensure brandLink is enabled when leaving login
   try{ const bl = qs('#brandLink'); if(bl){ bl.classList.remove('disabled-brand'); bl.removeAttribute('aria-disabled'); bl.tabIndex = 0; } }catch(e){}
 }
 
-function updateExportImportVisibility(menuVisible){
-  const exportBtn = qs('#exportBtn'); const importLabel = document.querySelector('.file-label');
-  if(menuVisible){ if(exportBtn) exportBtn.style.display = 'none'; if(importLabel) importLabel.style.display = 'none'; }
-  else { if(exportBtn) exportBtn.style.display = 'inline-block'; if(importLabel) importLabel.style.display = 'inline-flex'; }
-}
+function updateExportImportVisibility(){ /* buttons now live in Developer tab — no header toggling needed */ }
 
 // --- Update user info display below header title ---
 function updateUserInfoDisplay(){
@@ -316,16 +302,6 @@ function applyRoleRestrictions(){
     // hide developer, users, leaseControl
     const names = ['developer','users','leaseControl'];
     names.forEach(n => { const el = Array.from(tabs).find(x=> x.dataset.tab === n); if(el) el.style.display = 'none'; });
-  }
-  
-  // Show/hide Clear Data button based on role (only Developer and Master)
-  const clearDataBtn = qs('#clearDataBtn');
-  if(clearDataBtn){
-    if(role === 'Master' || role === 'Developer'){
-      clearDataBtn.style.display = 'inline-block';
-    } else {
-      clearDataBtn.style.display = 'none';
-    }
   }
   
   // Master and Developer: full access (do nothing)
