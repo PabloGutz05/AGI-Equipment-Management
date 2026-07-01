@@ -183,7 +183,7 @@ if(loginForm){
 
 // logout
 const logoutBtnEl = qs('#logoutBtn');
-if(logoutBtnEl){ logoutBtnEl.addEventListener('click', ()=>{ sessionStorage.removeItem(SESSION_KEY); showApp(false); }); }
+if(logoutBtnEl){ logoutBtnEl.addEventListener('click', ()=>{ sessionStorage.removeItem(SESSION_KEY); window.location.reload(); }); }
 
 const reloadDataBtn = qs('#reloadDataBtn'); if(reloadDataBtn){ reloadDataBtn.addEventListener('click', ()=>{ loadStateFromDB(); }); }
 
