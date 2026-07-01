@@ -182,6 +182,9 @@ if(loginForm){
 }
 
 // logout
+const logoutBtnEl = qs('#logoutBtn');
+if(logoutBtnEl){ logoutBtnEl.addEventListener('click', ()=>{ sessionStorage.removeItem(SESSION_KEY); showApp(false); }); }
+
 const reloadDataBtn = qs('#reloadDataBtn'); if(reloadDataBtn){ reloadDataBtn.addEventListener('click', ()=>{ loadStateFromDB(); }); }
 
 // On load decide whether to show the app
