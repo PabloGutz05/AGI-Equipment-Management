@@ -1,5 +1,5 @@
 // db.js — Google Sheets Database Layer for AGI Vehicle Lease Management
-const DB_URL = 'https://script.google.com/macros/s/AKfycbwyQmfI665PCuvEM8zsJ0pmjwm2QNPtXvqkq02xEELaVoWEowVmqqgw1ILqDXNEZka2/exec';
+const DB_URL = 'https://script.google.com/macros/s/AKfycbwgATl68vyJi1V0FKXO9Wzn3SNw51BgbPItF9u5p8eeXBh2W594xmgNOTtKfaHciHjLcA/exec';
 const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
 const DB = {
@@ -13,23 +13,35 @@ const DB = {
     ]);
   },
 
+  async _parseResponse(res) {
+    const text = await res.text();
+    if(text.trim().startsWith('<')){
+      throw new Error(
+        'Google Apps Script devolvió una página HTML en lugar de datos.\n\n' +
+        'Solución: abre el Apps Script en Google Drive → Deploy → Manage deployments → ' +
+        'verifica que esté activo y con acceso "Anyone". Si expiró, crea un nuevo deployment.'
+      );
+    }
+    let data;
+    try { data = JSON.parse(text); }
+    catch(e) { throw new Error('Respuesta inválida de Google Sheets: ' + text.slice(0, 120)); }
+    if(!data.success) throw new Error(data.error || 'DB error');
+    return data.data;
+  },
+
   async post(payload) {
     const res = await DB._fetchWithTimeout(fetch(DB_URL, {
       method: 'POST',
       body: JSON.stringify({...payload, secret: DB_SECRET}),
       headers: { 'Content-Type': 'text/plain' }
     }));
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'DB error');
-    return data.data;
+    return DB._parseResponse(res);
   },
 
   async get(params) {
     const url = DB_URL + '?' + new URLSearchParams({...params, secret: DB_SECRET}).toString();
     const res = await DB._fetchWithTimeout(fetch(url));
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'DB error');
-    return data.data;
+    return DB._parseResponse(res);
   },
 
   async loadAll() {
