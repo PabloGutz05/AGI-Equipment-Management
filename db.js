@@ -77,6 +77,7 @@ const DB = {
         id: String(u.id || ''),
         lease: String(u.lease || ''),
         company: String(u.company || ''),
+        costCenter: String(u.costCenter || ''),
         supplier: String(u.supplier || ''),
         arrangement: String(u.arrangement || ''),
         invoicing: String(u.invoicing || ''),

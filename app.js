@@ -1007,6 +1007,7 @@ qs('#unitForm').addEventListener('submit', e=>{
     }
   }catch(err){ /* fail open on unexpected error */ }
   const companyVal = (qs('#unitCompany') && qs('#unitCompany').value) || fd.get('unitCompany') || '';
+  const costCenterVal = (qs('#unitCostCenter') && qs('#unitCostCenter').value) || fd.get('unitCostCenter') || '';
   const supplierVal = (qs('#unitSupplier') && qs('#unitSupplier').value) || fd.get('unitSupplier') || '';
   const arrangementVal = (qs('#unitArrangement') && qs('#unitArrangement').value) || fd.get('unitArrangement') || '';
   const invoicingVal = (qs('#unitInvoicing') && qs('#unitInvoicing').value) || fd.get('unitInvoicing') || '';
@@ -1014,6 +1015,7 @@ qs('#unitForm').addEventListener('submit', e=>{
     id: editingId || id(),
     lease: fd.get('unitLease') || '',
     company: companyVal,
+    costCenter: costCenterVal,
     supplier: supplierVal,
     arrangement: arrangementVal,
     invoicing: invoicingVal,
@@ -2237,6 +2239,7 @@ function renderUnits(){
   tdUnit.querySelector('strong').addEventListener('click', (e)=>{ e.stopPropagation(); openUnitWdNumbersModal(u.unitId, new Date().getFullYear(), new Date().getMonth()); });
     const tdLease = document.createElement('td'); tdLease.textContent = u.lease || '';
     const tdCompany = document.createElement('td'); tdCompany.textContent = u.company || '';
+    const tdCostCenter = document.createElement('td'); tdCostCenter.textContent = u.costCenter || '';
     const tdSupplier = document.createElement('td'); tdSupplier.textContent = u.supplier || '';
     const tdArrangement = document.createElement('td'); tdArrangement.textContent = u.arrangement || '';
     const tdInvoicing = document.createElement('td'); tdInvoicing.textContent = u.invoicing || '';
@@ -2339,6 +2342,7 @@ function renderUnits(){
     tr.appendChild(tdUnit);
     tr.appendChild(tdLease);
     tr.appendChild(tdCompany);
+    tr.appendChild(tdCostCenter);
     tr.appendChild(tdSupplier);
     tr.appendChild(tdArrangement);
     tr.appendChild(tdInvoicing);
@@ -3098,6 +3102,7 @@ async function loadStateFromDB(){
     try{ syncInvoiceCategoryOptions(); }catch(e){}
     try{ syncInvoiceLeaseOptions(); }catch(e){}
     try{ syncUnitLeaseOptions(); }catch(e){}
+    try{ syncUnitCostCenterOptions(); }catch(e){}
     try{ renderCompanyList(); }catch(e){}
     try{ renderSupplierList(); }catch(e){}
     try{ renderRentalList(); }catch(e){}
@@ -3396,6 +3401,22 @@ if (loginGate) {
 // ========================
 let _ccEditId = null;
 
+function syncUnitCostCenterOptions(){
+  ['#unitCostCenter', '#editUnitCostCenter'].forEach(sel => {
+    const el = qs(sel);
+    if(!el) return;
+    const cur = el.value;
+    el.innerHTML = '<option value="">(Cost Center)</option>';
+    (state.meta.ccCenters || []).forEach(cc => {
+      const opt = document.createElement('option');
+      opt.value = cc.costCenter;
+      opt.textContent = cc.costCenter + (cc.referenceId ? ' — ' + cc.referenceId : '');
+      el.appendChild(opt);
+    });
+    if(cur) el.value = cur;
+  });
+}
+
 function syncCCCompanyOptions(){
   const sel = qs('#ccCompany');
   if(!sel) return;
@@ -3411,6 +3432,7 @@ function syncCCCompanyOptions(){
 
 function renderCCControl(){
   syncCCCompanyOptions();
+  syncUnitCostCenterOptions();
   const tbody = qs('#ccTableBody');
   const emptyMsg = qs('#ccEmpty');
   if(!tbody) return;
@@ -7357,6 +7379,11 @@ function openUnitEditModal(unit){
   qs('#editUnitDesc').value = unit.description || '';
   qs('#editUnitNotes').value = unit.notes || '';
 
+  // Populate Cost Center dropdown
+  syncUnitCostCenterOptions();
+  const ccSel = qs('#editUnitCostCenter');
+  if(ccSel) ccSel.value = unit.costCenter || '';
+
   // Update readonly fields based on selected lease
   updateUnitEditLeaseInfo(unit.lease || '');
 
@@ -7444,6 +7471,7 @@ if(unitEditSaveBtn){
       const n = parseCurrency(v);
       return n === null ? '' : n.toFixed(2);
     })();
+    unit.costCenter = qs('#editUnitCostCenter') ? qs('#editUnitCostCenter').value : '';
     unit.description = qs('#editUnitDesc').value.trim();
     unit.notes = qs('#editUnitNotes').value.trim();
     // NOTE: status is intentionally NOT updated here — use the Disable/Enable button instead

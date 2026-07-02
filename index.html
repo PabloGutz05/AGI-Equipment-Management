@@ -175,6 +175,9 @@
             <div id="unitLeaseDropdown" class="searchable-dropdown" style="display:none;"></div>
           </div>
           <input id="unitCompany" name="unitCompany" class="info-input" placeholder="AGI Company" readonly>
+          <select id="unitCostCenter" name="unitCostCenter">
+            <option value="">(Cost Center)</option>
+          </select>
           <input id="unitSupplier" name="unitSupplier" class="info-input" placeholder="Supplier" readonly>
           <input id="unitArrangement" name="unitArrangement" class="info-input" placeholder="Arrangement" readonly>
           <input id="unitInvoicing" name="unitInvoicing" class="info-input" placeholder="Invoicing" readonly>
@@ -191,6 +194,7 @@
               <th>Unit</th>
               <th>Lease</th>
               <th>Company</th>
+              <th>Cost Center</th>
               <th>Supplier</th>
               <th>Arrangement</th>
               <th>Invoicing</th>
@@ -650,7 +654,14 @@
           <span style="font-weight:600;font-size:13px;">AGI Company</span>
           <input id="editUnitCompany" type="text" readonly style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;background:#f5f5f5;" />
         </label>
-        
+
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Cost Center</span>
+          <select id="editUnitCostCenter" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+            <option value="">(select cost center)</option>
+          </select>
+        </label>
+
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span style="font-weight:600;font-size:13px;">Supplier</span>
           <input id="editUnitSupplier" type="text" readonly style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;background:#f5f5f5;" />
