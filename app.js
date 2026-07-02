@@ -3066,6 +3066,14 @@ async function loadStateFromDB(){
     const loaded = await DB.loadAll();
     state = loaded;
 
+    // Correct registrySeq if meta value is behind the highest seq actually in Sheets
+    const _maxExistingSeq = loaded.registries.reduce((max, r) => Math.max(max, Number(r.seq) || 0), 0);
+    if(_maxExistingSeq > (loaded.meta.registrySeq || 0)){
+      console.warn('[registrySeq fix] Meta had', loaded.meta.registrySeq, '— max existing seq is', _maxExistingSeq, '— correcting in Sheets.');
+      loaded.meta.registrySeq = _maxExistingSeq;
+      DB.saveAll(loaded).catch(e => console.error('Failed to save corrected registrySeq:', e));
+    }
+
     // Warn if everything came back empty — likely a Google Sheets connectivity problem
     const looksEmpty = loaded.units.length === 0 && loaded.registries.length === 0 && loaded.leases.length === 0;
     if(looksEmpty){
@@ -3214,6 +3222,11 @@ function startAutoRefresh(){
           try{ sanitizedMeta[f] = JSON.parse(v); }catch(e){ sanitizedMeta[f] = []; }
         } else { sanitizedMeta[f] = []; }
       });
+      // Ensure registrySeq never goes backwards relative to existing registries
+      const _autoRefreshMaxSeq = state.registries.reduce((max, r) => Math.max(max, Number(r.seq) || 0), 0);
+      if(_autoRefreshMaxSeq > (sanitizedMeta.registrySeq || 0)){
+        sanitizedMeta.registrySeq = _autoRefreshMaxSeq;
+      }
       state.meta = sanitizedMeta;
       // Keep snapshot in sync with what Sheets just returned
       _updateSheetConfigSnapshot();
