@@ -116,7 +116,7 @@ const DB = {
       stringFields.forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
       const numFields = ['unitOverviewMonth','unitOverviewYear','leaseOverviewMonth','leaseOverviewYear','registrySeq'];
       numFields.forEach(f => { sanitizedMeta[f] = Number(sanitizedMeta[f]) || 0; });
-      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','ccCenters'];
       arrayFields.forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ return; } // already parsed

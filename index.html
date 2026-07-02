@@ -85,6 +85,10 @@
         <span class="tab-title">Lease Control</span>
         <span class="tab-desc">Active leases</span>
       </button>
+      <button class="tab" data-tab="ccControl">
+        <span class="tab-title">CC Control</span>
+        <span class="tab-desc">Cost centers</span>
+      </button>
       <button class="tab" data-tab="users">
         <span class="tab-title">Users</span>
         <span class="tab-desc">User accounts</span>
@@ -332,6 +336,38 @@
           </thead>
           <tbody id="leaseList"></tbody>
         </table>
+      </div>
+
+      <!-- =================== CC CONTROL =================== -->
+      <div id="ccControl" class="tab-panel">
+        <h2>CC Control</h2>
+        <div class="inline-form" style="margin-bottom:16px;align-items:flex-end;flex-wrap:wrap;">
+          <input id="ccCostCenter" placeholder="Cost Center" style="min-width:140px;">
+          <input id="ccReferenceId" placeholder="Reference ID" style="min-width:140px;">
+          <select id="ccCompany">
+            <option value="">(Company)</option>
+          </select>
+          <input id="ccLocation" placeholder="Location" style="min-width:140px;">
+          <input id="ccAddress" placeholder="Primary Full Address" style="min-width:220px;flex:1;">
+          <button id="ccAddBtn">Add</button>
+          <button id="ccCancelBtn" style="display:none;background:#6b7280;">Cancel</button>
+        </div>
+        <div style="overflow-x:auto;margin-top:8px;">
+          <table id="ccTable">
+            <thead>
+              <tr>
+                <th>Cost Center</th>
+                <th>Reference ID</th>
+                <th>Company Restrictions</th>
+                <th>Location</th>
+                <th>Primary Full Address</th>
+                <th style="text-align:center;width:100px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="ccTableBody"></tbody>
+          </table>
+          <p id="ccEmpty" style="color:#9ca3af;text-align:center;padding:28px 0;display:none;">No cost centers added yet. Use the form above to add one.</p>
+        </div>
       </div>
 
       <div id="users" class="tab-panel">

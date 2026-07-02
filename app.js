@@ -3023,7 +3023,7 @@ function escapeHtml(str){
 
 // --- Config list protection (Sheets is the only source of truth) ---
 // Snapshot of what Sheets returned on last load. Never stored in localStorage.
-const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','ccCenters'];
 let _sheetConfigSnapshot = {};
 // Set to true only by Developer-tab handlers before calling saveState() for a config change.
 let _configChangeIntentional = false;
@@ -3215,7 +3215,7 @@ function startAutoRefresh(){
 
       const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
       ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
-      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => {
+      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','ccCenters'].forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ /* already parsed */ }
         else if(typeof v === 'string' && v.trim().startsWith('[')){
@@ -3391,7 +3391,113 @@ if (loginGate) {
 
 // Clear data button removed by user request
 
-function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); renderReport(); }
+// ========================
+// CC Control
+// ========================
+let _ccEditId = null;
+
+function syncCCCompanyOptions(){
+  const sel = qs('#ccCompany');
+  if(!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">(Company)</option>';
+  (state.meta.devCompanies || []).forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c; opt.textContent = c;
+    sel.appendChild(opt);
+  });
+  if(cur) sel.value = cur;
+}
+
+function renderCCControl(){
+  syncCCCompanyOptions();
+  const tbody = qs('#ccTableBody');
+  const emptyMsg = qs('#ccEmpty');
+  if(!tbody) return;
+  if(!state.meta.ccCenters) state.meta.ccCenters = [];
+  const centers = state.meta.ccCenters;
+  tbody.innerHTML = '';
+  if(centers.length === 0){
+    if(emptyMsg) emptyMsg.style.display = 'block';
+    return;
+  }
+  if(emptyMsg) emptyMsg.style.display = 'none';
+  centers.forEach((cc, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(cc.costCenter||'')}</td>
+      <td>${escapeHtml(cc.referenceId||'')}</td>
+      <td>${escapeHtml(cc.company||'')}</td>
+      <td>${escapeHtml(cc.location||'')}</td>
+      <td>${escapeHtml(cc.address||'')}</td>
+      <td style="text-align:center;">
+        <button class="cc-edit-btn" data-i="${i}">Edit</button>
+        <button class="cc-del-btn" data-i="${i}">Del</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('.cc-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cc = (state.meta.ccCenters || [])[Number(btn.dataset.i)];
+      if(!cc) return;
+      _ccEditId = cc.id;
+      qs('#ccCostCenter').value = cc.costCenter || '';
+      qs('#ccReferenceId').value = cc.referenceId || '';
+      syncCCCompanyOptions();
+      qs('#ccCompany').value = cc.company || '';
+      qs('#ccLocation').value = cc.location || '';
+      qs('#ccAddress').value = cc.address || '';
+      qs('#ccAddBtn').textContent = 'Save';
+      qs('#ccCancelBtn').style.display = '';
+      qs('#ccCostCenter').focus();
+    });
+  });
+  tbody.querySelectorAll('.cc-del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if(!confirm('Delete this cost center?')) return;
+      (state.meta.ccCenters || []).splice(Number(btn.dataset.i), 1);
+      _configChangeIntentional = true;
+      saveState();
+      renderCCControl();
+    });
+  });
+}
+
+(function(){
+  function clearCCForm(){
+    qs('#ccCostCenter').value = '';
+    qs('#ccReferenceId').value = '';
+    qs('#ccCompany').value = '';
+    qs('#ccLocation').value = '';
+    qs('#ccAddress').value = '';
+    qs('#ccAddBtn').textContent = 'Add';
+    qs('#ccCancelBtn').style.display = 'none';
+    _ccEditId = null;
+  }
+  qs('#ccAddBtn').addEventListener('click', () => {
+    const costCenter = qs('#ccCostCenter').value.trim();
+    const referenceId = qs('#ccReferenceId').value.trim();
+    const company = qs('#ccCompany').value;
+    const location = qs('#ccLocation').value.trim();
+    const address = qs('#ccAddress').value.trim();
+    if(!costCenter){ alert('Cost Center name is required.'); qs('#ccCostCenter').focus(); return; }
+    if(!state.meta.ccCenters) state.meta.ccCenters = [];
+    if(_ccEditId){
+      const idx = state.meta.ccCenters.findIndex(c => c.id === _ccEditId);
+      if(idx !== -1) state.meta.ccCenters[idx] = { ...state.meta.ccCenters[idx], costCenter, referenceId, company, location, address };
+    } else {
+      state.meta.ccCenters.push({ id: id(), costCenter, referenceId, company, location, address, createdAt: new Date().toISOString() });
+    }
+    _configChangeIntentional = true;
+    saveState();
+    clearCCForm();
+    renderCCControl();
+  });
+  qs('#ccCancelBtn').addEventListener('click', () => clearCCForm());
+})();
+
+function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); renderReport(); renderCCControl(); }
 
 // Helper function to format date from YYYY-MM-DD to MM/DD/YYYY
 function formatDateToUS(dateStr){
