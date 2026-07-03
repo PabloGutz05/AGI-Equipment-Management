@@ -854,14 +854,29 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
     const checkboxContainer = document.createElement('div'); checkboxContainer.id = 'invoiceUnitCheckboxContainer';
     panel.appendChild(checkboxContainer);
 
-    list.forEach(u => {
+    // Sort: active units first, disabled units at the bottom
+    const sortedList = list.slice().sort((a, b) => {
+      const aDisabled = (a.status || '').toLowerCase() === 'disabled';
+      const bDisabled = (b.status || '').toLowerCase() === 'disabled';
+      if(aDisabled === bDisabled) return 0;
+      return aDisabled ? 1 : -1;
+    });
+
+    sortedList.forEach(u => {
       const val = (u.unitId || u.id || '').toString();
+      const isDisabled = (u.status || '').toLowerCase() === 'disabled';
       const row = document.createElement('div'); row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px'; row.style.padding = '6px 4px';
       row.className = 'unit-checkbox-row';
       row.setAttribute('data-unit-id', val.toLowerCase());
+      if(isDisabled){
+        row.style.background = '#fee2e2';
+        row.style.borderRadius = '4px';
+      }
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'invoiceUnit'; cb.value = val; cb.id = 'invoiceUnit_cb_' + val.replace(/[^a-z0-9_-]/gi,'_');
       if(selectedValues.length && selectedValues.indexOf(val) !== -1) cb.checked = true;
-      const lab = document.createElement('label'); lab.htmlFor = cb.id; lab.textContent = val; lab.style.flex = '1 1 auto';
+      const lab = document.createElement('label'); lab.htmlFor = cb.id; lab.style.flex = '1 1 auto';
+      lab.textContent = val + (isDisabled ? ' (Disabled)' : '');
+      if(isDisabled) lab.style.color = '#b91c1c';
       cb.addEventListener('change', ()=>{ updateInvoiceUnitToggleLabel(); });
       row.appendChild(cb); row.appendChild(lab); checkboxContainer.appendChild(row);
     });
