@@ -8220,9 +8220,17 @@ function renderUnitDetailModal(unitId) {
   const statusEl = qs('#unitDetailStatus');
   if(statusEl){
     const isDisabled = (unit.status || '').toLowerCase() === 'disabled';
-    statusEl.textContent = isDisabled ? 'Disabled' : 'Operational';
-    statusEl.style.background = isDisabled ? 'rgba(220,38,38,0.2)' : 'rgba(34,197,94,0.2)';
-    statusEl.style.color = isDisabled ? '#f87171' : '#4ade80';
+    if(isDisabled){
+      const dd = unit.disabledDate ? new Date(unit.disabledDate + 'T00:00:00').toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : '';
+      statusEl.textContent = 'Disabled' + (dd ? ' · Disabled Date ' + dd : '');
+      statusEl.style.background = 'rgba(220,38,38,0.2)';
+      statusEl.style.color = '#f87171';
+    } else {
+      const ed = unit.enabledDate ? new Date(unit.enabledDate + 'T00:00:00').toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : '';
+      statusEl.textContent = 'Operational' + (ed ? ' · Since ' + ed : '');
+      statusEl.style.background = 'rgba(34,197,94,0.2)';
+      statusEl.style.color = '#4ade80';
+    }
   }
 
   // Navigation
@@ -8232,23 +8240,12 @@ function renderUnitDetailModal(unitId) {
   // Info grid
   const infoEl = qs('#unitDetailInfo');
   if(infoEl){
-    // Find operating since from statusHistory
-    let operatingSince = 'Jan 2025';
-    try{
-      const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
-      if(hist.length > 0){
-        const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
-        const d = new Date(firstOp.date);
-        operatingSince = d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
-      }
-    }catch(e){}
-
     const fields = [
       { label: 'SUPPLIER', value: unit.supplier || '—' },
       { label: 'LEASE', value: unit.lease || '—' },
       { label: 'ARRANGEMENT', value: unit.arrangement || '—' },
       { label: 'INVOICING', value: unit.invoicing || '—' },
-      { label: 'OPERATING SINCE', value: operatingSince },
+      { label: 'COST CENTER', value: unit.costCenter || '—' },
       { label: 'COMPANY', value: unit.company || '—' }
     ];
 
@@ -8504,7 +8501,7 @@ function showDayDetail(unit, y, m, d, registries, invoices, popupEl){
         <div style="background:#0f1117;border:1px solid #1e2535;border-radius:8px;padding:12px;margin-bottom:8px;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
             <span style="font-size:13px;font-weight:700;color:#60a5fa;">📄 ${escapeHtml(reg.wdNumber||'')}</span>
-            <span style="font-size:11px;color:#4b5563;">Supplier: ${escapeHtml(reg.lease||'')}</span>
+            <span style="font-size:11px;color:#4b5563;">${escapeHtml(reg.docNumber||'')}</span>
           </div>
           <div style="font-size:11px;color:#6b7280;">📅 ${fmtDate(reg.periodStart)} — ${fmtDate(reg.periodEnd)}</div>
           <div style="font-size:15px;font-weight:700;color:#4ade80;margin-top:6px;">${formatCurrency(amount||'0')}</div>
@@ -8562,7 +8559,10 @@ function showMonthDetail(unit, y, m, popupEl){
       return `
         <div style="background:#0f1117;border:1px solid #1e2535;border-radius:8px;padding:12px;margin-bottom:8px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-            <span style="font-size:13px;font-weight:700;color:#60a5fa;">📄 ${escapeHtml(reg.wdNumber||'')}</span>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-size:13px;font-weight:700;color:#60a5fa;">📄 ${escapeHtml(reg.wdNumber||'')}</span>
+              <span style="font-size:11px;color:#4b5563;">${escapeHtml(reg.docNumber||'')}</span>
+            </div>
             <span style="font-size:11px;background:#1e2535;color:#9ca3af;padding:2px 8px;border-radius:10px;">${escapeHtml(reg.category||'')}</span>
           </div>
           <div style="font-size:11px;color:#6b7280;">📅 ${fmtDate(reg.periodStart)} — ${fmtDate(reg.periodEnd)}</div>
