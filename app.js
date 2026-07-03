@@ -991,8 +991,6 @@ if(invoiceLeaseSel){
     if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(val);
     // ensure the Submitted date is prefilled to today's date (predetermined actual date)
     const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
-    // Update lease info panel
-    try{ updateInvoiceLeaseInfoPanel(val); }catch(e){}
   });
 }
 
@@ -1474,8 +1472,6 @@ function renderInvoices(){
       menu.style.display = 'none';
       // focus the form tab
       const invTab = Array.from(document.querySelectorAll('.tab')).find(t=>t.dataset.tab==='invoices'); if(invTab) invTab.click();
-      // Render lease details panel
-      try{ updateInvoiceLeaseInfoPanel(inv.lease || ''); }catch(e){}
     });
 
     // Delete: remove all invoices in this WD group
@@ -1581,31 +1577,6 @@ function renderInvoices(){
   // lease numbers are plain text (no popup on click)
 }
 
-// Render selected lease information under the invoice form
-function updateInvoiceLeaseInfoPanel(leaseVal){
-  const panel = qs('#invoiceLeaseInfoPanel');
-  const content = qs('#invoiceLeaseInfoContent');
-  if(!panel || !content) return;
-  const leaseValNorm = (leaseVal||'').toString().trim().toLowerCase();
-  const lease = (state.leases||[]).find(l => {
-    const key = (l.leaseNumber || l.id || '').toString().trim().toLowerCase();
-    return key === leaseValNorm;
-  });
-  if(!lease){ panel.style.display = 'none'; content.innerHTML=''; return; }
-  const status = lease.status || 'Enabled';
-  const disabledDate = lease.disabledDate || '';
-  const enabledDate = lease.enabledDate || '';
-  const parts = [
-    `<strong>Lease:</strong> ${escapeHtml(lease.leaseNumber||lease.id||'')}`,
-    `<strong>Company:</strong> ${escapeHtml(lease.company||'')}`,
-    `<strong>Supplier:</strong> ${escapeHtml(lease.supplier||'')}`,
-    `<strong>Arrangement:</strong> ${escapeHtml(lease.arrangement||'')}`,
-    `<strong>Invoicing:</strong> ${escapeHtml(lease.invoicing||'')}`,
-    `<strong>Status:</strong> ${escapeHtml(status)}${status==='Disabled' && disabledDate ? ' — Disabled: '+escapeHtml(disabledDate) : (status==='Enabled' && enabledDate ? ' — Enabled: '+escapeHtml(enabledDate) : '')}`
-  ];
-  content.innerHTML = parts.join('<br>');
-  panel.style.display = 'block';
-}
 
 
 
