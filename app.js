@@ -7,6 +7,7 @@ const defaultData = {
   leases: [],
   users: [],
   registries: [],
+  ccCenters: [],
   comments: {}, // Store comments by unitId
   meta: { createdAt: new Date().toISOString(), registrySeq: 0 }
 };
@@ -3027,7 +3028,7 @@ function escapeHtml(str){
 
 // --- Config list protection (Sheets is the only source of truth) ---
 // Snapshot of what Sheets returned on last load. Never stored in localStorage.
-const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','ccCenters'];
+const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
 let _sheetConfigSnapshot = {};
 // Set to true only by Developer-tab handlers before calling saveState() for a config change.
 let _configChangeIntentional = false;
@@ -3220,7 +3221,7 @@ function startAutoRefresh(){
 
       const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
       ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
-      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','ccCenters'].forEach(f => {
+      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ /* already parsed */ }
         else if(typeof v === 'string' && v.trim().startsWith('[')){
@@ -3407,7 +3408,7 @@ function syncUnitCostCenterOptions(){
     if(!el) return;
     const cur = el.value;
     el.innerHTML = '<option value="">(Cost Center)</option>';
-    (state.meta.ccCenters || []).forEach(cc => {
+    (state.ccCenters || []).forEach(cc => {
       const opt = document.createElement('option');
       opt.value = cc.costCenter;
       opt.textContent = cc.costCenter + (cc.referenceId ? ' — ' + cc.referenceId : '');
@@ -3500,8 +3501,8 @@ function renderCCControl(){
   const tbody = qs('#ccTableBody');
   const emptyMsg = qs('#ccEmpty');
   if(!tbody) return;
-  if(!state.meta.ccCenters) state.meta.ccCenters = [];
-  const centers = state.meta.ccCenters;
+  if(!state.ccCenters) state.ccCenters = [];
+  const centers = state.ccCenters;
   tbody.innerHTML = '';
   if(centers.length === 0){
     if(emptyMsg) emptyMsg.style.display = 'block';
@@ -3525,7 +3526,7 @@ function renderCCControl(){
   });
   tbody.querySelectorAll('.cc-edit-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const cc = (state.meta.ccCenters || [])[Number(btn.dataset.i)];
+      const cc = (state.ccCenters || [])[Number(btn.dataset.i)];
       if(!cc) return;
       _ccEditId = cc.id;
       qs('#ccCostCenter').value = cc.costCenter || '';
@@ -3540,10 +3541,11 @@ function renderCCControl(){
   });
   tbody.querySelectorAll('.cc-del-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.i);
       if(!confirm('Delete this cost center?')) return;
-      (state.meta.ccCenters || []).splice(Number(btn.dataset.i), 1);
-      _configChangeIntentional = true;
-      saveState();
+      const deleted = state.ccCenters[i];
+      state.ccCenters.splice(i, 1);
+      DB.deleteCCCenter(deleted.id).catch(e => console.error('CC delete error:', e));
       renderCCControl();
     });
   });
@@ -3567,15 +3569,18 @@ function renderCCControl(){
     const location = qs('#ccLocation').value.trim();
     const address = qs('#ccAddress').value.trim();
     if(!costCenter){ alert('Cost Center name is required.'); qs('#ccCostCenter').focus(); return; }
-    if(!state.meta.ccCenters) state.meta.ccCenters = [];
+    if(!state.ccCenters) state.ccCenters = [];
     if(_ccEditId){
-      const idx = state.meta.ccCenters.findIndex(c => c.id === _ccEditId);
-      if(idx !== -1) state.meta.ccCenters[idx] = { ...state.meta.ccCenters[idx], costCenter, referenceId, company, location, address };
+      const idx = state.ccCenters.findIndex(c => c.id === _ccEditId);
+      if(idx !== -1){
+        state.ccCenters[idx] = { ...state.ccCenters[idx], costCenter, referenceId, company, location, address };
+        DB.updateCCCenter(state.ccCenters[idx]).catch(e => console.error('CC update error:', e));
+      }
     } else {
-      state.meta.ccCenters.push({ id: id(), costCenter, referenceId, company, location, address, createdAt: new Date().toISOString() });
+      const newCC = { id: id(), costCenter, referenceId, company, location, address, createdAt: new Date().toISOString() };
+      state.ccCenters.push(newCC);
+      DB.saveCCCenter(newCC).catch(e => console.error('CC save error:', e));
     }
-    _configChangeIntentional = true;
-    saveState();
     clearCCForm();
     renderCCControl();
   });

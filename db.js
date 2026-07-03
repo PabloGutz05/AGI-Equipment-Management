@@ -47,11 +47,12 @@ const DB = {
   async loadAll() {
     try {
       showLoadingOverlay('Loading your data...');
-      const [registries, units, leases, users, meta] = await Promise.all([
+      const [registries, units, leases, users, ccCentersRaw, meta] = await Promise.all([
         DB.get({ action: 'getAll', sheet: 'invoices' }),
         DB.get({ action: 'getAll', sheet: 'units' }),
         DB.get({ action: 'getAll', sheet: 'leases' }),
         DB.get({ action: 'getAll', sheet: 'users' }),
+        DB.get({ action: 'getAll', sheet: 'ccControl' }),
         DB.get({ action: 'getMeta' })
       ]);
 
@@ -129,7 +130,18 @@ const DB = {
       stringFields.forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
       const numFields = ['unitOverviewMonth','unitOverviewYear','leaseOverviewMonth','leaseOverviewYear','registrySeq'];
       numFields.forEach(f => { sanitizedMeta[f] = Number(sanitizedMeta[f]) || 0; });
-      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','ccCenters'];
+      const parsedCCCenters = (Array.isArray(ccCentersRaw) ? ccCentersRaw : []).map(c => ({
+        ...c,
+        id: String(c.id || ''),
+        costCenter: String(c.costCenter || ''),
+        referenceId: String(c.referenceId || ''),
+        company: String(c.company || ''),
+        location: String(c.location || ''),
+        address: String(c.address || ''),
+        createdAt: String(c.createdAt || '')
+      }));
+
+      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
       arrayFields.forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ return; } // already parsed
@@ -146,6 +158,7 @@ const DB = {
         units: parsedUnits,
         leases: parsedLeases,
         users: parsedUsers,
+        ccCenters: parsedCCCenters,
         comments: {},
         meta: sanitizedMeta
       };
@@ -219,6 +232,18 @@ const DB = {
 
   async deleteLease(id) {
     return DB.post({ action: 'delete', sheet: 'leases', id });
+  },
+
+  async saveCCCenter(record) {
+    return DB.post({ action: 'save', sheet: 'ccControl', data: record });
+  },
+
+  async updateCCCenter(record) {
+    return DB.post({ action: 'update', sheet: 'ccControl', id: record.id, data: record });
+  },
+
+  async deleteCCCenter(id) {
+    return DB.post({ action: 'delete', sheet: 'ccControl', id });
   },
 
   async saveUser(record) {
