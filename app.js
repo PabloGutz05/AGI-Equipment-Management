@@ -3418,16 +3418,80 @@ function syncUnitCostCenterOptions(){
 }
 
 function syncCCCompanyOptions(){
-  const sel = qs('#ccCompany');
-  if(!sel) return;
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">(Company)</option>';
+  const wrap = qs('#ccCompanyMultiWrap');
+  if(!wrap) return;
+  if(!wrap._selected) wrap._selected = [];
+
+  // Build the toggle display + dropdown once
+  if(!wrap._displayEl){
+    const displayEl = document.createElement('div');
+    displayEl.style.cssText = 'padding:8px 10px;border:1px solid #000;border-radius:6px;background:#fff;cursor:pointer;font-size:14px;color:#000;min-width:180px;user-select:none;display:flex;justify-content:space-between;align-items:center;gap:8px;';
+    const textSpan = document.createElement('span');
+    textSpan.id = 'ccCompanyDisplayText';
+    textSpan.textContent = '(Company)';
+    textSpan.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    const arrow = document.createElement('span');
+    arrow.textContent = '▾';
+    arrow.style.cssText = 'opacity:0.5;font-size:11px;flex-shrink:0;';
+    displayEl.appendChild(textSpan);
+    displayEl.appendChild(arrow);
+    wrap.appendChild(displayEl);
+
+    const dropdownEl = document.createElement('div');
+    dropdownEl.style.cssText = 'display:none;position:absolute;top:calc(100% + 2px);left:0;z-index:9999;background:#fff;border:1px solid #e6e9ee;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,0.1);min-width:220px;max-height:220px;overflow-y:auto;padding:4px 0;';
+    wrap.appendChild(dropdownEl);
+    wrap._displayEl = displayEl;
+    wrap._dropdownEl = dropdownEl;
+
+    displayEl.addEventListener('click', e => {
+      e.stopPropagation();
+      dropdownEl.style.display = dropdownEl.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', () => { if(dropdownEl) dropdownEl.style.display = 'none'; });
+  }
+
+  const dropdownEl = wrap._dropdownEl;
+  const textSpan = qs('#ccCompanyDisplayText');
+
+  // Rebuild checkbox list (preserves _selected)
+  dropdownEl.innerHTML = '';
   (state.meta.devCompanies || []).forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c; opt.textContent = c;
-    sel.appendChild(opt);
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;font-size:13px;';
+    label.onmouseenter = () => label.style.background = '#f3f6fb';
+    label.onmouseleave = () => label.style.background = '';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = c;
+    cb.checked = wrap._selected.includes(c);
+    cb.style.cssText = 'cursor:pointer;width:15px;height:15px;accent-color:#0b74de;flex-shrink:0;';
+    cb.addEventListener('change', e => {
+      e.stopPropagation();
+      if(cb.checked){ if(!wrap._selected.includes(c)) wrap._selected.push(c); }
+      else { wrap._selected = wrap._selected.filter(x => x !== c); }
+      if(textSpan) textSpan.textContent = wrap._selected.length > 0 ? wrap._selected.join(', ') : '(Company)';
+    });
+
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(c));
+    dropdownEl.appendChild(label);
   });
-  if(cur) sel.value = cur;
+
+  // Keep display text in sync
+  if(textSpan) textSpan.textContent = wrap._selected.length > 0 ? wrap._selected.join(', ') : '(Company)';
+}
+
+function getCCCompanySelection(){
+  const wrap = qs('#ccCompanyMultiWrap');
+  return (wrap && wrap._selected && wrap._selected.length > 0) ? wrap._selected.join(', ') : '';
+}
+
+function setCCCompanySelection(valueStr){
+  const wrap = qs('#ccCompanyMultiWrap');
+  if(!wrap) return;
+  wrap._selected = (valueStr || '').split(',').map(s => s.trim()).filter(Boolean);
+  syncCCCompanyOptions();
 }
 
 function renderCCControl(){
@@ -3466,8 +3530,7 @@ function renderCCControl(){
       _ccEditId = cc.id;
       qs('#ccCostCenter').value = cc.costCenter || '';
       qs('#ccReferenceId').value = cc.referenceId || '';
-      syncCCCompanyOptions();
-      qs('#ccCompany').value = cc.company || '';
+      setCCCompanySelection(cc.company || '');
       qs('#ccLocation').value = cc.location || '';
       qs('#ccAddress').value = cc.address || '';
       qs('#ccAddBtn').textContent = 'Save';
@@ -3490,7 +3553,7 @@ function renderCCControl(){
   function clearCCForm(){
     qs('#ccCostCenter').value = '';
     qs('#ccReferenceId').value = '';
-    qs('#ccCompany').value = '';
+    setCCCompanySelection('');
     qs('#ccLocation').value = '';
     qs('#ccAddress').value = '';
     qs('#ccAddBtn').textContent = 'Add';
@@ -3500,7 +3563,7 @@ function renderCCControl(){
   qs('#ccAddBtn').addEventListener('click', () => {
     const costCenter = qs('#ccCostCenter').value.trim();
     const referenceId = qs('#ccReferenceId').value.trim();
-    const company = qs('#ccCompany').value;
+    const company = getCCCompanySelection();
     const location = qs('#ccLocation').value.trim();
     const address = qs('#ccAddress').value.trim();
     if(!costCenter){ alert('Cost Center name is required.'); qs('#ccCostCenter').focus(); return; }
