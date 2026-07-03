@@ -3847,6 +3847,7 @@ function renderUnitOverview(){
   const headers = [
     { text: 'Unit ID', key: 'unitId' },
     { text: 'Lease', key: 'lease' },
+    { text: 'Cost Center', key: 'costCenter' },
     { text: 'Supplier', key: 'supplier' },
     { text: 'Arrangement', key: 'arrangement' },
     { text: 'Invoicing', key: 'invoicing' },
@@ -3910,12 +3911,14 @@ function renderUnitOverview(){
     units = units.filter(u => {
       const unitId = (u.unitId || '').toString().toLowerCase();
       const lease = (u.lease || '').toString().toLowerCase();
+      const costCenter = (u.costCenter || '').toString().toLowerCase();
       const supplier = (u.supplier || '').toString().toLowerCase();
       const arrangement = (u.arrangement || '').toString().toLowerCase();
       const invoicing = (u.invoicing || '').toString().toLowerCase();
       const status = (u.status || '').toString().toLowerCase();
-      return unitId.includes(searchTerm) || lease.includes(searchTerm) || supplier.includes(searchTerm) ||
-             arrangement.includes(searchTerm) || invoicing.includes(searchTerm) || status.includes(searchTerm);
+      return unitId.includes(searchTerm) || lease.includes(searchTerm) || costCenter.includes(searchTerm) ||
+             supplier.includes(searchTerm) || arrangement.includes(searchTerm) ||
+             invoicing.includes(searchTerm) || status.includes(searchTerm);
     });
   }
   
@@ -4027,6 +4030,14 @@ function renderUnitOverview(){
       tdLease.style.verticalAlign = 'middle';
       tdLease.textContent = u.lease || '';
       row.appendChild(tdLease);
+
+      // Cost Center column
+      const tdCostCenter = document.createElement('td');
+      tdCostCenter.style.padding = '6px';
+      tdCostCenter.style.fontSize = '12px';
+      tdCostCenter.style.verticalAlign = 'middle';
+      tdCostCenter.textContent = u.costCenter || '';
+      row.appendChild(tdCostCenter);
 
       // Supplier column
       const tdSupplier = document.createElement('td');
