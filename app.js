@@ -8220,13 +8220,19 @@ function renderUnitDetailModal(unitId) {
   const statusEl = qs('#unitDetailStatus');
   if(statusEl){
     const isDisabled = (unit.status || '').toLowerCase() === 'disabled';
+    const fmtStatusDate = (raw) => {
+      if(!raw) return '';
+      const s = String(raw);
+      const d = new Date(s.includes('T') ? s : s + 'T00:00:00');
+      return isNaN(d) ? '' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+    };
     if(isDisabled){
-      const dd = unit.disabledDate ? new Date(unit.disabledDate + 'T00:00:00').toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : '';
+      const dd = fmtStatusDate(unit.disabledDate);
       statusEl.textContent = 'Disabled' + (dd ? ' · Disabled Date ' + dd : '');
       statusEl.style.background = 'rgba(220,38,38,0.2)';
       statusEl.style.color = '#f87171';
     } else {
-      const ed = unit.enabledDate ? new Date(unit.enabledDate + 'T00:00:00').toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : '';
+      const ed = fmtStatusDate(unit.enabledDate);
       statusEl.textContent = 'Operational' + (ed ? ' · Since ' + ed : '');
       statusEl.style.background = 'rgba(34,197,94,0.2)';
       statusEl.style.color = '#4ade80';
