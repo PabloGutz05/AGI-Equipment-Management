@@ -2150,16 +2150,17 @@ function renderUnits(){
   if(thead){
     const headers = thead.querySelectorAll('th');
     const sortableColumns = [
-      { index: 1, key: 'unitId', text: 'Unit' },
-      { index: 2, key: 'lease', text: 'Lease' },
-      { index: 3, key: 'company', text: 'Company' },
-      { index: 4, key: 'supplier', text: 'Supplier' },
-      { index: 5, key: 'arrangement', text: 'Arrangement' },
-      { index: 6, key: 'invoicing', text: 'Invoicing' },
-      { index: 7, key: 'monthly', text: 'Monthly' },
-      { index: 8, key: 'description', text: 'Description' },
-      { index: 9, key: 'notes', text: 'Notes' },
-      { index: 10, key: 'status', text: 'Status' }
+      { index: 1,  key: 'unitId',      text: 'Unit' },
+      { index: 2,  key: 'lease',       text: 'Lease' },
+      { index: 3,  key: 'costCenter',  text: 'Cost Center' },
+      { index: 4,  key: 'company',     text: 'Company' },
+      { index: 5,  key: 'supplier',    text: 'Supplier' },
+      { index: 6,  key: 'arrangement', text: 'Arrangement' },
+      { index: 7,  key: 'invoicing',   text: 'Invoicing' },
+      { index: 8,  key: 'monthly',     text: 'Monthly' },
+      { index: 9,  key: 'description', text: 'Description' },
+      { index: 10, key: 'notes',       text: 'Notes' },
+      { index: 11, key: 'status',      text: 'Status' }
     ];
     
     sortableColumns.forEach(col => {
@@ -2342,8 +2343,8 @@ function renderUnits(){
     tr.appendChild(tdIndex);
     tr.appendChild(tdUnit);
     tr.appendChild(tdLease);
-    tr.appendChild(tdCompany);
     tr.appendChild(tdCostCenter);
+    tr.appendChild(tdCompany);
     tr.appendChild(tdSupplier);
     tr.appendChild(tdArrangement);
     tr.appendChild(tdInvoicing);
@@ -3448,6 +3449,7 @@ function syncCCCompanyOptions(){
       e.stopPropagation();
       dropdownEl.style.display = dropdownEl.style.display === 'none' ? 'block' : 'none';
     });
+    dropdownEl.addEventListener('click', e => e.stopPropagation());
     document.addEventListener('click', () => { if(dropdownEl) dropdownEl.style.display = 'none'; });
   }
 
@@ -3517,8 +3519,8 @@ function renderCCControl(){
       <td>${escapeHtml(cc.company||'')}</td>
       <td>${escapeHtml(cc.location||'')}</td>
       <td>${escapeHtml(cc.address||'')}</td>
-      <td style="text-align:center;">
-        <button class="cc-edit-btn" data-i="${i}">Edit</button>
+      <td style="text-align:center;white-space:nowrap;">
+        <button class="cc-edit-btn" data-i="${i}" style="margin-right:4px;">Edit</button>
         <button class="cc-del-btn" data-i="${i}">Del</button>
       </td>
     `;
