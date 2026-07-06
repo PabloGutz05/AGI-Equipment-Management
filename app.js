@@ -3220,8 +3220,18 @@ function startAutoRefresh(){
       if(_autoRefreshMaxSeq > (sanitizedMeta.registrySeq || 0)){
         sanitizedMeta.registrySeq = _autoRefreshMaxSeq;
       }
+      // Auto-refresh guard: if Sheets returned empty config arrays but we have good data
+      // in the snapshot, keep the snapshot values — never let a transient empty response
+      // poison the snapshot and bypass the saveState() guard on the next user action.
+      _CFG_FIELDS.forEach(f => {
+        if((!Array.isArray(sanitizedMeta[f]) || sanitizedMeta[f].length === 0)
+           && Array.isArray(_sheetConfigSnapshot[f]) && _sheetConfigSnapshot[f].length > 0){
+          console.warn('[Auto-refresh guard] Sheets returned empty "' + f + '" — keeping existing values');
+          sanitizedMeta[f] = _sheetConfigSnapshot[f].slice();
+        }
+      });
       state.meta = sanitizedMeta;
-      // Keep snapshot in sync with what Sheets just returned
+      // Keep snapshot in sync — safe because config fields are already protected above
       _updateSheetConfigSnapshot();
 
       // Silent state update only — no renderAll() to avoid freezing large datasets
