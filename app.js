@@ -3568,6 +3568,7 @@ function renderCCControl(){
     const address = qs('#ccAddress').value.trim();
     if(!costCenter){ alert('Cost Center name is required.'); qs('#ccCostCenter').focus(); return; }
     if(!state.ccCenters) state.ccCenters = [];
+    if((state.ccCenters).some(c => c.costCenter.toLowerCase() === costCenter.toLowerCase() && c.id !== _ccEditId)){ alert('"' + costCenter + '" already exists.'); qs('#ccCostCenter').focus(); return; }
     if(_ccEditId){
       const idx = state.ccCenters.findIndex(c => c.id === _ccEditId);
       if(idx !== -1){
@@ -6698,8 +6699,10 @@ if(saveDevBtn){
     const v = (devCompanyInput && devCompanyInput.value || '').trim();
     if(!v){ alert('Please enter a company name'); return; }
     const editIndex = saveDevBtn.dataset.editIndex;
+    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
+    if(state.meta.devCompanies.some((c,i) => c.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
     if(typeof editIndex !== 'undefined'){
-      const idx = parseInt(editIndex,10);
+      const idx = editIdx;
       if(!Number.isNaN(idx) && state.meta.devCompanies[idx] !== undefined){
         state.meta.devCompanies[idx] = v;
       } else {
@@ -6778,8 +6781,10 @@ if(saveRentalBtn){
     const v = devRentalInput && devRentalInput.value ? devRentalInput.value.trim() : '';
     if(v === ''){ alert('Please enter a rental value'); return; }
     const editIndex = saveRentalBtn.dataset.editIndex;
+    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
+    if(state.meta.devRentals.some((r,i) => r.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
     if(typeof editIndex !== 'undefined'){
-      const idx = parseInt(editIndex,10);
+      const idx = editIdx;
       if(!Number.isNaN(idx) && state.meta.devRentals[idx] !== undefined){
         state.meta.devRentals[idx] = v;
       } else {
@@ -6841,8 +6846,10 @@ if(saveSupplierBtn){
     const v = devSupplierInput && devSupplierInput.value ? devSupplierInput.value.trim() : '';
     if(v === ''){ alert('Please enter a supplier name'); return; }
     const editIndex = saveSupplierBtn.dataset.editIndex;
+    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
+    if(state.meta.devSuppliers.some((s,i) => s.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
     if(typeof editIndex !== 'undefined'){
-      const idx = parseInt(editIndex,10);
+      const idx = editIdx;
       if(!Number.isNaN(idx) && state.meta.devSuppliers[idx] !== undefined){
         state.meta.devSuppliers[idx] = v;
       } else {
@@ -6914,8 +6921,10 @@ if(savePaymentBtn){
     const v = devPaymentInput && devPaymentInput.value ? devPaymentInput.value.trim() : '';
     if(v === ''){ alert('Please enter an invoicing type'); return; }
     const editIndex = savePaymentBtn.dataset.editIndex;
+    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
+    if(state.meta.devPayments.some((p,i) => p.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
     if(typeof editIndex !== 'undefined'){
-      const idx = parseInt(editIndex,10);
+      const idx = editIdx;
       if(!Number.isNaN(idx) && state.meta.devPayments[idx] !== undefined){
         state.meta.devPayments[idx] = v;
       } else {
@@ -6973,8 +6982,10 @@ if(saveArrangementBtn){
     const v = devArrangementInput && devArrangementInput.value ? devArrangementInput.value.trim() : '';
     if(v === ''){ alert('Please enter an arrangement'); return; }
     const editIndex = saveArrangementBtn.dataset.editIndex;
+    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
+    if(state.meta.devArrangements.some((a,i) => a.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
     if(typeof editIndex !== 'undefined'){
-      const idx = parseInt(editIndex,10);
+      const idx = editIdx;
       if(!Number.isNaN(idx) && state.meta.devArrangements[idx] !== undefined){
         state.meta.devArrangements[idx] = v;
       } else {
