@@ -50,9 +50,11 @@ async function loadWeatherForCity(city){
   const iconEl = document.getElementById(`${city.id}WeatherIcon`);
   const conditionEl = document.getElementById(`${city.id}WeatherCondition`);
   if(!iconEl || !conditionEl) return;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(()=>controller.abort(), 10000);
   try{
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,weathercode&timezone=${encodeURIComponent(city.timeZone)}&forecast_days=1`;
-    const res = await fetch(url, { cache: 'no-store' });
+    const res = await fetch(url, { cache: 'no-store', signal: controller.signal });
     if(!res.ok) throw new Error('Weather request failed');
     const data = await res.json();
     const current = data.current || {};
@@ -63,6 +65,8 @@ async function loadWeatherForCity(city){
   }catch(e){
     iconEl.textContent = city.defaultIcon;
     conditionEl.textContent = 'N/A';
+  }finally{
+    clearTimeout(timeoutId);
   }
 }
 
