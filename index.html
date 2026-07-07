@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://unpkg.com;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://script.google.com https://script.googleusercontent.com https://unpkg.com https://api.open-meteo.com;">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -20,6 +20,24 @@
         <div id="userInfo" style="display:none;font-size:13px;color:#6b7280;margin-top:4px;"></div>
       </div>
     </a>
+    <div class="header-weather-bar" aria-label="Time and weather for Miami and Hermosillo">
+      <div class="weather-card">
+        <div class="weather-icon" id="miamiWeatherIcon">🌴</div>
+        <div class="weather-text">
+          <div class="weather-city">Miami</div>
+          <div class="weather-time" id="miamiTime">--:--</div>
+          <div class="weather-condition" id="miamiWeatherCondition">Loading…</div>
+        </div>
+      </div>
+      <div class="weather-card">
+        <div class="weather-icon" id="hermosilloWeatherIcon">🌵</div>
+        <div class="weather-text">
+          <div class="weather-city">Hermosillo</div>
+          <div class="weather-time" id="hermosilloTime">--:--</div>
+          <div class="weather-condition" id="hermosilloWeatherCondition">Loading…</div>
+        </div>
+      </div>
+    </div>
     <div class="actions">
       <button id="reloadDataBtn" style="display:none" title="Reload data from Google Sheets">↺ Reload</button>
       <button id="logoutBtn" style="display:none">Logout</button>

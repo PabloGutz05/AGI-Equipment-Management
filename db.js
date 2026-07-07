@@ -1,5 +1,5 @@
 // db.js — Google Sheets Database Layer for AGI Vehicle Lease Management
-const DB_URL = 'https://script.google.com/macros/s/AKfycbwgATl68vyJi1V0FKXO9Wzn3SNw51BgbPItF9u5p8eeXBh2W594xmgNOTtKfaHciHjLcA/exec';
+const DB_URL = 'https://script.google.com/macros/s/AKfycbwpEY_5_GYygJzfwlyZDcz-MLxhk8eRwahRupYEcNDMhGljCNgLJfqeWlRss9eDV8QeWA/exec';
 const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
 const DB = {

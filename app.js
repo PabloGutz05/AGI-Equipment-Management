@@ -14,6 +14,73 @@ const defaultData = {
 
 let state = JSON.parse(JSON.stringify(defaultData));
 
+const weatherLocations = [
+  { id: 'miami', name: 'Miami', lat: 25.7617, lon: -80.1918, timeZone: 'America/New_York', defaultIcon: '🌴' },
+  { id: 'hermosillo', name: 'Hermosillo', lat: 29.0730, lon: -110.9559, timeZone: 'America/Hermosillo', defaultIcon: '🌵' }
+];
+
+function updateWeatherClockWidgets(){
+  const now = new Date();
+  weatherLocations.forEach(city => {
+    const timeEl = document.getElementById(`${city.id}Time`);
+    if(timeEl){
+      const timeText = new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: city.timeZone
+      }).format(now);
+      timeEl.textContent = timeText;
+    }
+  });
+}
+
+function weatherCodeToIcon(code){
+  if(code === 0) return '☀️';
+  if(code <= 3) return '⛅';
+  if(code <= 48) return '☁️';
+  if(code <= 67) return '🌦️';
+  if(code <= 77) return '🌨️';
+  if(code <= 82) return '🌧️';
+  if(code <= 99) return '⛈️';
+  return '🌤️';
+}
+
+async function loadWeatherForCity(city){
+  const iconEl = document.getElementById(`${city.id}WeatherIcon`);
+  const conditionEl = document.getElementById(`${city.id}WeatherCondition`);
+  if(!iconEl || !conditionEl) return;
+  try{
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,weathercode&timezone=${encodeURIComponent(city.timeZone)}&forecast_days=1`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if(!res.ok) throw new Error('Weather request failed');
+    const data = await res.json();
+    const current = data.current || {};
+    const temperature = Number(current.temperature_2m);
+    const weatherCode = Number(current.weathercode);
+    iconEl.textContent = weatherCodeToIcon(weatherCode);
+    conditionEl.textContent = Number.isFinite(temperature) ? `${Math.round(temperature)}°C` : 'N/A';
+  }catch(e){
+    iconEl.textContent = city.defaultIcon;
+    conditionEl.textContent = 'N/A';
+  }
+}
+
+function initWeatherWidgets(){
+  weatherLocations.forEach(city => {
+    const iconEl = document.getElementById(`${city.id}WeatherIcon`);
+    const conditionEl = document.getElementById(`${city.id}WeatherCondition`);
+    if(iconEl) iconEl.textContent = city.defaultIcon;
+    if(conditionEl) conditionEl.textContent = 'Loading…';
+    loadWeatherForCity(city);
+  });
+  updateWeatherClockWidgets();
+  setInterval(updateWeatherClockWidgets, 1000);
+  setInterval(() => {
+    weatherLocations.forEach(city => loadWeatherForCity(city));
+  }, 600000);
+}
+
 // --- Tabs ---
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -189,7 +256,7 @@ if(logoutBtnEl){ logoutBtnEl.addEventListener('click', ()=>{ sessionStorage.remo
 const reloadDataBtn = qs('#reloadDataBtn'); if(reloadDataBtn){ reloadDataBtn.addEventListener('click', ()=>{ loadStateFromDB(); }); }
 
 // On load decide whether to show the app
-document.addEventListener('DOMContentLoaded', ()=>{ showApp(isAuthenticated()); if(isAuthenticated()) updateUserInfoDisplay(); });
+document.addEventListener('DOMContentLoaded', ()=>{ showApp(isAuthenticated()); if(isAuthenticated()) updateUserInfoDisplay(); initWeatherWidgets(); });
 
 // --- AGI Process Menu wiring ---
 const procMenu = qs('#agiProcessMenu');

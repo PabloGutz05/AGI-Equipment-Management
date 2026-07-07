@@ -6,9 +6,16 @@
 }
 *{box-sizing:border-box}
 body{font-family:Segoe UI, Roboto, Arial, sans-serif;background:var(--bg);color:#111;margin:0;padding:0}
-header{display:flex;align-items:center;justify-content:space-between;padding:20px;background:linear-gradient(90deg,#0b74de22,transparent);border-bottom:1px solid #e6e9ee}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:20px;background:linear-gradient(90deg,#0b74de22,transparent);border-bottom:1px solid #e6e9ee;flex-wrap:wrap}
 header h1{margin:0;font-size:18px}
-.brand{display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:12px;flex:1 1 auto}
+.header-weather-bar{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-start;align-items:center;margin-left:auto;margin-right:0}
+.weather-card{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:999px;background:rgba(255,255,255,0.92);border:1px solid rgba(11,116,222,0.12);box-shadow:0 4px 10px rgba(0,0,0,0.05);min-width:190px}
+.weather-icon{font-size:24px;line-height:1}
+.weather-text{display:flex;flex-direction:column;line-height:1.1}
+.weather-city{font-size:11px;font-weight:700;color:#0b74de;text-transform:uppercase;letter-spacing:0.04em}
+.weather-time{font-size:13px;font-weight:600;color:#111;margin-top:2px}
+.weather-condition{font-size:12px;color:var(--muted);margin-top:2px}
 .brand img#agiLogo{width:60px;height:60px;object-fit:contain;display:block}
 .brand{text-decoration:none;color:inherit}
 .brand:focus, .brand:hover{outline:0;opacity:0.95}
@@ -173,6 +180,11 @@ footer{padding:12px;text-align:center;color:var(--muted)}
   .tabs{border-radius:6px 6px 0 0}
   .tab{padding:10px 14px}
   .tab-desc{display:none}
+}
+
+@media(max-width:920px){
+  .header-weather-bar{order:3;width:100%;justify-content:flex-start;margin-left:0;margin-right:0}
+  .actions{margin-left:auto}
 }
 
 /* splitter — no longer used with horizontal tabs */
