@@ -2159,7 +2159,7 @@ function renderUnits(){
       const searchInput = document.createElement('input');
       searchInput.type = 'text';
       searchInput.id = 'unitSearchInput';
-      searchInput.placeholder = 'Filter by unit, lease, company, supplier, comments...';
+      searchInput.placeholder = 'Filter by unit, lease, company, supplier, comments... ("," = or, ";" = and)';
       searchInput.style.padding = '6px 10px';
       searchInput.style.border = '1px solid #e6e9ee';
       searchInput.style.borderRadius = '6px';
@@ -2250,10 +2250,10 @@ function renderUnits(){
     });
   }
   
-  // Filter units by search term
+  // Filter units by search term(s) — comma = OR, semicolon = AND (see parseSearchGroups)
   let units = state.units.slice();
-  const searchTerm = state.meta.unitSearch.toLowerCase().trim();
-  if(searchTerm){
+  const searchGroups = parseSearchGroups(state.meta.unitSearch);
+  if(searchGroups.length > 0){
     units = units.filter(u => {
       const unitId = (u.unitId || '').toString().toLowerCase();
       const lease = (u.lease || '').toString().toLowerCase();
@@ -2266,11 +2266,7 @@ function renderUnits(){
       const status = (u.status || '').toString().toLowerCase();
       const comments = (u.comments || []).map(c => (c.text || '').toString().toLowerCase()).join(' ');
 
-      return unitId.includes(searchTerm) || lease.includes(searchTerm) ||
-             company.includes(searchTerm) || supplier.includes(searchTerm) ||
-             arrangement.includes(searchTerm) || invoicing.includes(searchTerm) ||
-             description.includes(searchTerm) || notes.includes(searchTerm) ||
-             status.includes(searchTerm) || comments.includes(searchTerm);
+      return matchesSearchGroups(searchGroups, [unitId, lease, company, supplier, arrangement, invoicing, description, notes, status, comments]);
     });
   }
   
@@ -2688,7 +2684,7 @@ function renderLeases(){
     
     const searchInput = document.createElement('input');
     searchInput.type = 'text';
-    searchInput.placeholder = 'Search leases...';
+    searchInput.placeholder = 'Search leases... ("," = or, ";" = and)';
     searchInput.value = state.meta.leaseSearch;
     searchInput.style.cssText = 'flex:1;padding:8px;border:1px solid #ddd;border-radius:6px;';
     
@@ -2772,23 +2768,18 @@ function renderLeases(){
     });
   }
   
-  // Filter leases by search term
-  const searchTerm = state.meta.leaseSearch.toLowerCase();
+  // Filter leases by search term(s) — comma = OR, semicolon = AND (see parseSearchGroups)
+  const searchGroups = parseSearchGroups(state.meta.leaseSearch);
   let leases = state.leases.filter(l => {
-    if(!searchTerm) return true;
+    if(searchGroups.length === 0) return true;
     const leaseNumber = (l.leaseNumber || '').toLowerCase();
     const company = (l.company || '').toLowerCase();
     const supplier = (l.supplier || '').toLowerCase();
     const arrangement = (l.arrangement || '').toLowerCase();
     const invoicing = (l.invoicing || '').toLowerCase();
     const status = (l.status || '').toLowerCase();
-    
-    return leaseNumber.includes(searchTerm) || 
-           company.includes(searchTerm) || 
-           supplier.includes(searchTerm) || 
-           arrangement.includes(searchTerm) || 
-           invoicing.includes(searchTerm) ||
-           status.includes(searchTerm);
+
+    return matchesSearchGroups(searchGroups, [leaseNumber, company, supplier, arrangement, invoicing, status]);
   });
   
   // Sort leases
@@ -3079,6 +3070,22 @@ qs('#userCancelBtn').addEventListener('click', ()=>{
 const invCancelBtn = qs('#invoiceCancelBtn'); if(invCancelBtn){ invCancelBtn.addEventListener('click', ()=>{
   const form = qs('#invoiceForm'); if(!form) return; form.reset(); delete form.dataset.editing; const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice'; invCancelBtn.style.display = 'none'; const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
 }); }
+
+// Shared multi-term search parsing, used by every search bar in the app.
+// Syntax: comma "," = OR (any term in the group matches), semicolon ";" = AND
+// (every group must have at least one matching term). Groups can combine both,
+// e.g. "19-10298,ACU-804; Operational" = (19-10298 OR ACU-804) AND Operational.
+function parseSearchGroups(raw){
+  return (raw || '')
+    .split(';')
+    .map(group => group.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0))
+    .filter(group => group.length > 0);
+}
+
+function matchesSearchGroups(groups, fields){
+  if(!groups || groups.length === 0) return true;
+  return groups.every(orTerms => orTerms.some(term => fields.some(f => f.includes(term))));
+}
 
 // small helper to avoid HTML injection in table cells
 function escapeHtml(str){
@@ -3919,7 +3926,7 @@ function renderUnitOverview(){
   const searchInput = document.createElement('input');
   searchInput.type = 'text';
   searchInput.id = 'unitOverviewSearch';
-  searchInput.placeholder = 'Filter by unit, lease, arrangement, invoicing... (comma-separate for multiple)';
+  searchInput.placeholder = 'Filter by unit, lease, arrangement, invoicing... ("," = or, ";" = and)';
   searchInput.style.padding = '6px 10px';
   searchInput.style.border = '1px solid #e6e9ee';
   searchInput.style.borderRadius = '6px';
@@ -4064,13 +4071,9 @@ function renderUnitOverview(){
   const tbody = document.createElement('tbody');
   let units = (state.units || []).slice();
   
-  // Filter by search term(s) — comma-separated terms are OR'd together, e.g.
-  // "19-10298,ACU-804" matches units for lease 19-10298 OR unit ACU-804.
-  const searchTerms = (state.meta.unitOverviewSearch || '')
-    .split(',')
-    .map(t => t.trim().toLowerCase())
-    .filter(t => t.length > 0);
-  if(searchTerms.length > 0){
+  // Filter by search term(s) — comma = OR, semicolon = AND (see parseSearchGroups)
+  const searchGroups = parseSearchGroups(state.meta.unitOverviewSearch);
+  if(searchGroups.length > 0){
     units = units.filter(u => {
       const unitId = (u.unitId || '').toString().toLowerCase();
       const lease = (u.lease || '').toString().toLowerCase();
@@ -4079,11 +4082,7 @@ function renderUnitOverview(){
       const arrangement = (u.arrangement || '').toString().toLowerCase();
       const invoicing = (u.invoicing || '').toString().toLowerCase();
       const status = (u.status || '').toString().toLowerCase();
-      return searchTerms.some(term =>
-        unitId.includes(term) || lease.includes(term) || costCenter.includes(term) ||
-        supplier.includes(term) || arrangement.includes(term) ||
-        invoicing.includes(term) || status.includes(term)
-      );
+      return matchesSearchGroups(searchGroups, [unitId, lease, costCenter, supplier, arrangement, invoicing, status]);
     });
   }
   
@@ -4465,7 +4464,7 @@ function renderLeaseOverview(){
   const searchInput = document.createElement('input');
   searchInput.type = 'text';
   searchInput.id = 'leaseOverviewSearch';
-  searchInput.placeholder = 'Filter by lease, company, supplier, invoicing...';
+  searchInput.placeholder = 'Filter by lease, company, supplier, invoicing... ("," = or, ";" = and)';
   searchInput.style.padding = '6px 10px';
   searchInput.style.border = '1px solid #e6e9ee';
   searchInput.style.borderRadius = '6px';
@@ -4593,9 +4592,9 @@ function renderLeaseOverview(){
   const tbody = document.createElement('tbody');
   let leases = (state.leases || []).slice();
   
-  // Filter by search term
-  const searchTerm = (state.meta.leaseOverviewSearch || '').toLowerCase().trim();
-  if(searchTerm){
+  // Filter by search term(s) — comma = OR, semicolon = AND (see parseSearchGroups)
+  const searchGroups = parseSearchGroups(state.meta.leaseOverviewSearch);
+  if(searchGroups.length > 0){
     leases = leases.filter(l => {
       const leaseNumber = (l.leaseNumber || '').toString().toLowerCase();
       const company = (l.company || '').toString().toLowerCase();
@@ -4603,9 +4602,7 @@ function renderLeaseOverview(){
       const arrangement = (l.arrangement || '').toString().toLowerCase();
       const invoicing = (l.invoicing || '').toString().toLowerCase();
       const status = (l.status || '').toString().toLowerCase();
-      return leaseNumber.includes(searchTerm) || company.includes(searchTerm) || 
-             supplier.includes(searchTerm) || arrangement.includes(searchTerm) || 
-             invoicing.includes(searchTerm) || status.includes(searchTerm);
+      return matchesSearchGroups(searchGroups, [leaseNumber, company, supplier, arrangement, invoicing, status]);
     });
   }
   
