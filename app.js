@@ -2159,7 +2159,7 @@ function renderUnits(){
       const searchInput = document.createElement('input');
       searchInput.type = 'text';
       searchInput.id = 'unitSearchInput';
-      searchInput.placeholder = 'Filter by unit, lease, company, supplier...';
+      searchInput.placeholder = 'Filter by unit, lease, company, supplier, comments...';
       searchInput.style.padding = '6px 10px';
       searchInput.style.border = '1px solid #e6e9ee';
       searchInput.style.borderRadius = '6px';
@@ -2264,12 +2264,13 @@ function renderUnits(){
       const description = (u.description || '').toString().toLowerCase();
       const notes = (u.notes || '').toString().toLowerCase();
       const status = (u.status || '').toString().toLowerCase();
-      
-      return unitId.includes(searchTerm) || lease.includes(searchTerm) || 
-             company.includes(searchTerm) || supplier.includes(searchTerm) || 
+      const comments = (u.comments || []).map(c => (c.text || '').toString().toLowerCase()).join(' ');
+
+      return unitId.includes(searchTerm) || lease.includes(searchTerm) ||
+             company.includes(searchTerm) || supplier.includes(searchTerm) ||
              arrangement.includes(searchTerm) || invoicing.includes(searchTerm) ||
-             description.includes(searchTerm) || notes.includes(searchTerm) || 
-             status.includes(searchTerm);
+             description.includes(searchTerm) || notes.includes(searchTerm) ||
+             status.includes(searchTerm) || comments.includes(searchTerm);
     });
   }
   
@@ -3776,8 +3777,41 @@ function getDisabledPeriods(unit){
       isLegacy: false
     });
   }
-  
+
   return disabledPeriods;
+}
+
+// Recompute unit.status / disabledDate / enabledDate from the chronologically last
+// statusHistory entry. Must be called after any edit/delete of statusHistory entries
+// so the current status stays consistent with the (possibly shortened) history —
+// otherwise the Unit Control table and coverage views disagree with each other.
+function syncUnitStatusFromHistory(unit){
+  const statusHistory = unit.statusHistory || [];
+
+  if(statusHistory.length === 0){
+    unit.status = 'Operational';
+    delete unit.disabledDate;
+    delete unit.enabledDate;
+    return;
+  }
+
+  const sortedHistory = [...statusHistory].sort((a, b) => {
+    const dateA = a.date || a.timestamp;
+    const dateB = b.date || b.timestamp;
+    return new Date(dateA) - new Date(dateB);
+  });
+
+  const lastEntry = sortedHistory[sortedHistory.length - 1];
+
+  if(lastEntry.status === 'Disabled'){
+    unit.status = 'Disabled';
+    unit.disabledDate = lastEntry.date;
+    delete unit.enabledDate;
+  } else {
+    unit.status = 'Operational';
+    unit.enabledDate = lastEntry.date;
+    delete unit.disabledDate;
+  }
 }
 
 // Check if a specific date falls within any disabled period
@@ -8322,36 +8356,40 @@ function openUnitStatusHistoryModal(unit) {
           
           if (historyIndex !== -1) {
             state.units[unitIndex].statusHistory[historyIndex].date = newDate;
-            
-            // Update the unit's current date fields if this is the most recent entry
-            if (historyIndex === state.units[unitIndex].statusHistory.length - 1) {
-              if (entry.status === 'Disabled') {
-                state.units[unitIndex].disabledDate = newDate;
-              } else if (entry.status === 'Operational') {
-                state.units[unitIndex].enabledDate = newDate;
-              }
-            }
-            
+
+            // Recompute current status/dates from the (re-sorted) history —
+            // the edited entry may no longer be chronologically last.
+            syncUnitStatusFromHistory(state.units[unitIndex]);
+
+            DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Unit status history edit error:', e));
             saveState();
             renderUnits();
             if(typeof renderUnitOverview === 'function') renderUnitOverview();
+            if(typeof renderReport === 'function') renderReport();
             openUnitStatusHistoryModal(state.units[unitIndex]); // Refresh modal
           }
         }
       });
-      
+
       // Delete button handler
       deleteBtn.addEventListener('click', () => {
         if (!confirm('Are you sure you want to delete this status change record?')) return;
-        
+
         const unitIndex = state.units.findIndex(u => u.id === unit.id);
         if (unitIndex !== -1 && state.units[unitIndex].statusHistory) {
-          state.units[unitIndex].statusHistory = state.units[unitIndex].statusHistory.filter(h => 
+          state.units[unitIndex].statusHistory = state.units[unitIndex].statusHistory.filter(h =>
             !(h.status === entry.status && h.timestamp === entry.timestamp)
           );
+
+          // Recompute current status/dates now that a history entry is gone —
+          // otherwise the unit keeps showing its old status/coverage.
+          syncUnitStatusFromHistory(state.units[unitIndex]);
+
+          DB.updateUnit(state.units[unitIndex]).catch(e => console.error('Unit status history delete error:', e));
           saveState();
           renderUnits();
           if(typeof renderUnitOverview === 'function') renderUnitOverview();
+          if(typeof renderReport === 'function') renderReport();
           openUnitStatusHistoryModal(state.units[unitIndex]); // Refresh modal
         }
       });
