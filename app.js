@@ -3097,6 +3097,62 @@ function _updateSheetConfigSnapshot(){
   });
 }
 
+// Fetch the current server-side value of a single config list directly from Sheets
+// (bypassing whatever this tab's in-memory `state`/snapshot currently holds). Used
+// before any Developer-tab add/edit/delete so a stale or long-idle tab can't clobber
+// an edit made by someone else moments earlier.
+async function fetchFreshConfigArray(field){
+  try{
+    const freshMeta = await DB.get({ action: 'getMeta' });
+    const v = DB.parseField(freshMeta ? freshMeta[field] : null);
+    return Array.isArray(v) ? v : [];
+  }catch(e){
+    console.warn('[Config refresh] Could not fetch fresh "' + field + '" from Sheets, falling back to local snapshot:', e.message);
+    if(Array.isArray(_sheetConfigSnapshot[field])) return _sheetConfigSnapshot[field].slice();
+    return Array.isArray(state.meta[field]) ? state.meta[field].slice() : [];
+  }
+}
+
+// Commit a freshly-computed config array (built on top of fetchFreshConfigArray's
+// result) as the new source of truth, and persist it.
+function commitConfigListChange(field, newArray){
+  state.meta[field] = newArray;
+  _sheetConfigSnapshot[field] = newArray.slice();
+  _configChangeIntentional = true;
+  saveState();
+}
+
+// Re-pull just the config lists from Sheets and refresh whatever Developer-tab list UI
+// is currently rendered. Called when a backgrounded/idle tab regains focus, since the
+// 60s auto-refresh timer is throttled or paused while a tab is hidden or the machine
+// is asleep, letting its snapshot go stale.
+async function refreshConfigSnapshotFromServer(){
+  try{
+    const freshMeta = await DB.get({ action: 'getMeta' });
+    _CFG_FIELDS.forEach(f => {
+      const v = DB.parseField(freshMeta ? freshMeta[f] : null);
+      if(Array.isArray(v)){
+        state.meta[f] = v;
+        _sheetConfigSnapshot[f] = v.slice();
+      }
+    });
+    try{ renderCompanyList(); }catch(e){}
+    try{ renderRentalList(); }catch(e){}
+    try{ renderSupplierList(); }catch(e){}
+    try{ renderPaymentList(); }catch(e){}
+    try{ renderArrangementList(); }catch(e){}
+  }catch(e){
+    console.warn('[Visibility refresh] Could not refresh config snapshot:', e.message);
+  }
+}
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState !== 'visible') return;
+  if(!isAuthenticated()) return;
+  const root = qs('#appRoot');
+  if(root && root.style.display !== 'none') refreshConfigSnapshotFromServer();
+});
+
 // --- Persistence (Google Sheets) ---
 function saveState(){
   try{
@@ -3105,12 +3161,13 @@ function saveState(){
       _updateSheetConfigSnapshot();
       _configChangeIntentional = false;
     } else {
-      // Regular save (month change, registry edit, etc.) — never let it overwrite Sheets
-      // config lists with empty arrays. Restore from snapshot if something corrupted memory.
+      // Regular save (month change, registry edit, search, sort, etc.) — config lists are
+      // only ever mutated intentionally, via the fetch-fresh-then-commit flow above. Pin
+      // them to the last known-good snapshot unconditionally (not just when locally empty)
+      // so a stale or long-idle tab can never carry an outdated copy back to Sheets as a
+      // side effect of an unrelated save.
       _CFG_FIELDS.forEach(f => {
-        if((!Array.isArray(state.meta[f]) || state.meta[f].length === 0)
-           && Array.isArray(_sheetConfigSnapshot[f]) && _sheetConfigSnapshot[f].length > 0){
-          console.warn('[Save guard] Prevented writing empty "' + f + '" to Sheets — restored from snapshot');
+        if(Array.isArray(_sheetConfigSnapshot[f])){
           state.meta[f] = _sheetConfigSnapshot[f].slice();
         }
       });
@@ -3828,7 +3885,7 @@ function renderUnitOverview(){
   const searchInput = document.createElement('input');
   searchInput.type = 'text';
   searchInput.id = 'unitOverviewSearch';
-  searchInput.placeholder = 'Filter by unit, lease, arrangement, invoicing...';
+  searchInput.placeholder = 'Filter by unit, lease, arrangement, invoicing... (comma-separate for multiple)';
   searchInput.style.padding = '6px 10px';
   searchInput.style.border = '1px solid #e6e9ee';
   searchInput.style.borderRadius = '6px';
@@ -3973,9 +4030,13 @@ function renderUnitOverview(){
   const tbody = document.createElement('tbody');
   let units = (state.units || []).slice();
   
-  // Filter by search term
-  const searchTerm = (state.meta.unitOverviewSearch || '').toLowerCase().trim();
-  if(searchTerm){
+  // Filter by search term(s) — comma-separated terms are OR'd together, e.g.
+  // "19-10298,ACU-804" matches units for lease 19-10298 OR unit ACU-804.
+  const searchTerms = (state.meta.unitOverviewSearch || '')
+    .split(',')
+    .map(t => t.trim().toLowerCase())
+    .filter(t => t.length > 0);
+  if(searchTerms.length > 0){
     units = units.filter(u => {
       const unitId = (u.unitId || '').toString().toLowerCase();
       const lease = (u.lease || '').toString().toLowerCase();
@@ -3984,9 +4045,11 @@ function renderUnitOverview(){
       const arrangement = (u.arrangement || '').toString().toLowerCase();
       const invoicing = (u.invoicing || '').toString().toLowerCase();
       const status = (u.status || '').toString().toLowerCase();
-      return unitId.includes(searchTerm) || lease.includes(searchTerm) || costCenter.includes(searchTerm) ||
-             supplier.includes(searchTerm) || arrangement.includes(searchTerm) ||
-             invoicing.includes(searchTerm) || status.includes(searchTerm);
+      return searchTerms.some(term =>
+        unitId.includes(term) || lease.includes(term) || costCenter.includes(term) ||
+        supplier.includes(term) || arrangement.includes(term) ||
+        invoicing.includes(term) || status.includes(term)
+      );
     });
   }
   
@@ -6748,12 +6811,23 @@ function renderCompanyList(){
       if(!devCompanyInput) return;
       devCompanyInput.value = c;
       const saveBtn = qs('#saveDevCompany');
-      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.textContent = 'Save'; }
+      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.dataset.editOriginalValue = c; saveBtn.textContent = 'Save'; }
       devCompanyInput.focus();
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this company?')) return; state.meta.devCompanies.splice(i,1); _configChangeIntentional=true; saveState(); renderCompanyList();
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this company?')) return;
+      delBtn.disabled = true;
+      try{
+        const fresh = await fetchFreshConfigArray('devCompanies');
+        const idx = fresh.findIndex(x => x === c);
+        if(idx !== -1) fresh.splice(idx,1);
+        commitConfigListChange('devCompanies', fresh);
+        renderCompanyList();
+      }catch(e){
+        alert('Could not delete — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+        delBtn.disabled = false;
+      }
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6766,27 +6840,34 @@ function renderCompanyList(){
 
 const saveDevBtn = qs('#saveDevCompany');
 if(saveDevBtn){
-  saveDevBtn.addEventListener('click', ()=>{
+  saveDevBtn.addEventListener('click', async ()=>{
     const v = (devCompanyInput && devCompanyInput.value || '').trim();
     if(!v){ alert('Please enter a company name'); return; }
-    const editIndex = saveDevBtn.dataset.editIndex;
-    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
-    if(state.meta.devCompanies.some((c,i) => c.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
-    if(typeof editIndex !== 'undefined'){
-      const idx = editIdx;
-      if(!Number.isNaN(idx) && state.meta.devCompanies[idx] !== undefined){
-        state.meta.devCompanies[idx] = v;
+    const isEditing = typeof saveDevBtn.dataset.editIndex !== 'undefined';
+    const originalValue = saveDevBtn.dataset.editOriginalValue;
+    saveDevBtn.disabled = true;
+    try{
+      const fresh = await fetchFreshConfigArray('devCompanies');
+      const dupIdx = fresh.findIndex(x => x.toLowerCase() === v.toLowerCase());
+      if(isEditing){
+        const idx = fresh.findIndex(x => x === originalValue);
+        if(dupIdx !== -1 && fresh[dupIdx] !== originalValue){ alert('"' + v + '" already exists.'); return; }
+        if(idx !== -1) fresh[idx] = v; else fresh.push(v);
       } else {
-        state.meta.devCompanies.push(v);
+        if(dupIdx !== -1){ alert('"' + v + '" already exists.'); return; }
+        fresh.push(v);
       }
+      commitConfigListChange('devCompanies', fresh);
       delete saveDevBtn.dataset.editIndex;
+      delete saveDevBtn.dataset.editOriginalValue;
       saveDevBtn.textContent = 'New';
-    } else {
-      state.meta.devCompanies.push(v);
+      renderCompanyList();
+      if(devCompanyInput) devCompanyInput.value = '';
+    }catch(e){
+      alert('Could not save changes — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+    }finally{
+      saveDevBtn.disabled = false;
     }
-    _configChangeIntentional = true; saveState();
-    renderCompanyList();
-    if(devCompanyInput) devCompanyInput.value = '';
   });
 }
 
@@ -6824,12 +6905,24 @@ function renderRentalList(){
       if(!devRentalInput) return;
       devRentalInput.value = r;
       const saveBtn = qs('#saveDevRental');
-      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.textContent = 'Save'; }
+      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.dataset.editOriginalValue = r; saveBtn.textContent = 'Save'; }
       devRentalInput.focus();
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this rental?')) return; state.meta.devRentals.splice(i,1); _configChangeIntentional=true; saveState(); renderRentalList(); if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this rental?')) return;
+      delBtn.disabled = true;
+      try{
+        const fresh = await fetchFreshConfigArray('devRentals');
+        const idx = fresh.findIndex(x => x === r);
+        if(idx !== -1) fresh.splice(idx,1);
+        commitConfigListChange('devRentals', fresh);
+        renderRentalList();
+        if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
+      }catch(e){
+        alert('Could not delete — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+        delBtn.disabled = false;
+      }
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6848,28 +6941,35 @@ function syncInvoiceCategoryOptions(){
 
 const saveRentalBtn = qs('#saveDevRental');
 if(saveRentalBtn){
-  saveRentalBtn.addEventListener('click', ()=>{
+  saveRentalBtn.addEventListener('click', async ()=>{
     const v = devRentalInput && devRentalInput.value ? devRentalInput.value.trim() : '';
     if(v === ''){ alert('Please enter a rental value'); return; }
-    const editIndex = saveRentalBtn.dataset.editIndex;
-    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
-    if(state.meta.devRentals.some((r,i) => r.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
-    if(typeof editIndex !== 'undefined'){
-      const idx = editIdx;
-      if(!Number.isNaN(idx) && state.meta.devRentals[idx] !== undefined){
-        state.meta.devRentals[idx] = v;
+    const isEditing = typeof saveRentalBtn.dataset.editIndex !== 'undefined';
+    const originalValue = saveRentalBtn.dataset.editOriginalValue;
+    saveRentalBtn.disabled = true;
+    try{
+      const fresh = await fetchFreshConfigArray('devRentals');
+      const dupIdx = fresh.findIndex(x => x.toLowerCase() === v.toLowerCase());
+      if(isEditing){
+        const idx = fresh.findIndex(x => x === originalValue);
+        if(dupIdx !== -1 && fresh[dupIdx] !== originalValue){ alert('"' + v + '" already exists.'); return; }
+        if(idx !== -1) fresh[idx] = v; else fresh.push(v);
       } else {
-        state.meta.devRentals.push(v);
+        if(dupIdx !== -1){ alert('"' + v + '" already exists.'); return; }
+        fresh.push(v);
       }
+      commitConfigListChange('devRentals', fresh);
       delete saveRentalBtn.dataset.editIndex;
+      delete saveRentalBtn.dataset.editOriginalValue;
       saveRentalBtn.textContent = 'new';
-    } else {
-      state.meta.devRentals.push(v);
+      renderRentalList();
+      if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
+      if(devRentalInput) devRentalInput.value = '';
+    }catch(e){
+      alert('Could not save changes — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+    }finally{
+      saveRentalBtn.disabled = false;
     }
-    _configChangeIntentional = true; saveState();
-    renderRentalList();
-    if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
-    if(devRentalInput) devRentalInput.value = '';
   });
 }
 
@@ -6895,12 +6995,23 @@ function renderSupplierList(){
       if(!devSupplierInput) return;
       devSupplierInput.value = s;
       const saveBtn = qs('#saveDevSupplier');
-      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.textContent = 'Save'; }
+      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.dataset.editOriginalValue = s; saveBtn.textContent = 'Save'; }
       devSupplierInput.focus();
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this supplier?')) return; state.meta.devSuppliers.splice(i,1); _configChangeIntentional=true; saveState(); renderSupplierList();
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this supplier?')) return;
+      delBtn.disabled = true;
+      try{
+        const fresh = await fetchFreshConfigArray('devSuppliers');
+        const idx = fresh.findIndex(x => x === s);
+        if(idx !== -1) fresh.splice(idx,1);
+        commitConfigListChange('devSuppliers', fresh);
+        renderSupplierList();
+      }catch(e){
+        alert('Could not delete — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+        delBtn.disabled = false;
+      }
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6913,27 +7024,34 @@ function renderSupplierList(){
 
 const saveSupplierBtn = qs('#saveDevSupplier');
 if(saveSupplierBtn){
-  saveSupplierBtn.addEventListener('click', ()=>{
+  saveSupplierBtn.addEventListener('click', async ()=>{
     const v = devSupplierInput && devSupplierInput.value ? devSupplierInput.value.trim() : '';
     if(v === ''){ alert('Please enter a supplier name'); return; }
-    const editIndex = saveSupplierBtn.dataset.editIndex;
-    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
-    if(state.meta.devSuppliers.some((s,i) => s.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
-    if(typeof editIndex !== 'undefined'){
-      const idx = editIdx;
-      if(!Number.isNaN(idx) && state.meta.devSuppliers[idx] !== undefined){
-        state.meta.devSuppliers[idx] = v;
+    const isEditing = typeof saveSupplierBtn.dataset.editIndex !== 'undefined';
+    const originalValue = saveSupplierBtn.dataset.editOriginalValue;
+    saveSupplierBtn.disabled = true;
+    try{
+      const fresh = await fetchFreshConfigArray('devSuppliers');
+      const dupIdx = fresh.findIndex(x => x.toLowerCase() === v.toLowerCase());
+      if(isEditing){
+        const idx = fresh.findIndex(x => x === originalValue);
+        if(dupIdx !== -1 && fresh[dupIdx] !== originalValue){ alert('"' + v + '" already exists.'); return; }
+        if(idx !== -1) fresh[idx] = v; else fresh.push(v);
       } else {
-        state.meta.devSuppliers.push(v);
+        if(dupIdx !== -1){ alert('"' + v + '" already exists.'); return; }
+        fresh.push(v);
       }
+      commitConfigListChange('devSuppliers', fresh);
       delete saveSupplierBtn.dataset.editIndex;
+      delete saveSupplierBtn.dataset.editOriginalValue;
       saveSupplierBtn.textContent = 'new';
-    } else {
-      state.meta.devSuppliers.push(v);
+      renderSupplierList();
+      if(devSupplierInput) devSupplierInput.value = '';
+    }catch(e){
+      alert('Could not save changes — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+    }finally{
+      saveSupplierBtn.disabled = false;
     }
-    _configChangeIntentional = true; saveState();
-    renderSupplierList();
-    if(devSupplierInput) devSupplierInput.value = '';
   });
 }
 
@@ -6970,12 +7088,23 @@ function renderPaymentList(){
       if(!devPaymentInput) return;
       devPaymentInput.value = p;
       const saveBtn = qs('#saveDevPayment');
-      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.textContent = 'Save'; }
+      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.dataset.editOriginalValue = p; saveBtn.textContent = 'Save'; }
       devPaymentInput.focus();
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this invoicing type?')) return; state.meta.devPayments.splice(i,1); _configChangeIntentional=true; saveState(); renderPaymentList();
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this invoicing type?')) return;
+      delBtn.disabled = true;
+      try{
+        const fresh = await fetchFreshConfigArray('devPayments');
+        const idx = fresh.findIndex(x => x === p);
+        if(idx !== -1) fresh.splice(idx,1);
+        commitConfigListChange('devPayments', fresh);
+        renderPaymentList();
+      }catch(e){
+        alert('Could not delete — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+        delBtn.disabled = false;
+      }
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -6988,27 +7117,34 @@ function renderPaymentList(){
 
 const savePaymentBtn = qs('#saveDevPayment');
 if(savePaymentBtn){
-  savePaymentBtn.addEventListener('click', ()=>{
+  savePaymentBtn.addEventListener('click', async ()=>{
     const v = devPaymentInput && devPaymentInput.value ? devPaymentInput.value.trim() : '';
     if(v === ''){ alert('Please enter an invoicing type'); return; }
-    const editIndex = savePaymentBtn.dataset.editIndex;
-    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
-    if(state.meta.devPayments.some((p,i) => p.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
-    if(typeof editIndex !== 'undefined'){
-      const idx = editIdx;
-      if(!Number.isNaN(idx) && state.meta.devPayments[idx] !== undefined){
-        state.meta.devPayments[idx] = v;
+    const isEditing = typeof savePaymentBtn.dataset.editIndex !== 'undefined';
+    const originalValue = savePaymentBtn.dataset.editOriginalValue;
+    savePaymentBtn.disabled = true;
+    try{
+      const fresh = await fetchFreshConfigArray('devPayments');
+      const dupIdx = fresh.findIndex(x => x.toLowerCase() === v.toLowerCase());
+      if(isEditing){
+        const idx = fresh.findIndex(x => x === originalValue);
+        if(dupIdx !== -1 && fresh[dupIdx] !== originalValue){ alert('"' + v + '" already exists.'); return; }
+        if(idx !== -1) fresh[idx] = v; else fresh.push(v);
       } else {
-        state.meta.devPayments.push(v);
+        if(dupIdx !== -1){ alert('"' + v + '" already exists.'); return; }
+        fresh.push(v);
       }
+      commitConfigListChange('devPayments', fresh);
       delete savePaymentBtn.dataset.editIndex;
+      delete savePaymentBtn.dataset.editOriginalValue;
       savePaymentBtn.textContent = 'new';
-    } else {
-      state.meta.devPayments.push(v);
+      renderPaymentList();
+      if(devPaymentInput) devPaymentInput.value = '';
+    }catch(e){
+      alert('Could not save changes — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+    }finally{
+      savePaymentBtn.disabled = false;
     }
-    _configChangeIntentional = true; saveState();
-    renderPaymentList();
-    if(devPaymentInput) devPaymentInput.value = '';
   });
 }
 
@@ -7031,12 +7167,23 @@ function renderArrangementList(){
       if(!devArrangementInput) return;
       devArrangementInput.value = a;
       const saveBtn = qs('#saveDevArrangement');
-      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.textContent = 'Save'; }
+      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.dataset.editOriginalValue = a; saveBtn.textContent = 'Save'; }
       devArrangementInput.focus();
     });
     const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', ()=>{
-      if(!confirm('Delete this arrangement?')) return; state.meta.devArrangements.splice(i,1); _configChangeIntentional=true; saveState(); renderArrangementList();
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this arrangement?')) return;
+      delBtn.disabled = true;
+      try{
+        const fresh = await fetchFreshConfigArray('devArrangements');
+        const idx = fresh.findIndex(x => x === a);
+        if(idx !== -1) fresh.splice(idx,1);
+        commitConfigListChange('devArrangements', fresh);
+        renderArrangementList();
+      }catch(e){
+        alert('Could not delete — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+        delBtn.disabled = false;
+      }
     });
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -7049,27 +7196,34 @@ function renderArrangementList(){
 
 const saveArrangementBtn = qs('#saveDevArrangement');
 if(saveArrangementBtn){
-  saveArrangementBtn.addEventListener('click', ()=>{
+  saveArrangementBtn.addEventListener('click', async ()=>{
     const v = devArrangementInput && devArrangementInput.value ? devArrangementInput.value.trim() : '';
     if(v === ''){ alert('Please enter an arrangement'); return; }
-    const editIndex = saveArrangementBtn.dataset.editIndex;
-    const editIdx = typeof editIndex !== 'undefined' ? parseInt(editIndex,10) : -1;
-    if(state.meta.devArrangements.some((a,i) => a.toLowerCase() === v.toLowerCase() && i !== editIdx)){ alert('"' + v + '" already exists.'); return; }
-    if(typeof editIndex !== 'undefined'){
-      const idx = editIdx;
-      if(!Number.isNaN(idx) && state.meta.devArrangements[idx] !== undefined){
-        state.meta.devArrangements[idx] = v;
+    const isEditing = typeof saveArrangementBtn.dataset.editIndex !== 'undefined';
+    const originalValue = saveArrangementBtn.dataset.editOriginalValue;
+    saveArrangementBtn.disabled = true;
+    try{
+      const fresh = await fetchFreshConfigArray('devArrangements');
+      const dupIdx = fresh.findIndex(x => x.toLowerCase() === v.toLowerCase());
+      if(isEditing){
+        const idx = fresh.findIndex(x => x === originalValue);
+        if(dupIdx !== -1 && fresh[dupIdx] !== originalValue){ alert('"' + v + '" already exists.'); return; }
+        if(idx !== -1) fresh[idx] = v; else fresh.push(v);
       } else {
-        state.meta.devArrangements.push(v);
+        if(dupIdx !== -1){ alert('"' + v + '" already exists.'); return; }
+        fresh.push(v);
       }
+      commitConfigListChange('devArrangements', fresh);
       delete saveArrangementBtn.dataset.editIndex;
+      delete saveArrangementBtn.dataset.editOriginalValue;
       saveArrangementBtn.textContent = 'new';
-    } else {
-      state.meta.devArrangements.push(v);
+      renderArrangementList();
+      if(devArrangementInput) devArrangementInput.value = '';
+    }catch(e){
+      alert('Could not save changes — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+    }finally{
+      saveArrangementBtn.disabled = false;
     }
-    _configChangeIntentional = true; saveState();
-    renderArrangementList();
-    if(devArrangementInput) devArrangementInput.value = '';
   });
 }
 
@@ -8886,11 +9040,11 @@ uploadTargets.forEach(target => {
       const fileName = file.name.toLowerCase();
       const reader = new FileReader();
       
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
           const content = e.target.result;
           let data = [];
-          
+
           if (fileName.endsWith('.json')) {
             data = JSON.parse(content);
             if (!Array.isArray(data)) {
@@ -8903,12 +9057,19 @@ uploadTargets.forEach(target => {
             showUploadStatus(statusDiv, 'Unsupported file format. Please use CSV or JSON.', 'error');
             return;
           }
-          
+
           if (data.length === 0) {
             showUploadStatus(statusDiv, 'No data found in the file.', 'error');
             return;
           }
-          
+
+          if (targetLower === 'leases') {
+            // Leases import can auto-add new companies/suppliers/arrangements/invoicing
+            // types. Pull the latest config lists from Sheets first so this doesn't
+            // build on — and then save over — a stale local copy.
+            await refreshConfigSnapshotFromServer();
+            _configChangeIntentional = true;
+          }
           uploadBulkData(targetLower, data, statusDiv);
           fileInput.value = ''; // Clear the file input after upload
           
@@ -9702,11 +9863,11 @@ if (uploadConfigBtn && uploadConfigFile && statusConfig) {
     }
     
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         let data = [];
         const content = e.target.result;
-        
+
         // Parse CSV or JSON
         if (file.name.endsWith('.json')) {
           data = JSON.parse(content);
@@ -9714,7 +9875,7 @@ if (uploadConfigBtn && uploadConfigFile && statusConfig) {
           // Parse CSV with proper handling of quoted fields
           const lines = content.split('\n').filter(line => line.trim());
           const headers = parseCSVLine(lines[0]);
-          
+
           for (let i = 1; i < lines.length; i++) {
             const values = parseCSVLine(lines[i]);
             const obj = {};
@@ -9724,10 +9885,14 @@ if (uploadConfigBtn && uploadConfigFile && statusConfig) {
             data.push(obj);
           }
         }
-        
+
+        // Pull the latest config lists from Sheets first so this upload merges into
+        // the current server state instead of a possibly-stale local copy.
+        await refreshConfigSnapshotFromServer();
+
         // Process configuration data by columns
         let companiesAdded = 0, categoriesAdded = 0, suppliersAdded = 0, arrangementsAdded = 0, invoicingAdded = 0;
-        
+
         data.forEach(row => {
           // Process AGI Company column
           const company = (row['AGI Company'] || '').trim();
@@ -9766,6 +9931,7 @@ if (uploadConfigBtn && uploadConfigFile && statusConfig) {
         });
         
         // Save and refresh all lists
+        _configChangeIntentional = true;
         saveState();
         if (typeof renderCompanyList === 'function') renderCompanyList();
         if (typeof renderRentalList === 'function') renderRentalList();
