@@ -6437,6 +6437,176 @@ function renderReport(){
     // Append Disabled + Covered between Credit and Consecutive Months
     resultsWrap.appendChild(sectionDisabledCovered);
 
+    // --- Units tagged "First of the Month" (preview of NEXT month's coverage) ---
+    {
+      let nextMonthFOM = month + 1;
+      let nextYearFOM = year;
+      if(nextMonthFOM > 11){ nextMonthFOM = 0; nextYearFOM = year + 1; }
+
+      const firstOfMonthUnits = units.filter(u => {
+        const invoicingVal = (u.invoicing || '').toString().trim();
+        if(invoicingVal !== 'First of the Month') return false;
+        // Skip units already disabled before next month starts — nothing to invoice
+        if(isDateInDisabledPeriod(nextYearFOM, nextMonthFOM, 1, getDisabledPeriods(u))) return false;
+        return true;
+      });
+
+      const daysInMonthFOM = new Date(nextYearFOM, nextMonthFOM + 1, 0).getDate();
+      const monthNameFOM = monthNames[nextMonthFOM];
+
+      const titleFOM = document.createElement('div');
+      titleFOM.textContent = `Units Tagged "First of the Month" — Preview for ${monthNameFOM} ${nextYearFOM}`;
+      titleFOM.style.margin = '12px 0 8px';
+      titleFOM.style.fontWeight = '600';
+      resultsWrap.appendChild(titleFOM);
+
+      const scrollerFOM = document.createElement('div');
+      scrollerFOM.style.maxHeight = '600px';
+      scrollerFOM.style.overflowY = 'auto';
+      scrollerFOM.style.border = '1px solid #eef2f7';
+      scrollerFOM.style.borderRadius = '6px';
+      scrollerFOM.style.padding = '8px';
+      scrollerFOM.style.background = '#fff';
+
+      const tableFOM = document.createElement('table');
+      tableFOM.style.width = '100%'; tableFOM.style.borderCollapse = 'collapse'; tableFOM.style.marginTop = '0';
+      const theadFOM = document.createElement('thead'); const tbodyFOM = document.createElement('tbody');
+
+      const hdrFOM = document.createElement('tr');
+      const headerDefsFOM = [
+        { text: 'Unit', key: 'unitId' },
+        { text: 'Lease', key: 'lease' },
+        { text: 'Supplier', key: 'supplier' },
+        { text: 'Arrangement', key: 'arrangement' },
+        { text: 'Invoicing', key: 'invoicing' },
+        { text: 'Status', key: 'status' }
+      ];
+      const thCounterFOM = document.createElement('th');
+      thCounterFOM.textContent = '#';
+      thCounterFOM.style.textAlign='center'; thCounterFOM.style.padding='6px'; thCounterFOM.style.fontSize='12px'; thCounterFOM.style.borderBottom='2px solid #eef2f7'; thCounterFOM.style.fontWeight='600'; thCounterFOM.style.background='#f9fafb';
+      thCounterFOM.style.position='sticky'; thCounterFOM.style.top='0'; thCounterFOM.style.zIndex='2'; thCounterFOM.style.width='40px';
+      hdrFOM.appendChild(thCounterFOM);
+      headerDefsFOM.forEach(def => {
+        const th = document.createElement('th'); th.textContent = def.text;
+        th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
+        th.style.position='sticky'; th.style.top='0'; th.style.zIndex='2';
+        hdrFOM.appendChild(th);
+      });
+      const thPeriodFOM = document.createElement('th');
+      thPeriodFOM.textContent = 'Period'; thPeriodFOM.colSpan = daysInMonthFOM;
+      thPeriodFOM.style.textAlign='center'; thPeriodFOM.style.padding='6px'; thPeriodFOM.style.fontSize='12px'; thPeriodFOM.style.borderBottom='2px solid #eef2f7'; thPeriodFOM.style.fontWeight='600'; thPeriodFOM.style.background='#f9fafb'; thPeriodFOM.style.position='sticky'; thPeriodFOM.style.top='0'; thPeriodFOM.style.zIndex='2';
+      hdrFOM.appendChild(thPeriodFOM);
+      theadFOM.appendChild(hdrFOM);
+
+      if(firstOfMonthUnits.length === 0){
+        const tr = document.createElement('tr'); const td = document.createElement('td');
+        td.colSpan = headerDefsFOM.length + daysInMonthFOM + 1; td.textContent = `No units tagged "First of the Month" for ${monthNameFOM} ${nextYearFOM}.`; td.className = 'small-muted'; td.style.padding='12px';
+        tr.appendChild(td); tbodyFOM.appendChild(tr);
+      } else {
+        firstOfMonthUnits.forEach((u, idx) => {
+          const tr = document.createElement('tr');
+          tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
+          tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
+          tr.addEventListener('click', () => {
+            const tbodyEl = tr.parentNode;
+            if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
+            tr.dataset.selected = 'true';
+            tr.style.backgroundColor = '#e6f0ff';
+          });
+          const tdCounter = document.createElement('td');
+          tdCounter.textContent = String(idx + 1);
+          tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
+          tr.appendChild(tdCounter);
+          const infoCellsFOM = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+          infoCellsFOM.forEach((val, cIdx) => {
+            const td = document.createElement('td');
+            td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
+            if(cIdx === 0){
+              td.style.cursor = 'pointer';
+              td.style.color = '#0b74de';
+              td.title = 'View unit details';
+              td.appendChild(document.createTextNode(String(val)));
+              try{
+                const monthComments = extractMonthComments(u, nextYearFOM, nextMonthFOM);
+                if(monthComments && monthComments.length > 0){
+                  const alertIcon = document.createElement('span');
+                  alertIcon.textContent = ' !';
+                  alertIcon.style.color = '#dc2626';
+                  alertIcon.style.fontWeight = '700';
+                  alertIcon.style.marginLeft = '6px';
+                  alertIcon.style.cursor = 'pointer';
+                  alertIcon.title = 'Comments exist for this month';
+                  alertIcon.addEventListener('click', (e)=>{ e.stopPropagation(); try{ openCommentsModalFromWdNumbers(u.unitId, nextYearFOM, nextMonthFOM); }catch(e){} });
+                  td.appendChild(alertIcon);
+                }
+              }catch(e){}
+              td.addEventListener('click', (ev)=>{
+                ev.stopPropagation();
+                const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
+                if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
+                if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
+                try{ openUnitWdNumbersModal(u.unitId, nextYearFOM, nextMonthFOM); }catch(e){}
+              });
+            } else { td.textContent = String(val); }
+            tr.appendChild(td);
+          });
+
+          const covFOM = coverageArrayForUnit(u, nextYearFOM, nextMonthFOM) || [];
+          const countsFOM = rentalCountsArrayForUnit(u, nextYearFOM, nextMonthFOM) || [];
+          const creditDaysFOM = creditArrayForUnit(u, nextYearFOM, nextMonthFOM) || [];
+          const disabledPeriodsFOM = getDisabledPeriods(u) || [];
+          for(let d=1; d<=daysInMonthFOM; d++){
+            const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
+            const square = document.createElement('div');
+            square.style.width = '20px'; square.style.height = '20px'; square.style.border = '1px solid #ddd'; square.style.borderRadius = '3px';
+            square.style.display = 'flex'; square.style.alignItems = 'center'; square.style.justifyContent = 'center'; square.style.fontSize = '9px';
+            square.textContent = d;
+            const covered = !!covFOM[d-1];
+            const overlap = (countsFOM[d-1] > 1);
+            const credit = !!creditDaysFOM[d-1];
+            const isDisabled = isDateInDisabledPeriod(nextYearFOM, nextMonthFOM, d, disabledPeriodsFOM);
+
+            if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
+
+            if(credit){
+              square.style.borderColor = '#eab308';
+              square.style.borderWidth = '2px';
+              square.style.color = '#eab308';
+              square.style.fontWeight = '700';
+              if(overlap){ square.style.backgroundColor = '#fee2e2'; }
+              else if(covered){ square.style.backgroundColor = '#dcfce7'; }
+              else { square.style.backgroundColor = '#ffffff'; }
+            } else if(overlap){
+              square.style.backgroundColor = '#fee2e2';
+              square.style.borderColor = '#dc2626';
+              square.style.color = '#991b1b';
+              square.style.fontWeight = '600';
+            } else if(covered){
+              square.style.backgroundColor = '#dcfce7';
+              square.style.borderColor = '#16a34a';
+              square.style.color = '#15803d';
+              square.style.fontWeight = '600';
+            } else if(isDisabled){
+              square.style.backgroundColor = '#ffffff';
+              square.style.borderColor = '#991b1b';
+              square.style.color = '#dc2626';
+              square.style.fontWeight = '600';
+            } else {
+              square.style.backgroundColor = '#fff';
+              square.style.color = '#6b7280';
+            }
+            tdDay.appendChild(square);
+            tr.appendChild(tdDay);
+          }
+          tbodyFOM.appendChild(tr);
+        });
+      }
+
+      tableFOM.appendChild(theadFOM); tableFOM.appendChild(tbodyFOM);
+      scrollerFOM.appendChild(tableFOM);
+      resultsWrap.appendChild(scrollerFOM);
+    }
+
     // --- Bottom: Units with 2+ consecutive months without invoicing ---
     try{
       const streakMonthsRows = [];
