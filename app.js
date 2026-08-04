@@ -2296,7 +2296,7 @@ function renderUnits(){
     const tr = document.createElement('tr');
     const tdIndex = document.createElement('td'); tdIndex.textContent = i+1;
   const tdUnit = document.createElement('td'); tdUnit.innerHTML = `<strong style="cursor:pointer;color:#0b74de;" title="View unit detail">${escapeHtml(u.unitId || '')}</strong>`;
-  tdUnit.querySelector('strong').addEventListener('click', (e)=>{ e.stopPropagation(); openUnitWdNumbersModal(u.unitId, new Date().getFullYear(), new Date().getMonth()); });
+  tdUnit.querySelector('strong').addEventListener('click', (e)=>{ e.stopPropagation(); openUnitWdNumbersModal(u.unitId, new Date().getFullYear(), new Date().getMonth(), units.map(x => x.unitId)); });
     const tdLease = document.createElement('td'); tdLease.textContent = u.lease || '';
     const tdCompany = document.createElement('td'); tdCompany.textContent = u.company || '';
     const tdCostCenter = document.createElement('td'); tdCostCenter.textContent = u.costCenter || '';
@@ -4184,7 +4184,7 @@ function renderUnitOverview(){
         }
       } catch(e) {}
       tdUnit.addEventListener('click', () => {
-        openUnitWdNumbersModal(u.unitId, year, month);
+        openUnitWdNumbersModal(u.unitId, year, month, units.map(x => x.unitId));
       });
       row.appendChild(tdUnit);
 
@@ -5657,7 +5657,7 @@ function renderReport(){
               const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
               if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
               if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
-              try{ openUnitWdNumbersModal(u.unitId, year, month); }catch(e){} 
+              try{ openUnitWdNumbersModal(u.unitId, year, month, fullyCovered.map(x => x.unitId)); }catch(e){} 
             });
           } else { td.textContent = String(val); }
           tr.appendChild(td);
@@ -5884,7 +5884,7 @@ function renderReport(){
               const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
               if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
               if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
-              try{ openUnitWdNumbersModal(u.unitId, year, month); }catch(e){} 
+              try{ openUnitWdNumbersModal(u.unitId, year, month, missingUnits.map(x => x.unitId)); }catch(e){} 
             });
           } else { td.textContent = String(val); }
           tr.appendChild(td);
@@ -6054,7 +6054,7 @@ function renderReport(){
                 td.appendChild(alertIcon);
               }
             }catch(e){}
-            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#ffe4e6'; } try{ openUnitWdNumbersModal(u.unitId, year, month);}catch(e){} }); 
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#ffe4e6'; } try{ openUnitWdNumbersModal(u.unitId, year, month, overlapUnits.map(x => x.unitId));}catch(e){} }); 
           } else { td.textContent = String(val); }
           tr.appendChild(td); 
         });
@@ -6184,7 +6184,7 @@ function renderReport(){
                 td.appendChild(alertIcon);
               }
             }catch(e){}
-            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#fff4e5'; } try{ openUnitWdNumbersModal(u.unitId, year, month);}catch(e){} }); 
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#fff4e5'; } try{ openUnitWdNumbersModal(u.unitId, year, month, creditUnits.map(x => x.unitId));}catch(e){} }); 
           } else { td.textContent = String(val); }
           tr.appendChild(td); 
         });
@@ -6348,7 +6348,7 @@ function renderReport(){
                 td.appendChild(alertIcon);
               }
             }catch(e){}
-            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); try{ openUnitWdNumbersModal(u.unitId, year, month);}catch(e){} });
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); try{ openUnitWdNumbersModal(u.unitId, year, month, disabledCoveredUnits.map(x => x.unitId));}catch(e){} });
           } else {
             td.textContent = String(val);
           }
@@ -6545,7 +6545,7 @@ function renderReport(){
                 const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
                 if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
                 if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
-                try{ openUnitWdNumbersModal(u.unitId, nextYearFOM, nextMonthFOM); }catch(e){}
+                try{ openUnitWdNumbersModal(u.unitId, nextYearFOM, nextMonthFOM, firstOfMonthUnits.map(x => x.unitId)); }catch(e){}
               });
             } else { td.textContent = String(val); }
             tr.appendChild(td);
@@ -6848,7 +6848,7 @@ function renderReport(){
                   td.appendChild(alertIcon);
                 }
               }catch(e){}
-              td.addEventListener('click',(ev)=>{ ev.stopPropagation(); try{ openUnitWdNumbersModal(row.u.unitId, year, month); }catch(e){} });
+              td.addEventListener('click',(ev)=>{ ev.stopPropagation(); try{ openUnitWdNumbersModal(row.u.unitId, year, month, streakMonthsRows.map(r => r.u.unitId)); }catch(e){} });
             } else {
               td.textContent = String(val);
             }
@@ -8628,23 +8628,31 @@ if (statusHistoryModal) {
 let _unitDetailList = [];
 let _unitDetailIndex = 0;
 
-function openUnitWdNumbersModal(unitId, year, month) {
+function openUnitWdNumbersModal(unitId, year, month, unitIdList) {
   window.currentWdNumbersYear = year;
   window.currentWdNumbersMonth = month;
 
-  // Build navigation list from current Unit Overview filtered/sorted units
-  try {
-    const tbody = qs('#unitOverview table tbody');
-    if(tbody){
-      _unitDetailList = Array.from(tbody.querySelectorAll('tr')).map(tr => {
-        const firstCell = tr.querySelector('td');
-        return firstCell ? (firstCell.textContent || '').trim().replace(/\s*!\s*$/, '').trim() : '';
-      }).filter(Boolean);
-    } else {
+  if(Array.isArray(unitIdList) && unitIdList.length > 0){
+    // Use the exact list (and order) of units currently shown in whichever view this
+    // was opened from — a Report block, Unit Control, a search result set, etc. — so
+    // Prev/Next navigate within that list instead of always the full Unit Overview table.
+    _unitDetailList = unitIdList.slice();
+  } else {
+    // Fallback for any caller that doesn't pass an explicit list: try the currently
+    // rendered Unit Overview table, else fall back to all units.
+    try {
+      const tbody = qs('#unitOverview table tbody');
+      if(tbody){
+        _unitDetailList = Array.from(tbody.querySelectorAll('tr')).map(tr => {
+          const firstCell = tr.querySelector('td');
+          return firstCell ? (firstCell.textContent || '').trim().replace(/\s*!\s*$/, '').trim() : '';
+        }).filter(Boolean);
+      } else {
+        _unitDetailList = (state.units || []).map(u => u.unitId || '');
+      }
+    } catch(e) {
       _unitDetailList = (state.units || []).map(u => u.unitId || '');
     }
-  } catch(e) {
-    _unitDetailList = (state.units || []).map(u => u.unitId || '');
   }
 
   _unitDetailIndex = _unitDetailList.findIndex(id =>
