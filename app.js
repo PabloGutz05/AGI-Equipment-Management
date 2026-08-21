@@ -970,6 +970,7 @@ function renderInvoiceLeaseDetailTable(){
   ];
 
   const header = document.createElement('div');
+  header.className = 'invoice-lease-detail-header';
   header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
   columns.forEach(col => {
     const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;`;
@@ -1263,6 +1264,7 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
 
   wrap.innerHTML = '';
   const header = document.createElement('div');
+  header.className = 'unit-breakdown-header';
   header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
   UNIT_BREAKDOWN_COLUMNS.forEach(col => {
     const d = document.createElement('div');

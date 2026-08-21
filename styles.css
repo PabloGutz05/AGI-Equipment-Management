@@ -97,10 +97,15 @@ button[title]{background:#f97316}
 .unit-breakdown-row.selected .ub-tax, .unit-breakdown-row.selected .ub-other, .unit-breakdown-row.selected .ub-charge{background:#dbeafe}
 .registry-unit-detail-table{overflow-x:auto;margin-top:2px}
 /* Fixed-height scroll regions for the row lists (header/total stay outside, fixed) so the
-   block's footprint stays constant whether 1 or 15 rows are shown, only scrolling past the cap. */
-.unit-breakdown-rows{height:min(320px, 46vh);overflow-y:auto}
+   block's footprint stays constant whether 1 or 15 rows are shown, only scrolling past the cap.
+   scrollbar-gutter:stable reserves the scrollbar's width even before it actually appears, and
+   the header/total reserve the same gutter (via the matching classes below) so column titles
+   never drift out of alignment with the rows once a scrollbar shows up. */
+.unit-breakdown-rows{height:min(320px, 46vh);overflow-y:auto;scrollbar-gutter:stable}
 .unit-breakdown-rows.expanded{height:auto;max-height:none}
-.invoice-lease-detail-rows{height:min(150px, 26vh);overflow-y:auto}
+.invoice-lease-detail-rows{height:min(150px, 26vh);overflow-y:auto;scrollbar-gutter:stable}
+.unit-breakdown-header, .unit-breakdown-total{overflow:hidden;scrollbar-gutter:stable}
+.invoice-lease-detail-header{overflow:hidden;scrollbar-gutter:stable}
 .unit-breakdown-expand-btn{border:1px solid #d1d5db !important;background:#fff !important;color:#6b7280 !important;font-size:11px;line-height:1;padding:2px 10px;border-radius:0 0 6px 6px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.06)}
 .unit-breakdown-expand-btn:hover{background:#f3f4f6 !important;color:#374151 !important}
 .invoice-actions-row{border-top:1px solid #d7dce2;padding-top:12px;margin-top:8px}
