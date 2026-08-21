@@ -14,6 +14,48 @@ const defaultData = {
 
 let state = JSON.parse(JSON.stringify(defaultData));
 
+// --- Password hashing (PBKDF2-SHA256 via Web Crypto) ---
+// Stored format: "pbkdf2$<iterations>$<saltHex>$<hashHex>". Legacy plain-text passwords (no
+// "pbkdf2$" prefix) are still accepted on login for backward compatibility with existing
+// accounts; a successful legacy match is transparently re-hashed and persisted (see login flow).
+// The hardcoded "Master" account is exempt from all of this — it never touches state.users.
+const PBKDF2_ITERATIONS = 150000;
+
+function _bufToHex(buf){
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+function _hexToBuf(hex){
+  const bytes = new Uint8Array(hex.length / 2);
+  for(let i=0;i<hex.length;i+=2) bytes[i/2] = parseInt(hex.substr(i,2), 16);
+  return bytes;
+}
+async function hashPassword(password, saltHex, iterations){
+  iterations = iterations || PBKDF2_ITERATIONS;
+  const salt = saltHex ? _hexToBuf(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+  const saltHexOut = saltHex || _bufToHex(salt);
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, keyMaterial, 256);
+  return `pbkdf2$${iterations}$${saltHexOut}$${_bufToHex(bits)}`;
+}
+function isHashedPassword(stored){
+  return typeof stored === 'string' && stored.startsWith('pbkdf2$');
+}
+async function verifyPassword(password, stored){
+  if(!stored) return false;
+  if(isHashedPassword(stored)){
+    const parts = stored.split('$');
+    if(parts.length !== 4) return false;
+    const iterations = parseInt(parts[1], 10);
+    const saltHex = parts[2];
+    const expectedHash = parts[3];
+    const recomputed = await hashPassword(password, saltHex, iterations);
+    return recomputed.split('$')[3] === expectedHash;
+  }
+  // legacy plain-text account: compare directly
+  return stored === password;
+}
+
 const weatherLocations = [
   { id: 'miami', name: 'Miami', lat: 25.7617, lon: -80.1918, timeZone: 'America/New_York', defaultIcon: '🌴' },
   { id: 'hermosillo', name: 'Hermosillo', lat: 29.0730, lon: -110.9559, timeZone: 'America/Hermosillo', defaultIcon: '🌵' }
@@ -234,8 +276,19 @@ if(loginForm){
         showLoadingOverlay('Signing in...');
         const users = await DB.get({ action: 'getAll', sheet: 'users' });
         hideLoadingOverlay();
-        const u = (users||[]).find(x=> x.username === username && x.password === password);
+        const candidate = (users||[]).find(x=> x.username === username);
+        const u = (candidate && await verifyPassword(password, candidate.password)) ? candidate : null;
         if(u){
+          // Transparently upgrade legacy plain-text passwords to a hashed value on first
+          // successful login, without requiring the user to do anything.
+          if(!isHashedPassword(u.password)){
+            try{
+              const upgraded = Object.assign({}, u, { password: await hashPassword(password) });
+              await DB.updateUser(upgraded);
+              const idx = (state.users||[]).findIndex(x => x.id === u.id);
+              if(idx !== -1) state.users[idx] = upgraded;
+            }catch(migErr){ console.error('Password migration error:', migErr); }
+          }
           sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username}));
           showApp(true);
           updateExportImportVisibility(true);
@@ -374,11 +427,12 @@ function applyRoleRestrictions(){
     const dev = Array.from(tabs).find(x=> x.dataset.tab === 'developer'); if(dev) dev.style.display = 'none';
   }
   else if(role === 'Operator'){
-    // hide developer, users, leaseControl
-    const names = ['developer','users','leaseControl'];
+    // hide developer, leaseControl; the Users tab stays enabled but shows only their own
+    // account (see renderUsers()) plus Change Password
+    const names = ['developer','leaseControl'];
     names.forEach(n => { const el = Array.from(tabs).find(x=> x.dataset.tab === n); if(el) el.style.display = 'none'; });
   }
-  
+
   // Master and Developer: full access (do nothing)
   // ensure the Users form role options reflect the current session role
   try{ updateUserRoleOptionsVisibility(); }catch(e){}
@@ -1223,7 +1277,19 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
 
     const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
-    UNIT_BREAKDOWN_COLUMNS.forEach(col => row.appendChild(mkCell(col.get(unitRec, uid), col.width)));
+    UNIT_BREAKDOWN_COLUMNS.forEach(col => {
+      const cell = mkCell(col.get(unitRec, uid), col.width);
+      if(col.key === 'unitId' && uid){
+        cell.style.color = '#0b74de';
+        cell.style.cursor = 'pointer';
+        cell.title = 'View coverage history';
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          try{ openUnitWdNumbersModal(uid, new Date().getFullYear(), new Date().getMonth(), unitIds); }catch(err){}
+        });
+      }
+      row.appendChild(cell);
+    });
 
     const taxInput = document.createElement('input'); taxInput.type = 'text'; taxInput.className = 'ub-tax money-input'; taxInput.placeholder = 'Tax'; taxInput.inputMode = 'decimal';
     taxInput.style.cssText = 'flex:0 0 110px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;';
@@ -1460,7 +1526,7 @@ qs('#leaseForm').addEventListener('submit', e=>{
   if(typeof renderOverviewUnits === 'function') renderOverviewUnits();
 });
 
-qs('#userForm').addEventListener('submit', e=>{
+qs('#userForm').addEventListener('submit', async e=>{
   e.preventDefault();
   const fd = new FormData(e.target);
   const editingId = e.target.dataset.editing || null;
@@ -1472,7 +1538,7 @@ qs('#userForm').addEventListener('submit', e=>{
     role: fd.get('role') || 'Operator'
   };
   const pwd = fd.get('password');
-  if(pwd) userObj.password = pwd; // only set/replace password when provided
+  if(pwd) userObj.password = await hashPassword(pwd); // only set/replace password when provided, always stored hashed
 
   // Validate uniqueness of username (case-insensitive)
   const newUsername = (userObj.username || '').toLowerCase();
@@ -1872,6 +1938,30 @@ function renderInvoices(){
 
 
 
+// Prefer the registry's own stored unitDetails snapshot (exact, captured at registration/edit
+// time). For older registries that predate that field (or if it didn't round-trip through the
+// backend), reconstruct best-effort detail from the current unit records for Company/Lease/Cost
+// Center, and from any still-in-session invoice record for Tax/Charge — those may come back
+// blank after a reload since individual invoices aren't themselves persisted.
+function getRegistryUnitDetails(r){
+  if(Array.isArray(r.unitDetails) && r.unitDetails.length) return r.unitDetails;
+  const units = Array.isArray(r.units) ? r.units : [];
+  const wd = (r.wdNumber||'').toString().trim().toLowerCase();
+  return units.map(uid => {
+    const uidLower = (uid||'').toString().trim().toLowerCase();
+    const unitRec = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim().toLowerCase() === uidLower);
+    const inv = (state.invoices||[]).find(i => (i.unit||'').toString().trim().toLowerCase() === uidLower && (i.wdNumber||'').toString().trim().toLowerCase() === wd);
+    return {
+      unit: uid,
+      lease: unitRec ? (unitRec.lease||'') : (inv ? (inv.lease||'') : ''),
+      company: unitRec ? (unitRec.company||'') : (inv ? (inv.company||'') : ''),
+      costCenter: unitRec ? (unitRec.costCenter||'') : '',
+      tax: inv ? (inv.taxAmount||'') : '',
+      charge: inv ? (inv.amount||'') : ''
+    };
+  });
+}
+
 // Read-only sortable Company/UnitId/Lease/Cost Center/Tax/Charge detail table for a registry's
 // expanded view, built from its stored unitDetails snapshot (captured at registration time so
 // it survives reloads, since individual invoice records are not themselves persisted).
@@ -1922,13 +2012,25 @@ function renderRegistryUnitDetailTable(container, unitDetails){
   });
   container.appendChild(header);
 
+  const allUnitIds = rows.map(d => d.unit).filter(Boolean);
   let totalCharge = 0, totalTax = 0;
   rows.forEach(d => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
     const mkCell = (text, w) => { const c = document.createElement('div'); c.textContent = text; c.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return c; };
     row.appendChild(mkCell(d.company||'', 130));
-    row.appendChild(mkCell(d.unit||'', 100));
+    // UnitId opens the unit's coverage history window
+    const unitCell = mkCell(d.unit||'', 100);
+    if(d.unit){
+      unitCell.style.color = '#0b74de';
+      unitCell.style.cursor = 'pointer';
+      unitCell.title = 'View coverage history';
+      unitCell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        try{ openUnitWdNumbersModal(d.unit, new Date().getFullYear(), new Date().getMonth(), allUnitIds); }catch(err){}
+      });
+    }
+    row.appendChild(unitCell);
     row.appendChild(mkCell(d.lease||'', 100));
     row.appendChild(mkCell(d.costCenter||'', 110));
     row.appendChild(mkCell(formatCurrency(d.tax||'0'), 110));
@@ -2205,14 +2307,17 @@ function renderRegistries(keepOpenRegistryId){
 
     const details = document.createElement('div'); details.className = 'registry-details'; details.style.display = 'none'; details.style.marginTop = '8px'; details.style.fontSize = '13px'; details.style.color = '#374151';
     const unitsList = document.createElement('div');
-    if(Array.isArray(r.unitDetails) && r.unitDetails.length){
-      const unitsLabel = document.createElement('div'); unitsLabel.innerHTML = '<strong>Units:</strong>'; unitsLabel.style.marginBottom = '4px';
-      unitsList.appendChild(unitsLabel);
+    unitsList.style.marginBottom = '8px';
+    const unitsLabel = document.createElement('div'); unitsLabel.innerHTML = '<strong>Units:</strong>'; unitsLabel.style.marginBottom = '4px';
+    unitsList.appendChild(unitsLabel);
+    const registryUnitDetails = getRegistryUnitDetails(r);
+    if(registryUnitDetails.length){
       const detailTableEl = document.createElement('div'); detailTableEl.className = 'registry-unit-detail-table';
       unitsList.appendChild(detailTableEl);
-      renderRegistryUnitDetailTable(detailTableEl, r.unitDetails);
+      renderRegistryUnitDetailTable(detailTableEl, registryUnitDetails);
     } else {
-      unitsList.innerHTML = '<strong>Units:</strong> ' + (Array.isArray(r.units) ? escapeHtml((r.units||[]).join(', ')) : '');
+      const noneEl = document.createElement('div'); noneEl.className = 'small-muted'; noneEl.textContent = '(no units)';
+      unitsList.appendChild(noneEl);
     }
     const period = document.createElement('div'); period.innerHTML = `<strong>Period:</strong> ${escapeHtml(formatDate(r.periodStart))} — ${escapeHtml(formatDate(r.periodEnd))}`;
     const submitted = document.createElement('div'); submitted.innerHTML = `<strong>Submitted:</strong> ${escapeHtml(formatDate(r.submittedDate))} <span class="small-muted">(created ${new Date(r.createdAt||'').toLocaleString()})</span>`;
@@ -2444,14 +2549,18 @@ function renderRegistries(keepOpenRegistryId){
     });
     commentsSection.appendChild(addCommentBtn);
     
-    details.appendChild(unitsList); 
-    details.appendChild(period); 
-    details.appendChild(submitted); 
-    details.appendChild(categoryDiv); 
-    details.appendChild(supplierDiv);
-    details.appendChild(companyDiv);
-    details.appendChild(arrangementDiv);
-    details.appendChild(invoicingDiv);
+    // Registration info (period, submitted, category, supplier, company, arrangement, invoicing)
+    // laid out as a wrapping grid so it uses the available width instead of one item per line.
+    const infoGrid = document.createElement('div');
+    infoGrid.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px 28px;margin-bottom:10px;';
+    [period, submitted, categoryDiv, supplierDiv, companyDiv, arrangementDiv, invoicingDiv].forEach(el => {
+      el.style.flex = '1 1 180px';
+      el.style.minWidth = '160px';
+      infoGrid.appendChild(el);
+    });
+    details.appendChild(infoGrid);
+    // Per-unit detail table sits at the bottom, right above the comments/Add Comment button
+    details.appendChild(unitsList);
     details.appendChild(commentsSection);
     row.appendChild(details);
     
@@ -3405,27 +3514,102 @@ function openInvoiceWindow(inv){
   }catch(e){ console.error('Failed to open invoice window', e); alert('Cannot open detail window: '+e.message); }
 }
 
+// The built-in "Master" account is a hardcoded credential, not a real managed user — it must
+// never appear in any list or be editable here, at any access level.
+function _isMasterUsername(username){
+  return (username || '').toString().trim().toLowerCase() === 'master';
+}
+
 function renderUsers(){
-  const tbody = qs('#userList'); tbody.innerHTML='';
-  // adjust visibility of the Developer role option based on current session
-  try{ updateUserRoleOptionsVisibility(); }catch(e){}
-  state.users.forEach((u, idx)=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${idx+1}</td><td>${escapeHtml(u.firstName||'')}</td><td>${escapeHtml(u.lastName||'')}</td><td>${escapeHtml(u.username||'')}</td><td>${escapeHtml(u.role||'Operator')}</td><td><button class="edit" data-id="${u.id}">Edit</button> <button class="del" data-id="${u.id}">Delete</button></td>`;
-    tbody.appendChild(tr);
+  const session = currentSession();
+  const isMasterSession = !!session && session.user === 'Master';
+  let role = isMasterSession ? 'Master' : null;
+  if(!isMasterSession && session){
+    const u = (state.users||[]).find(x => x.username === session.user);
+    role = u ? (u.role || null) : null;
+  }
+  const isFullAccess = (role === 'Master' || role === 'Developer');
+
+  const mgmtBlock = qs('#userManagementBlock');
+  const myInfoBlock = qs('#myUserInfo');
+  const changePwdBlock = qs('#changePasswordBlock');
+  if(mgmtBlock) mgmtBlock.style.display = isFullAccess ? '' : 'none';
+  if(myInfoBlock) myInfoBlock.style.display = isFullAccess ? 'none' : '';
+  // Master's login is hardcoded and isn't a real account, so it has nothing to change here
+  if(changePwdBlock) changePwdBlock.style.display = isMasterSession ? 'none' : '';
+
+  if(isFullAccess){
+    const tbody = qs('#userList'); if(!tbody) return; tbody.innerHTML='';
+    // adjust visibility of the Developer role option based on current session
+    try{ updateUserRoleOptionsVisibility(); }catch(e){}
+    const managedUsers = (state.users||[]).filter(u => !_isMasterUsername(u.username));
+    managedUsers.forEach((u, idx)=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${idx+1}</td><td>${escapeHtml(u.firstName||'')}</td><td>${escapeHtml(u.lastName||'')}</td><td>${escapeHtml(u.username||'')}</td><td>${escapeHtml(u.role||'Operator')}</td><td><button class="edit" data-id="${u.id}">Edit</button> <button class="del" data-id="${u.id}">Delete</button></td>`;
+      tbody.appendChild(tr);
+    });
+    tbody.querySelectorAll('.del').forEach(b=>b.addEventListener('click', e=>{ const id=e.target.dataset.id; if(!confirm('Delete this user?')) return; DB.deleteUser(id).catch(e => console.error('User delete error:', e)); state.users = state.users.filter(x=>x.id!==id); saveState(); renderUsers(); renderOverview(); }));
+    tbody.querySelectorAll('.edit').forEach(b=>b.addEventListener('click', e=>{
+      const id = e.target.dataset.id; const u = state.users.find(x=>x.id===id); if(!u) return;
+      const form = qs('#userForm');
+      form.firstName.value = u.firstName || '';
+      form.lastName.value = u.lastName || '';
+      form.username.value = u.username || '';
+      form.password.value = '';
+      form.role.value = u.role || 'Operator';
+      form.dataset.editing = u.id;
+      qs('#userCancelBtn').style.display = 'inline-block';
+    }));
+  } else if(!isMasterSession){
+    // Manager/Operator: read-only view of their own account only
+    const myBody = qs('#myUserInfoBody'); if(!myBody) return; myBody.innerHTML = '';
+    const me = (state.users||[]).find(x => x.username === (session ? session.user : ''));
+    if(me){
+      [['First Name', me.firstName||''], ['Last Name', me.lastName||''], ['Username', me.username||''], ['Role', me.role||'']].forEach(([label,val]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td style="font-weight:600;width:140px;">${escapeHtml(label)}</td><td>${escapeHtml(val)}</td>`;
+        myBody.appendChild(tr);
+      });
+    }
+  }
+}
+
+// Self-service password change for any real logged-in account (not the built-in Master login).
+const changePasswordForm = qs('#changePasswordForm');
+if(changePasswordForm){
+  changePasswordForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const session = currentSession();
+    if(!session || session.user === 'Master'){ alert('Password change is not available for this account.'); return; }
+    const me = (state.users||[]).find(u => u.username === session.user);
+    if(!me){ alert('Could not find your account.'); return; }
+
+    const oldPwd = qs('#cpOldPassword').value;
+    const newPwd = qs('#cpNewPassword').value;
+    const confirmPwd = qs('#cpConfirmPassword').value;
+    if(!oldPwd || !newPwd || !confirmPwd){ alert('Please fill in all password fields.'); return; }
+    if(newPwd !== confirmPwd){ alert('New password and confirmation do not match.'); return; }
+    if(newPwd.length < 4){ alert('New password must be at least 4 characters.'); return; }
+
+    const isValid = await verifyPassword(oldPwd, me.password);
+    if(!isValid){ alert('Current password is incorrect.'); return; }
+
+    const submitBtn = changePasswordForm.querySelector('button[type="submit"]');
+    if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Saving...'; }
+    try{
+      const updated = Object.assign({}, me, { password: await hashPassword(newPwd) });
+      await DB.updateUser(updated);
+      const idx = state.users.findIndex(u => u.id === me.id);
+      if(idx !== -1) state.users[idx] = updated;
+      saveState();
+      changePasswordForm.reset();
+      alert('Password updated successfully.');
+    }catch(err){
+      alert('Failed to save new password: ' + err.message);
+    }finally{
+      if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Update Password'; }
+    }
   });
-  tbody.querySelectorAll('.del').forEach(b=>b.addEventListener('click', e=>{ const id=e.target.dataset.id; if(!confirm('Delete this user?')) return; DB.deleteUser(id).catch(e => console.error('User delete error:', e)); state.users = state.users.filter(x=>x.id!==id); saveState(); renderUsers(); renderOverview(); }));
-  tbody.querySelectorAll('.edit').forEach(b=>b.addEventListener('click', e=>{
-    const id = e.target.dataset.id; const u = state.users.find(x=>x.id===id); if(!u) return;
-  const form = qs('#userForm');
-  form.firstName.value = u.firstName || '';
-  form.lastName.value = u.lastName || '';
-  form.username.value = u.username || '';
-  form.password.value = '';
-  form.role.value = u.role || 'Operator';
-    form.dataset.editing = u.id;
-    qs('#userCancelBtn').style.display = 'inline-block';
-  }));
 }
 
 qs('#userCancelBtn').addEventListener('click', ()=>{
@@ -8173,9 +8357,10 @@ function openRegistryEditModal(registry){
   qs('#editRegistryPeriodEnd').value = registry.periodEnd || '';
   qs('#editRegistrySubmitted').value = registry.submittedDate || '';
 
-  // Seed the editable breakdown table from this registry's stored per-unit detail
+  // Seed the editable breakdown table from this registry's stored per-unit detail (falling
+  // back to a best-effort reconstruction for older registries that predate that field)
   const seedFromDetails = {};
-  (Array.isArray(registry.unitDetails) ? registry.unitDetails : []).forEach(d => {
+  getRegistryUnitDetails(registry).forEach(d => {
     if(d && d.unit) seedFromDetails[d.unit] = { tax: d.tax || '', charge: d.charge || '' };
   });
   renderRegistryUnitBreakdown(seedFromDetails);

@@ -405,29 +405,52 @@
 
       <div id="users" class="tab-panel">
         <h2>Users</h2>
-        <form id="userForm" class="inline-form">
-          <input name="firstName" placeholder="First name" required>
-          <input name="lastName" placeholder="Last name" required>
-          <input name="username" placeholder="Username" required>
-          <input name="password" placeholder="Password" type="password">
-          <div class="role-group" role="radiogroup" aria-label="User role">
-            <input type="radio" id="role-operator" name="role" value="Operator" checked>
-            <label for="role-operator">Operator</label>
-            <input type="radio" id="role-manager" name="role" value="Manager">
-            <label for="role-manager">Manager</label>
-            <input type="radio" id="role-developer" name="role" value="Developer">
-            <label for="role-developer">Developer</label>
-          </div>
-          <button type="submit">Add User</button>
-          <button type="button" id="userCancelBtn" style="display:none">Cancel</button>
-        </form>
 
-        <table id="userTable" class="list">
-          <thead>
-            <tr><th style="width:40px">#</th><th>Name</th><th>Last Name</th><th>Username</th><th>Role</th><th style="width:160px">Actions</th></tr>
-          </thead>
-          <tbody id="userList"></tbody>
-        </table>
+        <!-- Change Password: any real logged-in account (not the built-in Master account) -->
+        <div id="changePasswordBlock" class="settings-block" style="display:none;">
+          <h3 class="settings-block-title">Change Password</h3>
+          <form id="changePasswordForm" class="inline-form">
+            <input id="cpOldPassword" name="oldPassword" placeholder="Current password" type="password" required>
+            <input id="cpNewPassword" name="newPassword" placeholder="New password" type="password" required>
+            <input id="cpConfirmPassword" name="confirmPassword" placeholder="Confirm new password" type="password" required>
+            <button type="submit">Update Password</button>
+          </form>
+        </div>
+
+        <!-- Restricted view for Manager/Operator: only their own account info -->
+        <div id="myUserInfo" style="display:none;">
+          <h3 style="font-size:15px;margin:0 0 10px;">My Account</h3>
+          <table class="list">
+            <tbody id="myUserInfoBody"></tbody>
+          </table>
+        </div>
+
+        <!-- Full management view: Master/Developer only -->
+        <div id="userManagementBlock">
+          <form id="userForm" class="inline-form">
+            <input name="firstName" placeholder="First name" required>
+            <input name="lastName" placeholder="Last name" required>
+            <input name="username" placeholder="Username" required>
+            <input name="password" placeholder="Password" type="password">
+            <div class="role-group" role="radiogroup" aria-label="User role">
+              <input type="radio" id="role-operator" name="role" value="Operator" checked>
+              <label for="role-operator">Operator</label>
+              <input type="radio" id="role-manager" name="role" value="Manager">
+              <label for="role-manager">Manager</label>
+              <input type="radio" id="role-developer" name="role" value="Developer">
+              <label for="role-developer">Developer</label>
+            </div>
+            <button type="submit">Add User</button>
+            <button type="button" id="userCancelBtn" style="display:none">Cancel</button>
+          </form>
+
+          <table id="userTable" class="list">
+            <thead>
+              <tr><th style="width:40px">#</th><th>Name</th><th>Last Name</th><th>Username</th><th>Role</th><th style="width:160px">Actions</th></tr>
+            </thead>
+            <tbody id="userList"></tbody>
+          </table>
+        </div>
       </div>
       <div id="developer" class="tab-panel">
         <h2>Developer</h2>
