@@ -144,37 +144,55 @@
 
   <div id="invoices" class="tab-panel active">
         <h2>Invoices</h2>
-        <form id="invoiceForm" class="inline-form">
-          <input id="invoiceWD" name="invoiceWD" placeholder="WD Invoice Number">
-          <input id="invoiceDoc" name="invoiceDoc" placeholder="Doc Invoice Number">
-          <div class="searchable-select-wrapper" style="position:relative;display:inline-block;">
-            <input type="text" id="invoiceLease" name="invoiceLease" placeholder="(select lease)" readonly style="cursor:pointer;">
-            <div id="invoiceLeaseDropdown" class="searchable-dropdown" style="display:none;"></div>
-          </div>
-          <select id="invoiceCategory" name="invoiceCategory"><option value="">(select category)</option></select>
-          <!-- hidden comment input used by modal editor -->
-          <input type="hidden" id="invoiceComment" name="invoiceComment" value="">
-            <input id="invoiceSupplier" name="invoiceSupplier" placeholder="Supplier" readonly>
-            <input id="invoiceCompany" name="invoiceCompany" placeholder="AGI Company" readonly>
-            <input id="invoiceArrangement" name="invoiceArrangement" placeholder="Arrangement" readonly>
-            <input id="invoiceInvoicing" name="invoiceInvoicing" placeholder="Invoicing" readonly>
-            <input id="invoiceAmount" name="invoiceAmount" class="money-input" inputmode="decimal" placeholder="Amount">
-            <!-- Period: From / To placed before the submit button per user request -->
-            <input id="invoicePeriodStart" name="invoicePeriodStart" type="date" placeholder="From">
-            <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date" placeholder="To">
-            <!-- Submitted date: pre-filled to today's date (editable) -->
-            <input id="invoiceSubmitted" name="invoiceSubmitted" type="date">
-            <!-- Move Select units control right before the submit button -->
-            <div class="unit-dropdown">
-              <button type="button" id="invoiceUnitToggle" class="dropdown-toggle">Select units</button>
-              <div id="invoiceUnitPanel" class="dropdown-panel" style="display:none"></div>
+        <div class="invoice-registration-block">
+          <h3 class="invoice-registration-block-title">Invoice Registration</h3>
+          <form id="invoiceForm" class="inline-form">
+            <div class="invoice-form-row">
+              <input id="invoiceWD" name="invoiceWD" placeholder="WD Invoice Number">
+              <input id="invoiceDoc" name="invoiceDoc" placeholder="Doc Invoice Number">
             </div>
-            <!-- Add Comment button (opens modal editor) -->
-            <button type="button" id="invoiceCommentBtn" class="btn-primary">Add Comment</button>
-            <button type="submit">Add Invoice</button>
-        </form>
+            <div class="invoice-form-row">
+              <!-- Lease multi-select: a WD invoice can now span more than one lease -->
+              <div class="unit-dropdown">
+                <button type="button" id="invoiceLeaseToggle" class="dropdown-toggle">Select leases</button>
+                <div id="invoiceLeasePanel" class="dropdown-panel" style="display:none"></div>
+              </div>
+              <select id="invoiceCategory" name="invoiceCategory"><option value="">(select category)</option></select>
+              <!-- hidden comment input used by modal editor -->
+              <input type="hidden" id="invoiceComment" name="invoiceComment" value="">
+              <input id="invoiceSupplier" name="invoiceSupplier" placeholder="Supplier" readonly>
+              <input id="invoiceCompany" name="invoiceCompany" placeholder="AGI Company" readonly>
+              <input id="invoiceArrangement" name="invoiceArrangement" placeholder="Arrangement" readonly>
+              <input id="invoiceInvoicing" name="invoiceInvoicing" placeholder="Invoicing" readonly>
+              <input id="invoiceAmount" name="invoiceAmount" class="money-input" inputmode="decimal" placeholder="Amount">
+              <!-- Period: From / To -->
+              <input id="invoicePeriodStart" name="invoicePeriodStart" type="date" placeholder="From">
+              <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date" placeholder="To">
+              <!-- Submitted date: pre-filled to today's date (editable) -->
+              <input id="invoiceSubmitted" name="invoiceSubmitted" type="date">
+              <div class="unit-dropdown">
+                <button type="button" id="invoiceUnitToggle" class="dropdown-toggle">Select units</button>
+                <div id="invoiceUnitPanel" class="dropdown-panel" style="display:none"></div>
+              </div>
+            </div>
+            <!-- Per-unit Company/UnitId/Lease/Cost Center + Tax/Charge breakdown; always visible,
+                 defaults to a single empty placeholder row until units are selected -->
+            <div id="invoiceUnitBreakdown" class="invoice-unit-breakdown"></div>
+            <div class="invoice-form-row">
+              <!-- Add Comment button (opens modal editor) -->
+              <button type="button" id="invoiceCommentBtn" class="btn-primary">Add Comment</button>
+              <button type="submit">Add Invoice</button>
+            </div>
+          </form>
+        </div>
+        <!-- Registry search: comma "," = OR, semicolon ";" = AND (same convention as every other search bar) -->
+        <div id="registrySearchContainer" style="margin:12px 0 4px;display:flex;gap:8px;align-items:center;">
+          <label style="font-weight:600;font-size:13px;">Search:</label>
+          <input type="text" id="registrySearchInput" placeholder='Filter by WD, Doc, lease, category, units... ("," = or, ";" = and)' style="padding:6px 10px;border:1px solid #e6e9ee;border-radius:6px;font-size:13px;flex:1;box-sizing:border-box;">
+          <button type="button" id="registrySearchBtn" style="padding:6px 16px;border-radius:6px;font-size:13px;cursor:pointer;">Search</button>
+        </div>
         <!-- Registry list: shows registrations of submitted invoices (grouped submissions) -->
-        <div id="registryList" class="list" style="margin-top:12px"></div>
+        <div id="registryList" class="list" style="margin-top:4px"></div>
       </div>
       
       <!-- Excel export library with styling support -->
@@ -577,67 +595,73 @@
   <!-- Registry Edit modal -->
   <div id="registryEditModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
     <div class="modal-backdrop"></div>
-    <div class="modal-dialog" role="document" style="max-width:600px;">
+    <div class="modal-dialog" role="document" style="max-width:980px;width:95%;">
       <h3>Edit Registry</h3>
       <form id="registryEditForm" style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
         <input type="hidden" id="editRegistryId" />
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">WD Number</span>
-          <input id="editRegistryWD" type="text" placeholder="WD Number" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
-        </label>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Doc Number</span>
-          <input id="editRegistryDoc" type="text" placeholder="Doc Number" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
-        </label>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Total Amount</span>
-          <input id="editRegistryAmount" type="text" placeholder="Total Amount" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
-        </label>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Lease</span>
-          <select id="editRegistryLease" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
-            <option value="">Select Lease</option>
-          </select>
-        </label>
-        <!-- Selected Lease Details for Registry Edit -->
-        <div id="registryLeaseInfoPanel" style="display:none;border:1px solid #e5e7eb;border-radius:6px;padding:10px;">
-          <div style="font-weight:600;margin-bottom:6px;">Selected Lease Details</div>
-          <div id="registryLeaseInfoContent" class="small-muted"></div>
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">WD Number</span>
+            <input id="editRegistryWD" type="text" placeholder="WD Number" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />
+          </label>
+
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">Doc Number</span>
+            <input id="editRegistryDoc" type="text" placeholder="Doc Number" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />
+          </label>
+
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">Total Amount</span>
+            <input id="editRegistryAmount" type="text" class="money-input" inputmode="decimal" placeholder="Total Amount" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />
+          </label>
+
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">Category</span>
+            <select id="editRegistryCategory" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;">
+              <option value="">Select Category</option>
+            </select>
+          </label>
         </div>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Category</span>
-          <select id="editRegistryCategory" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
-            <option value="">Select Category</option>
-          </select>
-        </label>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Units</span>
-          <div id="editRegistryUnits" style="max-height:120px;overflow-y:auto;border:1px solid #e6e6e6;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px;">
-            <!-- Checkboxes will be dynamically generated -->
-          </div>
-        </label>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Period Start</span>
-          <input id="editRegistryPeriodStart" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
-        </label>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Period End</span>
-          <input id="editRegistryPeriodEnd" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
-        </label>
-        
-        <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Submitted Date</span>
-          <input id="editRegistrySubmitted" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
-        </label>
-        
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
+            <span style="font-weight:600;font-size:13px;">Lease(s)</span>
+            <input id="editRegistryLeaseSearch" type="text" placeholder="Search leases..." style="padding:6px 8px;border:1px solid #e6e6e6;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box;" />
+            <div id="editRegistryLeasePanel" style="max-height:120px;overflow-y:auto;border:1px solid #e6e6e6;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px;">
+              <!-- Checkboxes will be dynamically generated -->
+            </div>
+          </label>
+
+          <label style="display:flex;flex-direction:column;gap:4px;flex:2 1 320px;">
+            <span style="font-weight:600;font-size:13px;">Units</span>
+            <input id="editRegistryUnitSearch" type="text" placeholder="Search units..." style="padding:6px 8px;border:1px solid #e6e6e6;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box;" />
+            <div id="editRegistryUnits" style="max-height:120px;overflow-y:auto;border:1px solid #e6e6e6;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px;">
+              <!-- Checkboxes will be dynamically generated -->
+            </div>
+          </label>
+        </div>
+
+        <!-- Per-unit Company/UnitId/Lease/Cost Center + Tax/Charge breakdown, editable -->
+        <div id="registryUnitBreakdown" class="invoice-unit-breakdown" style="display:none"></div>
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">Period Start</span>
+            <input id="editRegistryPeriodStart" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />
+          </label>
+
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">Period End</span>
+            <input id="editRegistryPeriodEnd" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />
+          </label>
+
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">Submitted Date</span>
+            <input id="editRegistrySubmitted" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />
+          </label>
+        </div>
+
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
           <button type="button" id="registryEditCancelBtn">Cancel</button>
           <button type="button" id="registryEditSaveBtn" class="btn-primary">Save Changes</button>
@@ -695,7 +719,7 @@
         
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span style="font-weight:600;font-size:13px;">Monthly Payment</span>
-          <input id="editUnitMonthly" type="text" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
+          <input id="editUnitMonthly" type="text" class="money-input" inputmode="decimal" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;" />
         </label>
         
         <label style="display:flex;flex-direction:column;gap:4px;">

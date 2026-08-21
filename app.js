@@ -428,7 +428,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
   try{
     const wd = (fd.get('invoiceWD') || '').toString().trim();
     const doc = (fd.get('invoiceDoc') || '').toString().trim();
-    const lease = ((qs('#invoiceLease') && qs('#invoiceLease').value) || fd.get('invoiceLease') || '').toString().trim();
+    const selectedLeases = getSelectedInvoiceLeases();
     const category = (fd.get('invoiceCategory') || '').toString().trim();
     const supplier = ((qs('#invoiceSupplier') && qs('#invoiceSupplier').value) || fd.get('invoiceSupplier') || '').toString().trim();
     const company = ((qs('#invoiceCompany') && qs('#invoiceCompany').value) || fd.get('invoiceCompany') || '').toString().trim();
@@ -453,7 +453,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const missing = [];
     if(!wd) missing.push('WD Invoice Number');
     if(!doc) missing.push('Doc Invoice Number');
-    if(!lease) missing.push('Lease');
+    if(selectedLeases.length === 0) missing.push('Lease');
     if(!category) missing.push('Category');
     if(!company) missing.push('Company');
     if(!supplier) missing.push('Supplier');
@@ -491,12 +491,19 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       return;
     }
   }catch(err){ alert('Validation error: ' + err.message); return; }
+  // The per-unit Charge + Tax breakdown must add up to the declared invoice Amount.
+  try{
+    if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
+    if(!unitBreakdownMatches('invoiceUnitBreakdown')){
+      alert('The sum of Charge Amount + Tax Amount for the selected units must equal the declared invoice Amount before submitting.');
+      return;
+    }
+  }catch(err){ alert('Validation error: ' + err.message); return; }
   // New rule: only block submission when an existing invoice has the same
   // Lease, Category, Unit and WD Invoice number. If any of those differs,
   // allow the registration. Editing the same invoice is allowed.
   try{
     // Use FormData.getAll when available to detect multiple selected units
-    const leaseVal = (qs('#invoiceLease') && qs('#invoiceLease').value) || (fd.get('invoiceLease') || '').toString().trim();
     const catVal = (fd.get('invoiceCategory') || '').toString().trim();
     const wdVal = (fd.get('invoiceWD') || '').toString().trim();
     const editingId = form.dataset.editing || null;
@@ -510,25 +517,23 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     // If editing a single invoice, check uniqueness against other invoices for that single unit
     if(editingId){
       const unitVal = unitsForCheck.length ? unitsForCheck[0] : '';
+      const unitLeaseVal = (resolveInvoiceUnitLeaseInfo(unitVal, getSelectedInvoiceLeases()).lease || '').toString().trim().toLowerCase();
       const clash = (state.invoices || []).find(inv => {
         if(inv.id === (editingId || '')) return false; // ignore self when editing
         const aLease = (inv.lease || '').toString().trim().toLowerCase();
         const aCat = (inv.category || '').toString().trim().toLowerCase();
         const aUnit = (inv.unit || '').toString().trim().toLowerCase();
         const aWd = (inv.wdNumber || '').toString().trim().toLowerCase();
-        return aLease === leaseVal.toLowerCase() && aCat === catVal.toLowerCase() && aUnit === unitVal.toLowerCase() && aWd === wdVal.toLowerCase();
+        return aLease === unitLeaseVal && aCat === catVal.toLowerCase() && aUnit === unitVal.toLowerCase() && aWd === wdVal.toLowerCase();
       });
       if(clash){ alert('An invoice with the same Lease, Category, Unit and WD Invoice number already exists. Submission blocked.'); return; }
     }
     // If creating multiple units, we'll handle uniqueness per-unit below (do not block whole submission here)
   }catch(err){ /* on unexpected error, let submission proceed */ }
-  // Build a base invoice object (unit will be replaced per-unit if multiple units provided)
+  // Build a base invoice object (unit will be replaced per-unit if multiple units provided).
+  // lease/supplier/company/arrangement/invoicing are resolved per-unit below since a WD
+  // invoice can now span multiple leases; these readonly fields may show "(multiple)".
   const baseInvoice = {
-    lease: (qs('#invoiceLease') && qs('#invoiceLease').value) || fd.get('invoiceLease') || '',
-    supplier: (qs('#invoiceSupplier') && qs('#invoiceSupplier').value) || fd.get('invoiceSupplier') || '',
-    company: fd.get('invoiceCompany') || '',
-    arrangement: fd.get('invoiceArrangement') || '',
-    invoicing: (qs('#invoiceInvoicing') && qs('#invoiceInvoicing').value) || fd.get('invoiceInvoicing') || '',
     category: fd.get('invoiceCategory') || '',
     wdNumber: (fd.get('invoiceWD') || '').toString().trim(),
     docNumber: fd.get('invoiceDoc') || '',
@@ -550,15 +555,48 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       unitVal = (fd.get('invoiceUnit') || '').toString().trim();
     }
 
-    const invoiceObj = Object.assign({}, baseInvoice, { id: editingId, unit: unitVal });
+    const resolvedInfo = resolveInvoiceUnitLeaseInfo(unitVal, getSelectedInvoiceLeases());
+    const editRowData = getInvoiceBreakdownRowsData()[unitVal] || {};
+    const editCharge = (function(){ const n = parseCurrency(editRowData.charge||''); return n===null ? '' : n.toFixed(2); })();
+    const editTax = (function(){ const n = parseCurrency(editRowData.tax||''); return n===null ? '' : n.toFixed(2); })();
+    const invoiceObj = Object.assign({}, baseInvoice, resolvedInfo, { id: editingId, unit: unitVal, amount: editCharge, taxAmount: editTax });
     state.invoices = state.invoices.map(inv => inv.id === editingId ? Object.assign({}, inv, invoiceObj, {id: editingId}) : inv);
-    // If there is a registry for this WD/Doc pair, update its lease value to match edit
+    // If there is a registry for this WD/Doc pair, recompute its leases from the leases
+    // now used by its member units (a registry can span multiple leases)
     try{
       const targetWd = (invoiceObj.wdNumber || '').toString().trim();
       const targetDoc = (invoiceObj.docNumber || '').toString().trim();
       const regIdx = (state.registries||[]).findIndex(r => (r.wdNumber||'').toString().trim() === targetWd && (r.docNumber||'').toString().trim() === targetDoc);
       if(regIdx !== -1){
-        state.registries[regIdx].lease = invoiceObj.lease || '';
+        const regUnits = Array.isArray(state.registries[regIdx].units) ? state.registries[regIdx].units : [];
+        const leasesSet = new Set();
+        regUnits.forEach(uid => {
+          const memberInv = (state.invoices||[]).find(i => (i.unit||'').toString().trim().toLowerCase() === (uid||'').toString().trim().toLowerCase() && (i.wdNumber||'').toString().trim() === targetWd);
+          const leaseVal = memberInv ? (memberInv.lease||'') : '';
+          if(leaseVal) leasesSet.add(leaseVal);
+        });
+        const leasesArr = Array.from(leasesSet);
+        state.registries[regIdx].leases = leasesArr;
+        state.registries[regIdx].lease = leasesArr.join(', ');
+
+        // Keep the registry's stored per-unit detail (its durable record) in sync with this edit
+        const details = Array.isArray(state.registries[regIdx].unitDetails) ? state.registries[regIdx].unitDetails.slice() : [];
+        const unitRecForDetail = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim() === unitVal.toString().trim());
+        const detailIdx = details.findIndex(d => (d.unit||'').toString().trim().toLowerCase() === unitVal.toString().trim().toLowerCase());
+        const newDetail = {
+          unit: unitVal,
+          lease: resolvedInfo.lease || '',
+          company: resolvedInfo.company || '',
+          supplier: resolvedInfo.supplier || '',
+          arrangement: resolvedInfo.arrangement || '',
+          invoicing: resolvedInfo.invoicing || '',
+          costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
+          tax: editTax,
+          charge: editCharge
+        };
+        if(detailIdx !== -1) details[detailIdx] = newDetail; else details.push(newDetail);
+        state.registries[regIdx].unitDetails = details;
+        DB.updateRegistry(state.registries[regIdx]).catch(e => console.error('Registry sync error:', e));
       }
     }catch(e){}
     saveState(); renderInvoices(); renderRegistries();
@@ -571,7 +609,14 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     // Reset unit selection toggle button
     const unitToggle = qs('#invoiceUnitToggle');
     if(unitToggle) unitToggle.textContent = 'Select units';
-    
+
+    // Reset lease selection toggle button
+    const leaseToggle = qs('#invoiceLeaseToggle');
+    if(leaseToggle) leaseToggle.textContent = 'Select leases';
+
+    // Reset the per-unit Charge/Tax breakdown table back to its empty default row
+    if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
+
     // Reset comment button
     const commentHiddenInput = qs('#invoiceComment');
     if(commentHiddenInput) commentHiddenInput.value = '';
@@ -593,58 +638,64 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     }
     if(units.length === 0) units.push('');
 
+  const selectedLeases = getSelectedInvoiceLeases();
   const skipped = [];
   const createdIds = [];
   const createdUnits = [];
-    // Prepare per-unit amounts: treat entered amount as TOTAL for the WD invoice.
-    // If multiple units are provided, split the total evenly (in cents) so per-unit amounts sum to the total.
-    let perUnitAmounts = [];
-    try{
-      const tot = (baseInvoice.amount || '').toString().trim();
-      if(tot !== '' && !Number.isNaN(Number(tot)) && units.length > 0){
-        // work in cents to avoid floating point issues
-        const totalCents = Math.round(Number(tot) * 100);
-        const q = Math.floor(totalCents / units.length);
-        // compute remainder so it's always between 0 and units.length - 1, even for negatives
-        const rem = totalCents - q * units.length;
-        for(let i=0;i<units.length;i++){
-          const cents = q + (i < rem ? 1 : 0);
-          perUnitAmounts.push((cents/100).toFixed(2));
-        }
-      } else {
-        // no numeric total provided: keep blank amount for each unit
-        perUnitAmounts = units.map(()=> '');
-      }
-    }catch(e){ perUnitAmounts = units.map(()=> baseInvoice.amount || ''); }
+  const createdLeases = [];
+  const createdUnitDetails = [];
+  // Per-unit Charge/Tax amounts come from the breakdown table (already validated above
+  // to sum to the declared invoice Amount) rather than an automatic even split.
+  const breakdownData = getInvoiceBreakdownRowsData();
 
   units.forEach((uVal, ui) => {
+      // each unit carries its own lease (a WD invoice can now span multiple leases),
+      // so resolve lease/company/supplier/arrangement/invoicing from the unit's own record
+      const resolved = resolveInvoiceUnitLeaseInfo(uVal, selectedLeases);
       // uniqueness check per unit - only block if the invoice exists AND belongs to an active registry
       const clash = (state.invoices || []).find(inv => {
         const aLease = (inv.lease||'').toString().trim().toLowerCase();
         const aCat = (inv.category||'').toString().trim().toLowerCase();
         const aUnit = (inv.unit||'').toString().trim().toLowerCase();
         const aWd = (inv.wdNumber||'').toString().trim().toLowerCase();
-        const matches = aLease === (baseInvoice.lease||'').toString().trim().toLowerCase()
+        const matches = aLease === (resolved.lease||'').toString().trim().toLowerCase()
           && aCat === (baseInvoice.category||'').toString().trim().toLowerCase()
           && aUnit === uVal.toString().trim().toLowerCase()
           && aWd === (baseInvoice.wdNumber||'').toString().trim().toLowerCase();
-        
+
         if(!matches) return false;
-        
+
         // Check if this invoice belongs to an active registry
         const belongsToRegistry = (state.registries || []).some(reg => {
           const regWd = (reg.wdNumber || '').toString().trim().toLowerCase();
           const regUnits = Array.isArray(reg.units) ? reg.units.map(u => (u||'').toString().trim().toLowerCase()) : [];
           return regWd === aWd && regUnits.includes(aUnit);
         });
-        
+
         return belongsToRegistry;
       });
   if(clash){ skipped.push(uVal); return; }
-      // assign per-unit amount if available
-      const amountForThis = (perUnitAmounts && perUnitAmounts[ui] !== undefined) ? perUnitAmounts[ui] : (baseInvoice.amount || '');
-      const newInv = Object.assign({}, baseInvoice, { id: id(), unit: uVal, amount: amountForThis });
+      // pull this unit's Charge/Tax amounts from the breakdown table
+      const rowData = breakdownData[uVal] || {};
+      const chargeAmount = (function(){ const n = parseCurrency(rowData.charge||''); return n===null ? '' : n.toFixed(2); })();
+      const taxAmount = (function(){ const n = parseCurrency(rowData.tax||''); return n===null ? '' : n.toFixed(2); })();
+      const newInv = Object.assign({}, baseInvoice, resolved, { id: id(), unit: uVal, amount: chargeAmount, taxAmount: taxAmount });
       state.invoices.push(newInv); createdIds.push(newInv.id); createdUnits.push(uVal);
+      if(resolved.lease) createdLeases.push(resolved.lease);
+      // Registries don't round-trip through state.invoices (invoices aren't persisted), so
+      // capture the full per-unit detail on the registry itself for durable display/editing.
+      const unitRecForDetail = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim() === uVal.toString().trim());
+      createdUnitDetails.push({
+        unit: uVal,
+        lease: resolved.lease || '',
+        company: resolved.company || '',
+        supplier: resolved.supplier || '',
+        arrangement: resolved.arrangement || '',
+        invoicing: resolved.invoicing || '',
+        costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
+        tax: taxAmount,
+        charge: chargeAmount
+      });
     });
 
     // If any invoices were created for this WD submission, record a registry entry
@@ -679,6 +730,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         });
       }
       
+      const uniqueLeases = Array.from(new Set(createdLeases.filter(Boolean)));
       const registry = {
         id: id(),
         seq: state.meta.registrySeq,
@@ -693,7 +745,9 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         submittedDate: baseInvoice.submittedDate || (new Date().toISOString().slice(0,10)),
         createdAt: new Date().toISOString(),
         comments: comments,
-        lease: baseInvoice.lease || ''
+        leases: uniqueLeases,
+        lease: uniqueLeases.join(', '),
+        unitDetails: createdUnitDetails.slice()
       };
       state.registries = state.registries || [];
       state.registries.push(registry);
@@ -721,7 +775,14 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     // Reset unit selection toggle button
     const unitToggle = qs('#invoiceUnitToggle');
     if(unitToggle) unitToggle.textContent = 'Select units';
-    
+
+    // Reset lease selection toggle button
+    const leaseToggle = qs('#invoiceLeaseToggle');
+    if(leaseToggle) leaseToggle.textContent = 'Select leases';
+
+    // Reset the per-unit Charge/Tax breakdown table back to its empty default row
+    if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
+
     // Reset comment button
     const commentHiddenInput = qs('#invoiceComment');
     if(commentHiddenInput) commentHiddenInput.value = '';
@@ -754,154 +815,165 @@ if(invFormEl){
 }
 
 // sync invoice selects
-function syncInvoiceLeaseOptions(){
-  const input = qs('#invoiceLease'); 
-  const dropdown = qs('#invoiceLeaseDropdown');
-  if(!input || !dropdown) return;
-  
-  const currentValue = input.value;
-  
-  // Build searchable dropdown
-  dropdown.innerHTML = '';
-  
-  // Add search box
-  const searchBox = document.createElement('input');
-  searchBox.type = 'text';
-  searchBox.placeholder = 'Search leases...';
-  searchBox.style.cssText = 'width:100%;padding:8px;border:none;border-bottom:1px solid #e6e9ee;box-sizing:border-box;';
-  dropdown.appendChild(searchBox);
-  
-  // Options container
-  const optionsContainer = document.createElement('div');
-  optionsContainer.style.cssText = 'max-height:200px;overflow-y:auto;';
-  dropdown.appendChild(optionsContainer);
-  
-  // Get operational leases
+// Multi-select lease picker: a single WD invoice can cover units across several leases.
+function getSelectedInvoiceLeases(){
+  const panel = qs('#invoiceLeasePanel'); if(!panel) return [];
+  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="invoiceLease"]:checked')).map(cb => cb.value);
+}
+
+// Resolve the lease (and that lease's company/supplier/arrangement/invoicing) that a given
+// unit actually belongs to. Each invoice mirrors its own unit's lease rather than a single
+// shared value, since the units picked for one WD invoice may now come from different leases.
+function resolveInvoiceUnitLeaseInfo(unitVal, fallbackLeases){
+  const unitRec = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim().toLowerCase() === (unitVal||'').toString().trim().toLowerCase());
+  const leaseVal = unitRec ? (unitRec.lease || '') : ((Array.isArray(fallbackLeases) && fallbackLeases[0]) || '');
+  const leaseRec = (state.leases||[]).find(l => (l.leaseNumber === leaseVal) || (l.id === leaseVal));
+  return {
+    lease: leaseVal,
+    company: leaseRec ? (leaseRec.company||'') : '',
+    supplier: leaseRec ? (leaseRec.supplier||'') : '',
+    arrangement: leaseRec ? (leaseRec.arrangement||'') : '',
+    invoicing: leaseRec ? (leaseRec.invoicing||'') : ''
+  };
+}
+
+// Recompute the readonly Supplier/Company/Arrangement/Invoicing fields and the unit picker
+// whenever the selected lease set changes. When selected leases disagree on a value, show
+// "(multiple)" instead of guessing.
+function onInvoiceLeaseSelectionChange(){
+  const selected = getSelectedInvoiceLeases();
+  const c = qs('#invoiceCompany'); const a = qs('#invoiceArrangement'); const s = qs('#invoiceSupplier'); const inv = qs('#invoiceInvoicing');
+  if(selected.length === 0){
+    if(c) c.value=''; if(a) a.value=''; if(s) s.value=''; if(inv) inv.value='';
+    if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions([]);
+    return;
+  }
+  const matchedLeases = selected.map(val => (state.leases||[]).find(l => (l.leaseNumber === val) || (l.id === val))).filter(Boolean);
+  function distinctOrMultiple(getter){
+    const distinct = Array.from(new Set(matchedLeases.map(getter).map(v => (v||'').toString()).filter(v => v !== '')));
+    if(distinct.length === 0) return '';
+    if(distinct.length === 1) return distinct[0];
+    return '(multiple)';
+  }
+  if(c) c.value = distinctOrMultiple(l => l.company);
+  if(s) s.value = distinctOrMultiple(l => l.supplier);
+  if(a) a.value = distinctOrMultiple(l => l.arrangement);
+  if(inv) inv.value = distinctOrMultiple(l => l.invoicing);
+  if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(selected);
+  // ensure the Submitted date is prefilled to today's date (predetermined actual date)
+  const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+}
+
+function syncInvoiceLeaseOptions(selectedValues){
+  selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s=>String(s)) : (selectedValues ? [String(selectedValues)] : getSelectedInvoiceLeases());
+  const panel = qs('#invoiceLeasePanel'); const toggle = qs('#invoiceLeaseToggle');
+  if(!panel) return;
+
   const leases = (state.leases || []).filter(l => {
     const status = (l.status || 'Enabled').toString().toLowerCase();
     return status !== 'disabled';
   });
-  
-  // Render options
-  const renderOptions = (filterText = '') => {
-    optionsContainer.innerHTML = '';
-    const filtered = leases.filter(l => {
-      const leaseNum = (l.leaseNumber || l.id || '').toLowerCase();
-      return leaseNum.includes(filterText.toLowerCase());
-    });
-    
-    if(filtered.length === 0){
-      const noResult = document.createElement('div');
-      noResult.textContent = 'No leases found';
-      noResult.style.cssText = 'padding:8px;color:#6b7280;font-size:13px;';
-      optionsContainer.appendChild(noResult);
-      return;
-    }
-    
-    filtered.forEach(l => {
-      const opt = document.createElement('div');
-      opt.textContent = l.leaseNumber || l.id;
-      opt.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:14px;';
-      opt.dataset.value = l.leaseNumber || l.id;
-      
-      opt.addEventListener('mouseenter', () => {
-        opt.style.background = '#f3f4f6';
-      });
-      opt.addEventListener('mouseleave', () => {
-        opt.style.background = '';
-      });
-      opt.addEventListener('click', () => {
-        input.value = opt.dataset.value;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        dropdown.style.display = 'none';
-      });
-      
-      optionsContainer.appendChild(opt);
-    });
-  };
-  
-  renderOptions();
-  
-  searchBox.addEventListener('input', () => {
-    renderOptions(searchBox.value);
+
+  panel.innerHTML = '';
+  if(leases.length === 0){ const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no leases available)'; panel.appendChild(none); if(toggle) toggle.textContent = 'Select leases'; return; }
+
+  // Add search box
+  const searchContainer = document.createElement('div'); searchContainer.style.padding = '8px'; searchContainer.style.borderBottom = '1px solid #e6e6e6';
+  const searchBox = document.createElement('input'); searchBox.type = 'text'; searchBox.placeholder = 'Search leases...'; searchBox.id = 'invoiceLeaseSearch';
+  searchBox.style.width = '100%'; searchBox.style.padding = '6px 8px'; searchBox.style.border = '1px solid #e6e6e6'; searchBox.style.borderRadius = '4px'; searchBox.style.fontSize = '13px';
+  searchContainer.appendChild(searchBox);
+  panel.appendChild(searchContainer);
+
+  // Add small controls: Select all / Clear
+  const ctrl = document.createElement('div'); ctrl.style.display = 'flex'; ctrl.style.justifyContent = 'flex-end'; ctrl.style.gap = '6px'; ctrl.style.padding = '6px 8px';
+  const btnAll = document.createElement('button'); btnAll.type = 'button'; btnAll.className = 'small-link'; btnAll.textContent = 'Select all';
+  const btnClear = document.createElement('button'); btnClear.type = 'button'; btnClear.className = 'small-link'; btnClear.textContent = 'Clear';
+  ctrl.appendChild(btnClear); ctrl.appendChild(btnAll); // Clear on left, Select all on right
+  panel.appendChild(ctrl);
+
+  // Container for checkbox list
+  const checkboxContainer = document.createElement('div'); checkboxContainer.id = 'invoiceLeaseCheckboxContainer';
+  panel.appendChild(checkboxContainer);
+
+  leases.forEach(l => {
+    const val = (l.leaseNumber || l.id || '').toString();
+    const row = document.createElement('div'); row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px'; row.style.padding = '6px 4px';
+    row.className = 'lease-checkbox-row';
+    row.setAttribute('data-lease-id', val.toLowerCase());
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'invoiceLease'; cb.value = val; cb.id = 'invoiceLease_cb_' + val.replace(/[^a-z0-9_-]/gi,'_');
+    if(selectedValues.length && selectedValues.indexOf(val) !== -1) cb.checked = true;
+    const lab = document.createElement('label'); lab.htmlFor = cb.id; lab.style.flex = '1 1 auto';
+    lab.textContent = val;
+    cb.addEventListener('change', ()=>{ updateInvoiceLeaseToggleLabel(); onInvoiceLeaseSelectionChange(); });
+    row.appendChild(cb); row.appendChild(lab); checkboxContainer.appendChild(row);
   });
-  
-  // Set up click handler only if not already set
-  if(!input.dataset.dropdownInitialized){
-    input.dataset.dropdownInitialized = 'true';
-    
-    // Prevent form submission when pressing Enter
-    input.addEventListener('keydown', (e) => {
-      if(e.key === 'Enter'){
-        e.preventDefault();
-        e.stopPropagation();
-        // Trigger click to open dropdown
-        input.click();
+
+  // Add search functionality
+  searchBox.addEventListener('input', () => {
+    const searchTerm = searchBox.value.toLowerCase().trim();
+    const rows = checkboxContainer.querySelectorAll('.lease-checkbox-row');
+    rows.forEach(row => {
+      const leaseId = row.getAttribute('data-lease-id') || '';
+      row.style.display = (searchTerm === '' || leaseId.includes(searchTerm)) ? 'flex' : 'none';
+    });
+  });
+
+  // wiring for Select all / Clear
+  btnAll.addEventListener('click', ()=>{
+    checkboxContainer.querySelectorAll('.lease-checkbox-row').forEach(row => {
+      if(row.style.display !== 'none'){
+        const cb = row.querySelector('input[type="checkbox"][name="invoiceLease"]');
+        if(cb) cb.checked = true;
       }
     });
-    
-    // Toggle dropdown on input click
-    input.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const isVisible = dropdown.style.display === 'block';
-      
-      // Close all other dropdowns first
-      document.querySelectorAll('.searchable-dropdown').forEach(d => {
-        if(d !== dropdown) d.style.display = 'none';
-      });
-      
-      dropdown.style.display = isVisible ? 'none' : 'block';
-      
-      if(dropdown.style.display === 'block'){
-        const search = dropdown.querySelector('input[type="text"]');
-        if(search){
-          search.value = '';
-          // Re-render options when opening
-          const container = dropdown.querySelector('div');
-          if(container){
-            container.innerHTML = '';
-            const allLeases = (state.leases || []).filter(l => {
-              const status = (l.status || 'Enabled').toString().toLowerCase();
-              return status !== 'disabled';
-            });
-            allLeases.forEach(l => {
-              const opt = document.createElement('div');
-              opt.textContent = l.leaseNumber || l.id;
-              opt.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:14px;';
-              opt.dataset.value = l.leaseNumber || l.id;
-              opt.addEventListener('mouseenter', () => { opt.style.background = '#f3f4f6'; });
-              opt.addEventListener('mouseleave', () => { opt.style.background = ''; });
-              opt.addEventListener('click', () => {
-                input.value = opt.dataset.value;
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-                dropdown.style.display = 'none';
-              });
-              container.appendChild(opt);
-            });
-          }
-          setTimeout(() => search.focus(), 10);
-        }
-      }
-    });
-    
-    // Close dropdown when clicking outside
-    document.addEventListener('click', (e) => {
-      if(!input.contains(e.target) && !dropdown.contains(e.target)){
-        dropdown.style.display = 'none';
-      }
-    });
+    updateInvoiceLeaseToggleLabel(); onInvoiceLeaseSelectionChange();
+  });
+  btnClear.addEventListener('click', ()=>{
+    panel.querySelectorAll('input[type="checkbox"][name="invoiceLease"]').forEach(i=> i.checked = false);
+    updateInvoiceLeaseToggleLabel(); onInvoiceLeaseSelectionChange();
+  });
+
+  function updateInvoiceLeaseToggleLabel(){
+    const tbtn = qs('#invoiceLeaseToggle'); if(!tbtn) return;
+    const checked = panel.querySelectorAll('input[type="checkbox"][name="invoiceLease"]:checked').length;
+    if(checked === 0) tbtn.textContent = 'Select leases';
+    else if(checked === 1) tbtn.textContent = panel.querySelector('input[type="checkbox"][name="invoiceLease"]:checked').value;
+    else tbtn.textContent = checked + ' leases selected';
   }
-  
-  if(currentValue) input.value = currentValue;
+
+  updateInvoiceLeaseToggleLabel();
+
+  if(toggle){
+    try{ toggle.setAttribute('aria-expanded','false'); }catch(e){}
+    const nt = toggle.cloneNode(true);
+    toggle.parentNode.replaceChild(nt, toggle);
+    nt.addEventListener('click', ()=>{
+      const isOpen = panel.style.display !== 'none';
+      panel.style.display = isOpen ? 'none' : 'block';
+      nt.setAttribute('aria-expanded', String(!isOpen));
+    });
+
+    if(!window.__agi_invoiceLease_dropdown_init){
+      window.__agi_invoiceLease_dropdown_init = true;
+      document.addEventListener('click', (ev)=>{
+        const panelEl = qs('#invoiceLeasePanel'); const toggleEl = qs('#invoiceLeaseToggle');
+        if(!panelEl || !toggleEl) return;
+        const within = panelEl.contains(ev.target) || toggleEl.contains(ev.target);
+        if(!within){ panelEl.style.display = 'none'; toggleEl.setAttribute('aria-expanded','false'); }
+      });
+      document.addEventListener('keydown', (ev)=>{ if(ev.key === 'Escape'){ const panelEl = qs('#invoiceLeasePanel'); const toggleEl = qs('#invoiceLeaseToggle'); if(panelEl){ panelEl.style.display = 'none'; if(toggleEl) toggleEl.setAttribute('aria-expanded','false'); } } });
+    }
+  }
 }
 function syncInvoiceCompanyOptions(){ const sel = qs('#invoiceCompany'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select company)</option>'; (state.meta.devCompanies||[]).forEach(c=>{ const opt = document.createElement('option'); opt.value = c; opt.textContent = c; sel.appendChild(opt); }); if(cur) sel.value = cur; }
 function syncInvoiceArrangementOptions(){ const sel = qs('#invoiceArrangement'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select arrangement)</option>'; (state.meta.devPayments||[]).forEach(p=>{ const opt = document.createElement('option'); opt.value = p; opt.textContent = p; sel.appendChild(opt); }); if(cur) sel.value = cur; }
 function syncInvoiceUnitOptions(leaseVal, selectedValues){
   // selectedValues: optional array of values to pre-check
+  // leaseVal: optional lease number, or an array of lease numbers (union filter)
   selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s=>String(s)) : [];
   const panel = qs('#invoiceUnitPanel'); const toggle = qs('#invoiceUnitToggle');
-  const list = (typeof leaseVal === 'undefined' || !leaseVal) ? (state.units || []).slice() : (state.units || []).filter(u => (u.lease === leaseVal) || (u.lease === (leaseVal || '')) );
+  const leaseFilter = Array.isArray(leaseVal) ? leaseVal.filter(Boolean) : (leaseVal ? [leaseVal] : []);
+  const list = leaseFilter.length === 0 ? (state.units || []).slice() : (state.units || []).filter(u => leaseFilter.indexOf(u.lease) !== -1);
 
   if(panel){
     panel.innerHTML = '';
@@ -948,7 +1020,7 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
       const lab = document.createElement('label'); lab.htmlFor = cb.id; lab.style.flex = '1 1 auto';
       lab.textContent = val + (isDisabled ? ' (Disabled)' : '');
       if(isDisabled) lab.style.color = '#b91c1c';
-      cb.addEventListener('change', ()=>{ updateInvoiceUnitToggleLabel(); });
+      cb.addEventListener('change', ()=>{ updateInvoiceUnitToggleLabel(); refreshInvoiceBreakdownIfVisible(); });
       row.appendChild(cb); row.appendChild(lab); checkboxContainer.appendChild(row);
     });
 
@@ -966,7 +1038,8 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
       });
     });
 
-    // Add Units button at the bottom
+    // Add Units button at the bottom: confirms the checked units and renders/refreshes
+    // the per-unit Charge/Tax breakdown table below the form.
     const addUnitsContainer = document.createElement('div'); addUnitsContainer.style.padding = '8px'; addUnitsContainer.style.borderTop = '1px solid #e6e6e6'; addUnitsContainer.style.display = 'flex'; addUnitsContainer.style.justifyContent = 'center';
     const addUnitsBtn = document.createElement('button'); addUnitsBtn.type = 'button'; addUnitsBtn.className = 'btn-primary'; addUnitsBtn.textContent = 'Add Units'; addUnitsBtn.style.width = '100%';
     addUnitsBtn.addEventListener('click', (e) => {
@@ -974,12 +1047,7 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
       // Close the dropdown first
       panel.style.display = 'none';
       if(toggle) toggle.setAttribute('aria-expanded', 'false');
-      // Then switch to Unit Control tab
-      switchTab('unitControl');
-      const unitInput = qs('#unitIdInput');
-      if(unitInput) {
-        setTimeout(() => unitInput.focus(), 100); // Delay focus to ensure tab switch completes
-      }
+      if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
     });
     addUnitsContainer.appendChild(addUnitsBtn);
     panel.appendChild(addUnitsContainer);
@@ -994,10 +1062,12 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
         }
       });
       updateInvoiceUnitToggleLabel();
+      refreshInvoiceBreakdownIfVisible();
     });
     btnClear.addEventListener('click', ()=>{
       panel.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]').forEach(i=> i.checked = false);
       updateInvoiceUnitToggleLabel();
+      refreshInvoiceBreakdownIfVisible();
     });
 
     function updateInvoiceUnitToggleLabel(){
@@ -1040,30 +1110,192 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
   if(cur) sel.value = cur;
 }
 
+function getSelectedInvoiceUnits(){
+  const panel = qs('#invoiceUnitPanel'); if(!panel) return [];
+  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]:checked')).map(cb => cb.value);
+}
+
+// --- Generic sortable Company/UnitId/Lease/Cost Center + Tax/Charge breakdown table ---
+// Shared by the invoice creation form and the registry edit modal (each has its own
+// container id and its own declared-Amount field to validate against). Sort state and the
+// declared-amount field id are stashed as data-* attributes on the wrap element itself, so
+// multiple independent tables can coexist without shared JS state.
+const UNIT_BREAKDOWN_COLUMNS = [
+  { key:'company', label:'Company', width:130, get: (u,uid) => u ? (u.company||'') : '' },
+  { key:'unitId', label:'UnitId', width:100, get: (u,uid) => uid },
+  { key:'lease', label:'Lease', width:100, get: (u,uid) => u ? (u.lease||'') : '' },
+  { key:'costCenter', label:'Cost Center', width:110, get: (u,uid) => u ? (u.costCenter||'') : '' }
+];
+
+function getUnitBreakdownRowsData(wrapId){
+  const data = {};
+  const wrap = qs('#' + wrapId); if(!wrap) return data;
+  wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+    const uid = row.dataset.unitId; if(!uid) return;
+    const chargeInput = row.querySelector('.ub-charge');
+    const taxInput = row.querySelector('.ub-tax');
+    data[uid] = { charge: chargeInput ? chargeInput.value : '', tax: taxInput ? taxInput.value : '' };
+  });
+  return data;
+}
+
+// Build/refresh the breakdown table from `unitIds`. Already-entered Tax/Charge values are
+// preserved for units that remain in the list; `seed` provides initial values for units not
+// already in the table (e.g. populating from an existing invoice/registry for edit).
+// opts.showEmptyRow: when true and unitIds is empty, render the header plus a single
+// "(no units selected yet)" placeholder line instead of hiding the table entirely.
+function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
+  const wrap = qs('#' + wrapId); if(!wrap) return;
+  wrap.dataset.amountFieldId = amountFieldId || '';
+
+  if(!unitIds || unitIds.length === 0){
+    if(!(opts && opts.showEmptyRow)){
+      wrap.style.display = 'none';
+      wrap.innerHTML = '';
+      return;
+    }
+    wrap.innerHTML = '';
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
+    UNIT_BREAKDOWN_COLUMNS.forEach(col => {
+      const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:0 0 ${col.width}px;`; header.appendChild(d);
+    });
+    [['Tax Amount',110],['Charge Amount',110]].forEach(([label,w]) => {
+      const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${w}px;`; header.appendChild(d);
+    });
+    wrap.appendChild(header);
+
+    const emptyRow = document.createElement('div');
+    emptyRow.style.cssText = 'display:flex;align-items:center;padding:8px 4px;color:#9ca3af;font-size:12px;font-style:italic;';
+    emptyRow.textContent = '(no units selected yet)';
+    wrap.appendChild(emptyRow);
+
+    wrap.dataset.matches = 'false';
+    wrap.style.display = 'block';
+    return;
+  }
+
+  const existing = getUnitBreakdownRowsData(wrapId);
+  const seedData = seed || {};
+
+  let rows = unitIds.map(uid => ({
+    uid,
+    unitRec: (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim() === uid.toString().trim())
+  }));
+
+  const sortCol = wrap.dataset.sortCol || '';
+  const sortDir = wrap.dataset.sortDir || 'asc';
+  if(sortCol){
+    const col = UNIT_BREAKDOWN_COLUMNS.find(c => c.key === sortCol);
+    if(col){
+      rows.sort((a,b) => {
+        const av = col.get(a.unitRec, a.uid).toString().toLowerCase();
+        const bv = col.get(b.unitRec, b.uid).toString().toLowerCase();
+        if(av < bv) return sortDir === 'asc' ? -1 : 1;
+        if(av > bv) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+  }
+
+  wrap.innerHTML = '';
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
+  UNIT_BREAKDOWN_COLUMNS.forEach(col => {
+    const d = document.createElement('div');
+    d.textContent = col.label + (sortCol === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+    d.style.cssText = `flex:0 0 ${col.width}px;cursor:pointer;user-select:none;`;
+    d.title = 'Click to sort';
+    d.addEventListener('click', ()=>{
+      const newDir = (wrap.dataset.sortCol === col.key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
+      wrap.dataset.sortCol = col.key; wrap.dataset.sortDir = newDir;
+      renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, null);
+    });
+    header.appendChild(d);
+  });
+  [['Tax Amount',110],['Charge Amount',110]].forEach(([label,w]) => {
+    const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${w}px;`; header.appendChild(d);
+  });
+  wrap.appendChild(header);
+
+  rows.forEach(({uid, unitRec}) => {
+    const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
+
+    const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
+    UNIT_BREAKDOWN_COLUMNS.forEach(col => row.appendChild(mkCell(col.get(unitRec, uid), col.width)));
+
+    const taxInput = document.createElement('input'); taxInput.type = 'text'; taxInput.className = 'ub-tax money-input'; taxInput.placeholder = 'Tax'; taxInput.inputMode = 'decimal';
+    taxInput.style.cssText = 'flex:0 0 110px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+    const chargeInput = document.createElement('input'); chargeInput.type = 'text'; chargeInput.className = 'ub-charge money-input'; chargeInput.placeholder = 'Charge'; chargeInput.inputMode = 'decimal';
+    chargeInput.style.cssText = 'flex:0 0 110px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+
+    const prior = existing[uid] || seedData[uid] || {};
+    if(prior.tax !== undefined) taxInput.value = prior.tax;
+    if(prior.charge !== undefined) chargeInput.value = prior.charge;
+
+    taxInput.addEventListener('input', ()=> updateUnitBreakdownTotal(wrapId));
+    chargeInput.addEventListener('input', ()=> updateUnitBreakdownTotal(wrapId));
+
+    row.appendChild(taxInput); row.appendChild(chargeInput);
+    wrap.appendChild(row);
+  });
+
+  const totalRow = document.createElement('div');
+  totalRow.className = 'unit-breakdown-total';
+  totalRow.style.cssText = 'text-align:right;padding:8px 4px 2px;font-size:14px;font-weight:700;';
+  wrap.appendChild(totalRow);
+
+  wrap.style.display = 'block';
+  updateUnitBreakdownTotal(wrapId);
+}
+
+// The running total is Charge Amount + Tax Amount summed across every unit row; it must equal
+// the declared Amount field (red until it matches, green once it does).
+function updateUnitBreakdownTotal(wrapId){
+  const wrap = qs('#' + wrapId); if(!wrap) return;
+  const totalEl = wrap.querySelector('.unit-breakdown-total'); if(!totalEl) return;
+  let sum = 0;
+  wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+    const chargeInput = row.querySelector('.ub-charge');
+    const taxInput = row.querySelector('.ub-tax');
+    sum += (parseCurrency(chargeInput ? chargeInput.value : '') || 0) + (parseCurrency(taxInput ? taxInput.value : '') || 0);
+  });
+  const amountFieldId = wrap.dataset.amountFieldId;
+  const amountField = amountFieldId ? qs('#' + amountFieldId) : null;
+  const declared = parseCurrency(amountField ? amountField.value : '');
+  const matches = declared !== null && Math.round(sum*100) === Math.round(declared*100);
+  totalEl.textContent = 'Total (Charge + Tax): ' + formatCurrency(sum.toFixed(2)) + (declared !== null ? ' / declared ' + formatCurrency(declared.toFixed(2)) : '');
+  totalEl.style.color = matches ? '#15803d' : '#dc2626';
+  wrap.dataset.matches = matches ? 'true' : 'false';
+}
+
+function unitBreakdownMatches(wrapId){
+  const wrap = qs('#' + wrapId); if(!wrap) return false;
+  return wrap.dataset.matches === 'true';
+}
+
+// --- Invoice-form-specific thin wrappers around the generic breakdown table ---
+function getInvoiceBreakdownRowsData(){ return getUnitBreakdownRowsData('invoiceUnitBreakdown'); }
+function refreshInvoiceBreakdownIfVisible(){
+  const wrap = qs('#invoiceUnitBreakdown');
+  if(wrap && wrap.style.display !== 'none') renderInvoiceUnitBreakdown();
+}
+function renderInvoiceUnitBreakdown(seed){
+  renderUnitBreakdownTable('invoiceUnitBreakdown', getSelectedInvoiceUnits(), 'invoiceAmount', seed, { showEmptyRow: true });
+}
+
 // ensure invoice selects are updated when relevant lists change
 if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions();
 if(typeof syncInvoiceCompanyOptions === 'function') syncInvoiceCompanyOptions();
 if(typeof syncInvoiceArrangementOptions === 'function') syncInvoiceArrangementOptions();
 if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions();
+if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
+const invAmountFieldInit = qs('#invoiceAmount');
+if(invAmountFieldInit) invAmountFieldInit.addEventListener('input', ()=> updateUnitBreakdownTotal('invoiceUnitBreakdown'));
 
-// when invoice lease is selected, autofill company and arrangement informational inputs
-const invoiceLeaseSel = qs('#invoiceLease');
-if(invoiceLeaseSel){
-  invoiceLeaseSel.addEventListener('change', ()=>{
-    const val = invoiceLeaseSel.value;
-  const c = qs('#invoiceCompany'); const a = qs('#invoiceArrangement'); const s = qs('#invoiceSupplier'); const inv = qs('#invoiceInvoicing');
-    if(!val){ if(c) c.value=''; if(a) a.value=''; if(s) s.value=''; if(inv) inv.value=''; if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(); return; }
-    const lease = state.leases.find(l => (l.leaseNumber === val) || (l.id === val));
-    if(!lease){ if(c) c.value=''; if(a) a.value=''; if(s) s.value=''; if(inv) inv.value=''; return; }
-    if(c) c.value = lease.company || '';
-  if(s) s.value = lease.supplier || '';
-    if(a) a.value = lease.arrangement || '';
-    if(inv) inv.value = lease.invoicing || '';
-    if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(val);
-    // ensure the Submitted date is prefilled to today's date (predetermined actual date)
-    const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
-  });
-}
+// Autofill of company/supplier/arrangement/invoicing and the unit picker on lease selection
+// is wired directly into the lease checkbox panel via onInvoiceLeaseSelectionChange().
 
 qs('#unitForm').addEventListener('submit', e=>{
   e.preventDefault();
@@ -1154,40 +1386,25 @@ function parseCurrency(str){
   return n;
 }
 
-// money input behaviour: show raw number on focus, formatted on blur
-const moneyInput = qs('#unitMonthly');
-if(moneyInput){
-  moneyInput.addEventListener('focus', ()=>{
-    const v = moneyInput.value;
-    if(!v) return;
-    // parse formatted value to plain number string for editing
-    const n = parseCurrency(v);
-    if(n !== null) moneyInput.value = n.toFixed(2);
-  });
-  moneyInput.addEventListener('blur', ()=>{
-    const v = moneyInput.value;
-    const n = parseCurrency(v);
-    if(n === null){ moneyInput.value = ''; return; }
-    moneyInput.value = formatCurrency(n);
-  });
-}
-
-// invoice amount: behave like unit monthly (raw number while editing, formatted on blur)
-const invoiceAmountInput = qs('#invoiceAmount');
-if(invoiceAmountInput){
-  invoiceAmountInput.addEventListener('focus', ()=>{
-    const v = invoiceAmountInput.value;
-    if(!v) return;
-    const n = parseCurrency(v);
-    if(n !== null) invoiceAmountInput.value = n.toFixed(2);
-  });
-  invoiceAmountInput.addEventListener('blur', ()=>{
-    const v = invoiceAmountInput.value;
-    const n = parseCurrency(v);
-    if(n === null){ invoiceAmountInput.value = ''; return; }
-    invoiceAmountInput.value = formatCurrency(n);
-  });
-}
+// Money input behaviour, applied to every field with class "money-input": raw editable
+// number on focus, formatted as $X,XXX.XX on blur. Delegated (capture phase, since focus/blur
+// don't bubble) so it also covers inputs created dynamically later — breakdown table Tax/Charge
+// cells, the registry Total Amount field, etc — not just the ones present at page load.
+document.addEventListener('focus', (e)=>{
+  const t = e.target;
+  if(!t || !t.classList || !t.classList.contains('money-input')) return;
+  const v = t.value; if(!v) return;
+  const n = parseCurrency(v);
+  if(n !== null) t.value = n.toFixed(2);
+}, true);
+document.addEventListener('blur', (e)=>{
+  const t = e.target;
+  if(!t || !t.classList || !t.classList.contains('money-input')) return;
+  const v = t.value;
+  const n = parseCurrency(v);
+  if(n === null){ t.value = ''; return; }
+  t.value = formatCurrency(n);
+}, true);
 
 qs('#leaseForm').addEventListener('submit', e=>{
   e.preventDefault();
@@ -1524,15 +1741,19 @@ function renderInvoices(){
       if(!list || list.length === 0) return; const inv = list[0];
       const form = qs('#invoiceForm'); if(!form) return;
       form.dataset.editing = inv.id;
-      const leaseSel = form.querySelector('#invoiceLease'); if(leaseSel) leaseSel.value = inv.lease || '';
+      if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions(inv.lease ? [inv.lease] : []);
       const s = qs('#invoiceSupplier'); if(s) s.value = inv.supplier || '';
       const c = qs('#invoiceCompany'); if(c) c.value = inv.company || '';
       const a = qs('#invoiceArrangement'); if(a) a.value = inv.arrangement || '';
+      const invField = qs('#invoiceInvoicing'); if(invField) invField.value = inv.invoicing || '';
       const cat = form.querySelector('#invoiceCategory'); if(cat) cat.value = inv.category || '';
       if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(inv.lease, [inv.unit]);
       const wd = form.querySelector('#invoiceWD'); if(wd) wd.value = inv.wdNumber || '';
       const doc = form.querySelector('#invoiceDoc'); if(doc) doc.value = inv.docNumber || '';
-      const amt = form.querySelector('#invoiceAmount'); if(amt) amt.value = inv.amount || '';
+      // Declared Amount now represents Charge + Tax for the selected unit(s)
+      const amt = form.querySelector('#invoiceAmount');
+      if(amt){ const chargeN = parseCurrency(inv.amount||'') || 0; const taxN = parseCurrency(inv.taxAmount||'') || 0; amt.value = (chargeN + taxN).toFixed(2); }
+      if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown({ [inv.unit]: { charge: inv.amount || '', tax: inv.taxAmount || '' } });
       const ps = form.querySelector('#invoicePeriodStart'); if(ps) ps.value = inv.periodStart || '';
       const pe = form.querySelector('#invoicePeriodEnd'); if(pe) pe.value = inv.periodEnd || '';
       const sub = form.querySelector('#invoiceSubmitted'); if(sub) sub.value = inv.submittedDate || new Date().toISOString().slice(0,10);
@@ -1651,6 +1872,78 @@ function renderInvoices(){
 
 
 
+// Read-only sortable Company/UnitId/Lease/Cost Center/Tax/Charge detail table for a registry's
+// expanded view, built from its stored unitDetails snapshot (captured at registration time so
+// it survives reloads, since individual invoice records are not themselves persisted).
+function renderRegistryUnitDetailTable(container, unitDetails){
+  container.innerHTML = '';
+  if(!Array.isArray(unitDetails) || unitDetails.length === 0) return false;
+
+  const sortCol = container.dataset.sortCol || '';
+  const sortDir = container.dataset.sortDir || 'asc';
+  const columns = [
+    { key:'company', label:'Company', width:130 },
+    { key:'unit', label:'UnitId', width:100 },
+    { key:'lease', label:'Lease', width:100 },
+    { key:'costCenter', label:'Cost Center', width:110 },
+    { key:'tax', label:'Tax Amount', width:110 },
+    { key:'charge', label:'Charge Amount', width:110 }
+  ];
+
+  let rows = unitDetails.slice();
+  if(sortCol){
+    const isNumeric = sortCol === 'tax' || sortCol === 'charge';
+    rows.sort((a,b) => {
+      if(isNumeric){
+        const av = parseFloat(a[sortCol]) || 0; const bv = parseFloat(b[sortCol]) || 0;
+        return sortDir === 'asc' ? av - bv : bv - av;
+      }
+      const av = (a[sortCol]||'').toString().toLowerCase(); const bv = (b[sortCol]||'').toString().toLowerCase();
+      if(av < bv) return sortDir === 'asc' ? -1 : 1;
+      if(av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
+  columns.forEach(col => {
+    const d = document.createElement('div');
+    d.textContent = col.label + (sortCol === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+    d.style.cssText = `flex:0 0 ${col.width}px;cursor:pointer;user-select:none;`;
+    d.title = 'Click to sort';
+    d.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const newDir = (container.dataset.sortCol === col.key && container.dataset.sortDir === 'asc') ? 'desc' : 'asc';
+      container.dataset.sortCol = col.key; container.dataset.sortDir = newDir;
+      renderRegistryUnitDetailTable(container, unitDetails);
+    });
+    header.appendChild(d);
+  });
+  container.appendChild(header);
+
+  let totalCharge = 0, totalTax = 0;
+  rows.forEach(d => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
+    const mkCell = (text, w) => { const c = document.createElement('div'); c.textContent = text; c.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return c; };
+    row.appendChild(mkCell(d.company||'', 130));
+    row.appendChild(mkCell(d.unit||'', 100));
+    row.appendChild(mkCell(d.lease||'', 100));
+    row.appendChild(mkCell(d.costCenter||'', 110));
+    row.appendChild(mkCell(formatCurrency(d.tax||'0'), 110));
+    row.appendChild(mkCell(formatCurrency(d.charge||'0'), 110));
+    container.appendChild(row);
+    totalTax += parseFloat(d.tax)||0; totalCharge += parseFloat(d.charge)||0;
+  });
+
+  const totalRow = document.createElement('div');
+  totalRow.style.cssText = 'text-align:right;padding:8px 4px 2px;font-size:13px;font-weight:700;color:#374151;';
+  totalRow.textContent = 'Total (Charge + Tax): ' + formatCurrency((totalCharge+totalTax).toFixed(2));
+  container.appendChild(totalRow);
+  return true;
+}
+
 // Render registry of grouped submissions (registries created when multiple units are submitted under a WD)
 function renderRegistries(keepOpenRegistryId){
   const wrap = qs('#registryList'); if(!wrap) return; 
@@ -1670,9 +1963,73 @@ function renderRegistries(keepOpenRegistryId){
     openRegistries.add(keepOpenRegistryId);
   }
   
+  // Registry menu panels (Edit/Delete) are appended to document.body so they can float over
+  // everything; they must be cleaned up explicitly before each re-render or they accumulate
+  // (and stay visible/stuck) across every renderRegistries() call.
+  document.querySelectorAll('.menu-panel').forEach(el => el.remove());
+
+  // One delegated listener (registered once) closes any open registry menu when clicking
+  // elsewhere, instead of adding a new document-level listener per row on every render.
+  if(!window.__agi_registryMenuOutsideClickInit){
+    window.__agi_registryMenuOutsideClickInit = true;
+    document.addEventListener('click', (e) => {
+      if(e.target.closest('.menu-panel') || e.target.closest('.registry-menu-btn')) return;
+      document.querySelectorAll('.menu-panel').forEach(p => p.style.display = 'none');
+    });
+  }
+
+  // Wire the registry search bar (comma = OR, semicolon = AND — see parseSearchGroups)
+  state.meta = state.meta || {};
+  state.meta.registrySearch = state.meta.registrySearch || '';
+  const registrySearchInput = qs('#registrySearchInput');
+  const registrySearchBtn = qs('#registrySearchBtn');
+  if(registrySearchInput && !registrySearchInput.dataset.wired){
+    registrySearchInput.dataset.wired = 'true';
+    registrySearchInput.value = state.meta.registrySearch;
+    registrySearchInput.addEventListener('input', () => {
+      if(registrySearchInput.value === ''){
+        state.meta.registrySearch = '';
+        try{ saveState(); }catch(e){}
+        renderRegistries();
+      }
+    });
+    registrySearchInput.addEventListener('keypress', (e) => {
+      if(e.key === 'Enter'){
+        state.meta.registrySearch = registrySearchInput.value;
+        try{ saveState(); }catch(e){}
+        renderRegistries();
+      }
+    });
+    if(registrySearchBtn){
+      registrySearchBtn.addEventListener('click', () => {
+        state.meta.registrySearch = registrySearchInput.value;
+        try{ saveState(); }catch(e){}
+        renderRegistries();
+      });
+    }
+  }
+
   wrap.innerHTML = '';
-  const regs = (state.registries || []).slice();
-  if(regs.length === 0){ const em = document.createElement('div'); em.className = 'small-muted'; em.textContent = 'No registries yet.'; wrap.appendChild(em); return; }
+  let regs = (state.registries || []).slice();
+  const hadAnyRegistries = regs.length > 0;
+  const registrySearchGroups = parseSearchGroups(state.meta.registrySearch);
+  if(registrySearchGroups.length > 0){
+    regs = regs.filter(r => {
+      const wd = (r.wdNumber || '').toString().toLowerCase();
+      const doc = (r.docNumber || '').toString().toLowerCase();
+      const category = (r.category || '').toString().toLowerCase();
+      const leases = Array.isArray(r.leases) && r.leases.length ? r.leases.join(' ') : (r.lease || '').toString();
+      const units = Array.isArray(r.units) ? r.units.join(' ') : '';
+      const comments = Array.isArray(r.comments) ? r.comments.map(c => (c.text||'').toString()).join(' ') : '';
+      return matchesSearchGroups(registrySearchGroups, [wd, doc, category, leases.toLowerCase(), units.toLowerCase(), comments.toLowerCase()]);
+    });
+  }
+  if(regs.length === 0){
+    const em = document.createElement('div'); em.className = 'small-muted';
+    em.textContent = hadAnyRegistries ? 'No registries match your search.' : 'No registries yet.';
+    wrap.appendChild(em);
+    return;
+  }
 
   // show newest-first
   for(let i = regs.length - 1; i >= 0; i--){
@@ -1822,24 +2179,17 @@ function renderRegistries(keepOpenRegistryId){
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       const isOpen = menuPanel.style.display === 'block';
-      // Close all other menus
-      document.querySelectorAll('.registry-row .menu-panel').forEach(p => p.style.display = 'none');
+      // Close all other menus (they're body-level, not nested under .registry-row)
+      document.querySelectorAll('.menu-panel').forEach(p => p.style.display = 'none');
       menuPanel.style.display = isOpen ? 'none' : 'block';
-      
+
       if(!isOpen){
         const rect = menuBtn.getBoundingClientRect();
         menuPanel.style.top = (rect.bottom + window.scrollY) + 'px';
         menuPanel.style.left = (rect.left + window.scrollX) + 'px';
       }
     });
-    
-    // Close menu when clicking outside
-    document.addEventListener('click', (e) => {
-      if(!menuPanel.contains(e.target) && e.target !== menuBtn){
-        menuPanel.style.display = 'none';
-      }
-    });
-    
+    menuBtn.className = 'registry-menu-btn';
     menuPanel.className = 'menu-panel';
     const menuContainer = document.createElement('div');
     menuContainer.style.position = 'relative';
@@ -1854,7 +2204,16 @@ function renderRegistries(keepOpenRegistryId){
     row.appendChild(title);
 
     const details = document.createElement('div'); details.className = 'registry-details'; details.style.display = 'none'; details.style.marginTop = '8px'; details.style.fontSize = '13px'; details.style.color = '#374151';
-    const unitsList = document.createElement('div'); unitsList.innerHTML = '<strong>Units:</strong> ' + (Array.isArray(r.units) ? escapeHtml((r.units||[]).join(', ')) : '');
+    const unitsList = document.createElement('div');
+    if(Array.isArray(r.unitDetails) && r.unitDetails.length){
+      const unitsLabel = document.createElement('div'); unitsLabel.innerHTML = '<strong>Units:</strong>'; unitsLabel.style.marginBottom = '4px';
+      unitsList.appendChild(unitsLabel);
+      const detailTableEl = document.createElement('div'); detailTableEl.className = 'registry-unit-detail-table';
+      unitsList.appendChild(detailTableEl);
+      renderRegistryUnitDetailTable(detailTableEl, r.unitDetails);
+    } else {
+      unitsList.innerHTML = '<strong>Units:</strong> ' + (Array.isArray(r.units) ? escapeHtml((r.units||[]).join(', ')) : '');
+    }
     const period = document.createElement('div'); period.innerHTML = `<strong>Period:</strong> ${escapeHtml(formatDate(r.periodStart))} — ${escapeHtml(formatDate(r.periodEnd))}`;
     const submitted = document.createElement('div'); submitted.innerHTML = `<strong>Submitted:</strong> ${escapeHtml(formatDate(r.submittedDate))} <span class="small-muted">(created ${new Date(r.createdAt||'').toLocaleString()})</span>`;
     
@@ -1867,18 +2226,25 @@ function renderRegistries(keepOpenRegistryId){
     let invoicing = '';
     
     // Prefer details from the selected lease on the registry
-    const leaseKey = (r.lease||'').toString().trim().toLowerCase();
-    const matchedLease = (state.leases||[]).find(l => {
-      const key = (l.leaseNumber || l.id || '').toString().trim().toLowerCase();
-      return key === leaseKey;
-    });
-    if(matchedLease){
-      supplier = matchedLease.supplier || '';
-      company = matchedLease.company || '';
-      arrangement = matchedLease.arrangement || '';
-      invoicing = matchedLease.invoicing || '';
+    // A registry can span multiple leases; show a value when every lease agrees, "(multiple)" otherwise.
+    const registryLeaseList = Array.isArray(r.leases) && r.leases.length ? r.leases : ((r.lease||'').toString().split(',').map(s=>s.trim()).filter(Boolean));
+    const matchedLeaseRecs = registryLeaseList.map(lv => {
+      const key = (lv||'').toString().trim().toLowerCase();
+      return (state.leases||[]).find(l => (l.leaseNumber || l.id || '').toString().trim().toLowerCase() === key);
+    }).filter(Boolean);
+    function distinctLeaseField(getter){
+      const distinct = Array.from(new Set(matchedLeaseRecs.map(getter).map(v=>(v||'').toString()).filter(v=>v!=='')));
+      if(distinct.length === 0) return '';
+      if(distinct.length === 1) return distinct[0];
+      return '(multiple)';
     }
-    
+    if(matchedLeaseRecs.length){
+      supplier = distinctLeaseField(l => l.supplier);
+      company = distinctLeaseField(l => l.company);
+      arrangement = distinctLeaseField(l => l.arrangement);
+      invoicing = distinctLeaseField(l => l.invoicing);
+    }
+
     // Fallback: Find matching invoice to get category if registry doesn't have it
     const matchingInvoice = (state.invoices || []).find(inv => {
       const invWd = (inv.wdNumber || '').toString().trim().toLowerCase();
@@ -1887,8 +2253,8 @@ function renderRegistries(keepOpenRegistryId){
     });
     if(matchingInvoice){
       if(!category) category = matchingInvoice.category || '';
-      // If lease not matched (rare), use invoice fields as last resort
-      if(!matchedLease){
+      // If no lease matched (rare), use invoice fields as last resort
+      if(matchedLeaseRecs.length === 0){
         supplier = supplier || (matchingInvoice.supplier || '');
         company = company || (matchingInvoice.company || '');
         arrangement = arrangement || (matchingInvoice.arrangement || '');
@@ -3069,6 +3435,9 @@ qs('#userCancelBtn').addEventListener('click', ()=>{
 // invoice cancel button: clear editing state and reset form
 const invCancelBtn = qs('#invoiceCancelBtn'); if(invCancelBtn){ invCancelBtn.addEventListener('click', ()=>{
   const form = qs('#invoiceForm'); if(!form) return; form.reset(); delete form.dataset.editing; const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice'; invCancelBtn.style.display = 'none'; const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+  const unitToggle = qs('#invoiceUnitToggle'); if(unitToggle) unitToggle.textContent = 'Select units';
+  const leaseToggle = qs('#invoiceLeaseToggle'); if(leaseToggle) leaseToggle.textContent = 'Select leases';
+  if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
 }); }
 
 // Shared multi-term search parsing, used by every search bar in the app.
@@ -3343,7 +3712,7 @@ function startAutoRefresh(){
       }));
 
       const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
-      ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
+      ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch','registrySearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
       ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ /* already parsed */ }
@@ -4408,6 +4777,21 @@ function renderUnitOverview(){
   el.appendChild(table);
 }
 
+// A registry can now span multiple leases (stored in reg.leases); fall back to the legacy
+// single reg.lease string for older registries that predate that field.
+function registryHasLease(reg, leaseKeyLower){
+  if(!reg) return false;
+  if(Array.isArray(reg.leases) && reg.leases.length){
+    return reg.leases.some(l => (l||'').toString().trim().toLowerCase() === leaseKeyLower);
+  }
+  return (reg.lease||'').toString().trim().toLowerCase() === leaseKeyLower;
+}
+function registryHasAnyLease(reg){
+  if(!reg) return false;
+  if(Array.isArray(reg.leases) && reg.leases.length) return true;
+  return (reg.lease||'').toString().trim() !== '';
+}
+
 // Render a minimal Lease Overview placeholder
 function renderLeaseOverview(){
   const el = qs('#leaseOverview'); if(!el) return;
@@ -4742,10 +5126,9 @@ function renderLeaseOverview(){
       // First, check registries that have a lease field matching this lease
       registries.forEach(reg => {
         if(!reg) return;
-        const regLease = (reg.lease || '').toString().trim().toLowerCase();
         const leaseNum = (lease.leaseNumber || '').toString().trim().toLowerCase();
-        
-        if(regLease === leaseNum && regLease !== ''){
+
+        if(registryHasLease(reg, leaseNum)){
           // Check if registry has Rental category
           let category = '';
           if(reg.category){
@@ -4795,8 +5178,7 @@ function renderLeaseOverview(){
         // Check if this invoice has a matching registry with a lease field
         const matchingRegistry = registries.find(reg => {
           const regWd = (reg.wdNumber || '').toString().trim().toLowerCase();
-          const regLease = (reg.lease || '').toString().trim().toLowerCase();
-          return regWd === invWd && regLease !== '';
+          return regWd === invWd && registryHasAnyLease(reg);
         });
         
         // Skip if registry with lease field was already processed
@@ -4924,8 +5306,7 @@ function openLeaseOverviewInfo(lease){
 
   // Registries for this lease overlapping selected month
   const registries = (state.registries||[]).filter(r => {
-    const rLease = (r.lease||'').toString().trim().toLowerCase();
-    return rLease === leaseKey && overlapsSelectedMonth(r.periodStart, r.periodEnd);
+    return registryHasLease(r, leaseKey) && overlapsSelectedMonth(r.periodStart, r.periodEnd);
   });
   function getRegistryCategory(reg){
     if(reg.category) return (reg.category||'').toString().trim().toLowerCase();
@@ -4939,7 +5320,7 @@ function openLeaseOverviewInfo(lease){
 
   // Standalone invoices overlapping selected month, not covered by registry with lease
   const regWdWithLease = new Set((state.registries||[])
-    .filter(r => (r.lease||'').toString().trim().toLowerCase() !== '')
+    .filter(r => registryHasAnyLease(r))
     .map(r => (r.wdNumber||'').toString().trim().toLowerCase()));
   const invoices = (state.invoices||[]).filter(inv => {
     const invLease = (inv.lease||'').toString().trim().toLowerCase();
@@ -7558,29 +7939,95 @@ function syncRegistryCategoryOptions(){
 }
 
 // Populate registry edit lease select
-function syncRegistryLeaseOptions(){
-  const sel = qs('#editRegistryLease'); if(!sel) return;
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">Select Lease</option>';
-  (state.leases || []).forEach(l=>{
-    const status = (l.status || 'Enabled').toString().toLowerCase();
-    if(status === 'disabled') return;
-    const opt = document.createElement('option');
-    opt.value = l.leaseNumber || l.id;
-    opt.textContent = l.leaseNumber || l.id;
-    sel.appendChild(opt);
-  });
-  if(cur) sel.value = cur;
+// Multi-select lease picker for the Registry Edit modal (a registry can span multiple leases).
+function getSelectedRegistryLeases(){
+  const panel = qs('#editRegistryLeasePanel'); if(!panel) return [];
+  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="editRegistryLease"]:checked')).map(cb => cb.value);
+}
+function getSelectedRegistryUnits(){
+  const container = qs('#editRegistryUnits'); if(!container) return [];
+  return Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+}
+function renderRegistryUnitBreakdown(seed){
+  renderUnitBreakdownTable('registryUnitBreakdown', getSelectedRegistryUnits(), 'editRegistryAmount', seed);
 }
 
-// Populate registry edit units select based on lease
-function syncRegistryUnitOptions(leaseVal, selectedUnits){
+// Renders as an always-visible bordered checkbox list (same format as the Units box below it),
+// with its own search box, rather than a toggle + floating dropdown.
+function syncRegistryLeaseOptions(selectedValues){
+  selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s=>String(s)) : (selectedValues ? [String(selectedValues)] : getSelectedRegistryLeases());
+  const panel = qs('#editRegistryLeasePanel');
+  if(!panel) return;
+
+  const leases = (state.leases || []).filter(l => {
+    const status = (l.status || 'Enabled').toString().toLowerCase();
+    return status !== 'disabled';
+  });
+
+  panel.innerHTML = '';
+  if(leases.length === 0){ const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no leases available)'; panel.appendChild(none); return; }
+
+  leases.forEach(l => {
+    const val = (l.leaseNumber || l.id || '').toString();
+    const label = document.createElement('label');
+    label.className = 'edit-registry-lease-row';
+    label.setAttribute('data-lease-id', val.toLowerCase());
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.gap = '8px';
+    label.style.cursor = 'pointer';
+    label.style.padding = '4px';
+    label.style.borderRadius = '4px';
+    label.style.transition = 'background 0.2s';
+
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'editRegistryLease'; cb.value = val; cb.style.cursor = 'pointer';
+    if(selectedValues.length && selectedValues.indexOf(val) !== -1) cb.checked = true;
+    const text = document.createElement('span'); text.textContent = val; text.style.fontSize = '13px';
+
+    label.appendChild(cb); label.appendChild(text);
+    label.addEventListener('mouseenter', () => { label.style.background = '#f3f6fb'; });
+    label.addEventListener('mouseleave', () => { label.style.background = 'transparent'; });
+    cb.addEventListener('change', ()=>{ onRegistryLeaseSelectionChange(); });
+
+    panel.appendChild(label);
+  });
+
+  // Wire the search box once; it filters whatever rows are currently rendered
+  const searchBox = qs('#editRegistryLeaseSearch');
+  if(searchBox && !searchBox.dataset.wired){
+    searchBox.dataset.wired = 'true';
+    searchBox.addEventListener('input', () => {
+      const term = searchBox.value.toLowerCase().trim();
+      const rows = qs('#editRegistryLeasePanel') ? qs('#editRegistryLeasePanel').querySelectorAll('.edit-registry-lease-row') : [];
+      rows.forEach(row => {
+        const lid = row.getAttribute('data-lease-id') || '';
+        row.style.display = (term === '' || lid.includes(term)) ? 'flex' : 'none';
+      });
+    });
+  }
+  if(searchBox && searchBox.value){
+    // Re-apply any active filter after the list has been rebuilt
+    searchBox.dispatchEvent(new Event('input'));
+  }
+}
+
+// When the selected lease set changes, refresh the union of available units and the breakdown.
+function onRegistryLeaseSelectionChange(){
+  const selectedLeases = getSelectedRegistryLeases();
+  const currentlySelectedUnits = getSelectedRegistryUnits();
+  if(typeof syncRegistryUnitOptions === 'function') syncRegistryUnitOptions(selectedLeases, currentlySelectedUnits);
+  if(typeof renderRegistryUnitBreakdown === 'function') renderRegistryUnitBreakdown();
+}
+
+// Populate registry edit units checkboxes based on the union of selected leases
+function syncRegistryUnitOptions(leaseVals, selectedUnits){
   const container = qs('#editRegistryUnits'); if(!container) return;
   selectedUnits = Array.isArray(selectedUnits) ? selectedUnits : [];
-  
+  const leaseFilter = Array.isArray(leaseVals) ? leaseVals.filter(Boolean) : (leaseVals ? [leaseVals] : []);
+
   container.innerHTML = '';
-  const units = leaseVal ? (state.units || []).filter(u => u.lease === leaseVal) : (state.units || []);
-  
+  const units = leaseFilter.length === 0 ? (state.units || []) : (state.units || []).filter(u => leaseFilter.indexOf(u.lease) !== -1);
+
   if(units.length === 0){
     const noUnitsMsg = document.createElement('div');
     noUnitsMsg.style.color = '#6b7280';
@@ -7590,11 +8037,13 @@ function syncRegistryUnitOptions(leaseVal, selectedUnits){
     container.appendChild(noUnitsMsg);
     return;
   }
-  
+
   units.forEach(u => {
     const unitId = u.unitId || u.id || '';
-    
+
     const label = document.createElement('label');
+    label.className = 'edit-registry-unit-row';
+    label.setAttribute('data-unit-id', unitId.toString().toLowerCase());
     label.style.display = 'flex';
     label.style.alignItems = 'center';
     label.style.gap = '8px';
@@ -7602,21 +8051,21 @@ function syncRegistryUnitOptions(leaseVal, selectedUnits){
     label.style.padding = '4px';
     label.style.borderRadius = '4px';
     label.style.transition = 'background 0.2s';
-    
+
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.value = unitId;
     checkbox.style.cursor = 'pointer';
     const normalizedSelected = selectedUnits.map(s => String(s).trim().toLowerCase());
     if(normalizedSelected.includes(String(unitId).trim().toLowerCase())) checkbox.checked = true;
-    
+
     const text = document.createElement('span');
     text.textContent = unitId;
     text.style.fontSize = '13px';
-    
+
     label.appendChild(checkbox);
     label.appendChild(text);
-    
+
     // Hover effect
     label.addEventListener('mouseenter', () => {
       label.style.background = '#f3f6fb';
@@ -7624,25 +8073,61 @@ function syncRegistryUnitOptions(leaseVal, selectedUnits){
     label.addEventListener('mouseleave', () => {
       label.style.background = 'transparent';
     });
-    
+
+    checkbox.addEventListener('change', ()=>{ if(typeof renderRegistryUnitBreakdown === 'function') renderRegistryUnitBreakdown(); });
+
     container.appendChild(label);
   });
+
+  // Wire the search box once; it filters whatever rows are currently rendered
+  const searchBox = qs('#editRegistryUnitSearch');
+  if(searchBox && !searchBox.dataset.wired){
+    searchBox.dataset.wired = 'true';
+    searchBox.addEventListener('input', () => {
+      const term = searchBox.value.toLowerCase().trim();
+      const rows = qs('#editRegistryUnits') ? qs('#editRegistryUnits').querySelectorAll('.edit-registry-unit-row') : [];
+      rows.forEach(row => {
+        const uid = row.getAttribute('data-unit-id') || '';
+        row.style.display = (term === '' || uid.includes(term)) ? 'flex' : 'none';
+      });
+    });
+  }
+  if(searchBox && searchBox.value){
+    // Re-apply any active filter after the list has been rebuilt (e.g. lease selection changed)
+    searchBox.dispatchEvent(new Event('input'));
+  }
 }
 
 function openRegistryEditModal(registry){
   const modal = qs('#registryEditModal');
   if(!modal) return;
-  
-  // Get lease from registry.lease or from registry's first unit
-  let registryLease = registry.lease || '';
-  if(!registryLease){
+
+  // Clear any leftover breakdown rows/sort-state from a previously edited registry so its
+  // Tax/Charge values can't leak in as false "existing" data ahead of this registry's own seed.
+  const breakdownWrap = qs('#registryUnitBreakdown');
+  if(breakdownWrap){
+    breakdownWrap.innerHTML = '';
+    delete breakdownWrap.dataset.sortCol;
+    delete breakdownWrap.dataset.sortDir;
+  }
+  const unitSearchBox = qs('#editRegistryUnitSearch');
+  if(unitSearchBox) unitSearchBox.value = '';
+  const leaseSearchBox = qs('#editRegistryLeaseSearch');
+  if(leaseSearchBox) leaseSearchBox.value = '';
+
+  // A registry can span multiple leases; fall back to the legacy single lease string,
+  // and further to the first unit's lease for very old registries that predate both.
+  let registryLeases = Array.isArray(registry.leases) && registry.leases.length
+    ? registry.leases.slice()
+    : (registry.lease || '').toString().split(',').map(s=>s.trim()).filter(Boolean);
+  if(registryLeases.length === 0){
     const registryUnits = Array.isArray(registry.units) ? registry.units : [];
     if(registryUnits.length > 0){
       const firstUnit = (state.units || []).find(u => (u.unitId || u.id) === registryUnits[0]);
-      if(firstUnit) registryLease = firstUnit.lease || '';
+      if(firstUnit && firstUnit.lease) registryLeases = [firstUnit.lease];
     }
   }
-  
+
   // Check user role for lease field restriction
   const session = currentSession();
   let userRole = 'Operator'; // default
@@ -7653,109 +8138,49 @@ function openRegistryEditModal(registry){
       userRole = u ? (u.role || 'Operator') : 'Operator';
     }
   }
-  
-  // Set the lease value first, then sync dropdown options
-  const leaseSelect = qs('#editRegistryLease');
-  if(leaseSelect) leaseSelect.value = registryLease;
-  
+
   // Set category value before sync so it can be preserved
   const categorySelect = qs('#editRegistryCategory');
   if(categorySelect) categorySelect.value = registry.category || '';
-  
+
   // Sync dropdown options
   if(typeof syncRegistryCategoryOptions === 'function') syncRegistryCategoryOptions();
-  if(typeof syncRegistryLeaseOptions === 'function') syncRegistryLeaseOptions();
-  
+  syncRegistryLeaseOptions(registryLeases);
+
   // Populate form fields
   qs('#editRegistryId').value = registry.id || '';
   qs('#editRegistryWD').value = registry.wdNumber || '';
   qs('#editRegistryDoc').value = registry.docNumber || '';
   qs('#editRegistryAmount').value = registry.totalAmount || '';
-  
+
   // Re-set category value after sync to ensure it's selected
   if(categorySelect) categorySelect.value = registry.category || '';
-  
-  // Re-set lease value after sync to ensure it's selected
-  if(leaseSelect) {
-    leaseSelect.value = registryLease;
-    
-    // Disable lease select for Operator role
-    if(userRole === 'Operator'){
-      leaseSelect.disabled = true;
-      leaseSelect.style.backgroundColor = '#f5f5f5';
-      leaseSelect.style.cursor = 'not-allowed';
-      leaseSelect.style.color = '#6b7280';
-    } else {
-      leaseSelect.disabled = false;
-      leaseSelect.style.backgroundColor = '';
-      leaseSelect.style.cursor = '';
-      leaseSelect.style.color = '';
-    }
+
+  // Disable the lease picker for Operator role
+  const leasePanel = qs('#editRegistryLeasePanel');
+  const leaseSearch = qs('#editRegistryLeaseSearch');
+  const isOperator = (userRole === 'Operator');
+  if(leasePanel) leasePanel.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.disabled = isOperator; });
+  if(leaseSearch){
+    leaseSearch.disabled = isOperator;
+    leaseSearch.style.backgroundColor = isOperator ? '#f5f5f5' : '';
+    leaseSearch.style.cursor = isOperator ? 'not-allowed' : '';
   }
-  
-  if(typeof syncRegistryUnitOptions === 'function') syncRegistryUnitOptions(registryLease, Array.isArray(registry.units) ? registry.units : []);
-  
+
+  syncRegistryUnitOptions(registryLeases, Array.isArray(registry.units) ? registry.units : []);
+
   qs('#editRegistryPeriodStart').value = registry.periodStart || '';
   qs('#editRegistryPeriodEnd').value = registry.periodEnd || '';
   qs('#editRegistrySubmitted').value = registry.submittedDate || '';
-  
-  // Add lease change handler - use the existing element, no cloneNode
-  if(leaseSelect){
-    // Re-apply role restriction
-    if(userRole === 'Operator'){
-      leaseSelect.disabled = true;
-      leaseSelect.style.backgroundColor = '#f5f5f5';
-      leaseSelect.style.cursor = 'not-allowed';
-      leaseSelect.style.color = '#6b7280';
-    }
-    
-    // initial render of lease info panel
-    try{ updateRegistryLeaseInfoPanel(registryLease); }catch(e){}
 
-    // Remove old listeners by replacing with fresh element only for event
-    const freshLeaseSelect = leaseSelect.cloneNode(true);
-    leaseSelect.parentNode.replaceChild(freshLeaseSelect, leaseSelect);
-    freshLeaseSelect.value = registryLease;
-    if(userRole === 'Operator'){
-      freshLeaseSelect.disabled = true;
-      freshLeaseSelect.style.backgroundColor = '#f5f5f5';
-    }
-
-    freshLeaseSelect.addEventListener('change', () => {
-      const container = qs('#editRegistryUnits');
-      const currentlySelected = container ? Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value) : [];
-      if(typeof syncRegistryUnitOptions === 'function') syncRegistryUnitOptions(freshLeaseSelect.value, currentlySelected);
-      try{ updateRegistryLeaseInfoPanel(freshLeaseSelect.value); }catch(e){}
-    });
-  }
-  
-  modal.style.display = 'block';
-}
-
-// Render selected lease info in Registry Edit modal
-function updateRegistryLeaseInfoPanel(leaseVal){
-  const panel = qs('#registryLeaseInfoPanel');
-  const content = qs('#registryLeaseInfoContent');
-  if(!panel || !content) return;
-  const leaseValNorm = (leaseVal||'').toString().trim().toLowerCase();
-  const lease = (state.leases||[]).find(l => {
-    const key = (l.leaseNumber || l.id || '').toString().trim().toLowerCase();
-    return key === leaseValNorm;
+  // Seed the editable breakdown table from this registry's stored per-unit detail
+  const seedFromDetails = {};
+  (Array.isArray(registry.unitDetails) ? registry.unitDetails : []).forEach(d => {
+    if(d && d.unit) seedFromDetails[d.unit] = { tax: d.tax || '', charge: d.charge || '' };
   });
-  if(!lease){ panel.style.display = 'none'; content.innerHTML=''; return; }
-  const status = lease.status || 'Enabled';
-  const disabledDate = lease.disabledDate || '';
-  const enabledDate = lease.enabledDate || '';
-  const parts = [
-    `<strong>Lease:</strong> ${escapeHtml(lease.leaseNumber||lease.id||'')}`,
-    `<strong>Company:</strong> ${escapeHtml(lease.company||'')}`,
-    `<strong>Supplier:</strong> ${escapeHtml(lease.supplier||'')}`,
-    `<strong>Arrangement:</strong> ${escapeHtml(lease.arrangement||'')}`,
-    `<strong>Invoicing:</strong> ${escapeHtml(lease.invoicing||'')}`,
-    `<strong>Status:</strong> ${escapeHtml(status)}${status==='Disabled' && disabledDate ? ' — Disabled: '+escapeHtml(disabledDate) : (status==='Enabled' && enabledDate ? ' — Enabled: '+escapeHtml(enabledDate) : '')}`
-  ];
-  content.innerHTML = parts.join('<br>');
-  panel.style.display = 'block';
+  renderRegistryUnitBreakdown(seedFromDetails);
+
+  modal.style.display = 'block';
 }
 
 function openRegistryCommentModal(registry){
@@ -7800,6 +8225,9 @@ if(registryEditCancelBtn){
   registryEditCancelBtn.addEventListener('click', closeRegistryEditModal);
 }
 
+const editRegistryAmountField = qs('#editRegistryAmount');
+if(editRegistryAmountField) editRegistryAmountField.addEventListener('input', ()=> updateUnitBreakdownTotal('registryUnitBreakdown'));
+
 const registryEditSaveBtn = qs('#registryEditSaveBtn');
 if(registryEditSaveBtn){
   registryEditSaveBtn.addEventListener('click', async () => {
@@ -7808,21 +8236,89 @@ if(registryEditSaveBtn){
     console.log('Registry save - ID:', registryId, 'Found:', !!registry);
     if(!registry){ alert('Registry not found - please close and reopen the edit modal'); return; }
 
-    // Update registry fields
-    registry.wdNumber = qs('#editRegistryWD').value.trim();
-    registry.docNumber = qs('#editRegistryDoc').value.trim();
-    registry.totalAmount = qs('#editRegistryAmount').value.trim();
-    registry.lease = qs('#editRegistryLease').value.trim();
-    registry.category = qs('#editRegistryCategory').value.trim();
-    registry.periodStart = qs('#editRegistryPeriodStart').value.trim();
-    registry.periodEnd = qs('#editRegistryPeriodEnd').value.trim();
-    registry.submittedDate = qs('#editRegistrySubmitted').value.trim();
+    // Read the new field values without mutating the registry yet, so a blocked
+    // (mismatched-total) save leaves the in-memory registry untouched.
+    const newWd = qs('#editRegistryWD').value.trim();
+    const newDoc = qs('#editRegistryDoc').value.trim();
+    const newTotalAmount = qs('#editRegistryAmount').value.trim();
+    const newCategory = qs('#editRegistryCategory').value.trim();
+    const newPeriodStart = qs('#editRegistryPeriodStart').value.trim();
+    const newPeriodEnd = qs('#editRegistryPeriodEnd').value.trim();
+    const newSubmittedDate = qs('#editRegistrySubmitted').value.trim();
+    const newUnits = getSelectedRegistryUnits();
+    const selectedLeases = getSelectedRegistryLeases();
 
-    // Get selected units from checkboxes
-    const unitsContainer = qs('#editRegistryUnits');
-    const checkedBoxes = unitsContainer ? Array.from(unitsContainer.querySelectorAll('input[type="checkbox"]:checked')) : [];
-    registry.units = checkedBoxes.map(cb => String(cb.value).trim()).filter(v => v);
-    registry.unitCount = registry.units.length;
+    // The per-unit Charge + Tax breakdown must add up to the declared Total Amount.
+    renderRegistryUnitBreakdown();
+    if(!unitBreakdownMatches('registryUnitBreakdown')){
+      alert('The sum of Charge Amount + Tax Amount for the selected units must equal the Total Amount. Edit not saved.');
+      return;
+    }
+
+    const oldWd = registry.wdNumber;
+    const breakdownData = getUnitBreakdownRowsData('registryUnitBreakdown');
+    const newUnitDetails = [];
+    const uniqueLeasesSet = new Set();
+
+    newUnits.forEach(uid => {
+      const resolved = resolveInvoiceUnitLeaseInfo(uid, selectedLeases);
+      const unitRec = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim() === uid.toString().trim());
+      const rowData = breakdownData[uid] || {};
+      const chargeAmount = (function(){ const n = parseCurrency(rowData.charge||''); return n===null ? '' : n.toFixed(2); })();
+      const taxAmount = (function(){ const n = parseCurrency(rowData.tax||''); return n===null ? '' : n.toFixed(2); })();
+      if(resolved.lease) uniqueLeasesSet.add(resolved.lease);
+      newUnitDetails.push({
+        unit: uid,
+        lease: resolved.lease || '',
+        company: resolved.company || '',
+        supplier: resolved.supplier || '',
+        arrangement: resolved.arrangement || '',
+        invoicing: resolved.invoicing || '',
+        costCenter: unitRec ? (unitRec.costCenter||'') : '',
+        tax: taxAmount,
+        charge: chargeAmount
+      });
+
+      // Reconcile the in-session invoice record for this unit (create if missing, update if present)
+      const existingInv = (state.invoices||[]).find(i => (i.unit||'').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase() && (i.wdNumber||'').toString().trim() === oldWd);
+      const invFields = {
+        wdNumber: newWd, docNumber: newDoc, category: newCategory,
+        periodStart: newPeriodStart, periodEnd: newPeriodEnd, submittedDate: newSubmittedDate,
+        lease: resolved.lease || '', company: resolved.company || '', supplier: resolved.supplier || '',
+        arrangement: resolved.arrangement || '', invoicing: resolved.invoicing || '',
+        amount: chargeAmount, taxAmount: taxAmount
+      };
+      if(existingInv){
+        Object.assign(existingInv, invFields);
+      } else {
+        state.invoices.push(Object.assign({ id: id(), unit: uid, comment: '' }, invFields));
+      }
+    });
+
+    // Remove in-session invoice records for units that were dropped from the registry
+    const newUnitsLower = newUnits.map(u => u.toString().trim().toLowerCase());
+    state.invoices = (state.invoices||[]).filter(inv => {
+      const invWd = (inv.wdNumber||'').toString().trim();
+      const invUnit = (inv.unit||'').toString().trim().toLowerCase();
+      if(invWd !== oldWd) return true; // not part of this registry
+      return newUnitsLower.indexOf(invUnit) !== -1;
+    });
+
+    const uniqueLeases = Array.from(uniqueLeasesSet);
+
+    // All validated — now commit the changes onto the registry itself
+    registry.wdNumber = newWd;
+    registry.docNumber = newDoc;
+    registry.totalAmount = newTotalAmount;
+    registry.category = newCategory;
+    registry.periodStart = newPeriodStart;
+    registry.periodEnd = newPeriodEnd;
+    registry.submittedDate = newSubmittedDate;
+    registry.units = newUnits;
+    registry.unitCount = newUnits.length;
+    registry.unitDetails = newUnitDetails;
+    registry.leases = uniqueLeases;
+    registry.lease = uniqueLeases.join(', ');
 
     // Save to Google Sheets and wait for confirmation before rendering
     const saveBtn = qs('#registryEditSaveBtn');

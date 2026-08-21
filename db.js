@@ -65,11 +65,13 @@ const DB = {
         category: String(r.category || ''),
         totalAmount: String(r.totalAmount || ''),
         lease: String(r.lease || ''),
+        leases: (()=>{ const v = DB.parseField(r.leases); return Array.isArray(v) ? v : []; })(),
         periodStart: String(r.periodStart || ''),
         periodEnd: String(r.periodEnd || ''),
         submittedDate: String(r.submittedDate || ''),
         createdAt: String(r.createdAt || ''),
         units: DB.parseField(r.units),
+        unitDetails: (()=>{ const v = DB.parseField(r.unitDetails); return Array.isArray(v) ? v : []; })(),
         comments: DB.parseField(r.comments) || []
       }));
 
@@ -126,7 +128,7 @@ const DB = {
         { createdAt: new Date().toISOString(), registrySeq: 0 },
         meta
       );
-      const stringFields = ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch'];
+      const stringFields = ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch','registrySearch'];
       stringFields.forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
       const numFields = ['unitOverviewMonth','unitOverviewYear','leaseOverviewMonth','leaseOverviewYear','registrySeq'];
       numFields.forEach(f => { sanitizedMeta[f] = Number(sanitizedMeta[f]) || 0; });
@@ -180,6 +182,8 @@ const DB = {
     const data = {
       ...record,
       units: Array.isArray(record.units) ? JSON.stringify(record.units) : record.units,
+      leases: Array.isArray(record.leases) ? JSON.stringify(record.leases) : (record.leases || '[]'),
+      unitDetails: Array.isArray(record.unitDetails) ? JSON.stringify(record.unitDetails) : (record.unitDetails || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
     return DB.post({ action: 'save', sheet: 'invoices', data });
@@ -189,6 +193,8 @@ const DB = {
     const data = {
       ...record,
       units: Array.isArray(record.units) ? JSON.stringify(record.units) : record.units,
+      leases: Array.isArray(record.leases) ? JSON.stringify(record.leases) : (record.leases || '[]'),
+      unitDetails: Array.isArray(record.unitDetails) ? JSON.stringify(record.unitDetails) : (record.unitDetails || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
     return DB.post({ action: 'update', sheet: 'invoices', id: record.id, data });
