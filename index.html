@@ -150,35 +150,50 @@
             <div class="invoice-form-row">
               <input id="invoiceWD" name="invoiceWD" placeholder="WD Invoice Number">
               <input id="invoiceDoc" name="invoiceDoc" placeholder="Doc Invoice Number">
-            </div>
-            <div class="invoice-form-row">
-              <!-- Lease multi-select: a WD invoice can now span more than one lease -->
-              <div class="unit-dropdown">
-                <button type="button" id="invoiceLeaseToggle" class="dropdown-toggle">Select leases</button>
-                <div id="invoiceLeasePanel" class="dropdown-panel" style="display:none"></div>
-              </div>
+              <input id="invoiceAmount" name="invoiceAmount" class="money-input" inputmode="decimal" placeholder="Amount">
               <select id="invoiceCategory" name="invoiceCategory"><option value="">(select category)</option></select>
               <!-- hidden comment input used by modal editor -->
               <input type="hidden" id="invoiceComment" name="invoiceComment" value="">
-              <input id="invoiceSupplier" name="invoiceSupplier" placeholder="Supplier" readonly>
-              <input id="invoiceCompany" name="invoiceCompany" placeholder="AGI Company" readonly>
-              <input id="invoiceArrangement" name="invoiceArrangement" placeholder="Arrangement" readonly>
-              <input id="invoiceInvoicing" name="invoiceInvoicing" placeholder="Invoicing" readonly>
-              <input id="invoiceAmount" name="invoiceAmount" class="money-input" inputmode="decimal" placeholder="Amount">
               <!-- Period: From / To -->
               <input id="invoicePeriodStart" name="invoicePeriodStart" type="date" placeholder="From">
               <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date" placeholder="To">
               <!-- Submitted date: pre-filled to today's date (editable) -->
               <input id="invoiceSubmitted" name="invoiceSubmitted" type="date">
-              <div class="unit-dropdown">
-                <button type="button" id="invoiceUnitToggle" class="dropdown-toggle">Select units</button>
-                <div id="invoiceUnitPanel" class="dropdown-panel" style="display:none"></div>
+            </div>
+            <!-- Lease and Unit pickers: same box + search-on-top format as the Registry Edit modal -->
+            <div class="invoice-form-row invoice-picker-row">
+              <div class="invoice-picker-col">
+                <div class="invoice-picker-label-row">
+                  <div class="invoice-picker-label">Lease(s)</div>
+                  <button type="button" id="invoiceLeaseClearBtn" class="small-link">Clear</button>
+                </div>
+                <div class="picker-search-wrap">
+                  <input type="text" id="invoiceLeaseSearch" class="picker-search" placeholder="Search leases...">
+                  <button type="button" id="invoiceLeaseSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
+                </div>
+                <div id="invoiceLeasePanel" class="picker-box"></div>
+              </div>
+              <div class="invoice-picker-col">
+                <div class="invoice-picker-label-row">
+                  <div class="invoice-picker-label">Units</div>
+                  <div>
+                    <button type="button" id="invoiceUnitSelectAllBtn" class="small-link">Select all</button>
+                    <button type="button" id="invoiceUnitClearBtn" class="small-link">Clear</button>
+                  </div>
+                </div>
+                <div class="picker-search-wrap">
+                  <input type="text" id="invoiceUnitSearch" class="picker-search" placeholder="Search units...">
+                  <button type="button" id="invoiceUnitSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
+                </div>
+                <div id="invoiceUnitPanel" class="picker-box"></div>
               </div>
             </div>
+            <!-- Lease detail table: informational only, mirrors the selected leases' info -->
+            <div id="invoiceLeaseDetail" class="invoice-unit-breakdown" style="display:none"></div>
             <!-- Per-unit Company/UnitId/Lease/Cost Center + Tax/Charge breakdown; always visible,
                  defaults to a single empty placeholder row until units are selected -->
             <div id="invoiceUnitBreakdown" class="invoice-unit-breakdown"></div>
-            <div class="invoice-form-row">
+            <div class="invoice-form-row invoice-actions-row">
               <!-- Add Comment button (opens modal editor) -->
               <button type="button" id="invoiceCommentBtn" class="btn-primary">Add Comment</button>
               <button type="submit">Add Invoice</button>

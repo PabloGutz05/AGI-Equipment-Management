@@ -484,10 +484,6 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const doc = (fd.get('invoiceDoc') || '').toString().trim();
     const selectedLeases = getSelectedInvoiceLeases();
     const category = (fd.get('invoiceCategory') || '').toString().trim();
-    const supplier = ((qs('#invoiceSupplier') && qs('#invoiceSupplier').value) || fd.get('invoiceSupplier') || '').toString().trim();
-    const company = ((qs('#invoiceCompany') && qs('#invoiceCompany').value) || fd.get('invoiceCompany') || '').toString().trim();
-    const arrangement = ((qs('#invoiceArrangement') && qs('#invoiceArrangement').value) || fd.get('invoiceArrangement') || '').toString().trim();
-    const invoicing = ((qs('#invoiceInvoicing') && qs('#invoiceInvoicing').value) || fd.get('invoiceInvoicing') || '').toString().trim();
     const amountStr = (fd.get('invoiceAmount') || '').toString().trim();
     const amountNum = parseCurrency(amountStr);
     const pStart = (fd.get('invoicePeriodStart') || '').toString().trim();
@@ -509,10 +505,6 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     if(!doc) missing.push('Doc Invoice Number');
     if(selectedLeases.length === 0) missing.push('Lease');
     if(!category) missing.push('Category');
-    if(!company) missing.push('Company');
-    if(!supplier) missing.push('Supplier');
-    if(!arrangement) missing.push('Arrangement');
-    if(!invoicing) missing.push('Invoicing');
     // Amount validation: allow negative only for Credit category, require positive otherwise
     const isCreditCategory = (category || '').toString().trim().toLowerCase() === 'credit';
     if(amountNum === null || Number.isNaN(Number(amountNum))) {
@@ -613,7 +605,8 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const editRowData = getInvoiceBreakdownRowsData()[unitVal] || {};
     const editCharge = (function(){ const n = parseCurrency(editRowData.charge||''); return n===null ? '' : n.toFixed(2); })();
     const editTax = (function(){ const n = parseCurrency(editRowData.tax||''); return n===null ? '' : n.toFixed(2); })();
-    const invoiceObj = Object.assign({}, baseInvoice, resolvedInfo, { id: editingId, unit: unitVal, amount: editCharge, taxAmount: editTax });
+    const editOther = (function(){ const n = parseCurrency(editRowData.other||''); return n===null ? '' : n.toFixed(2); })();
+    const invoiceObj = Object.assign({}, baseInvoice, resolvedInfo, { id: editingId, unit: unitVal, amount: editCharge, taxAmount: editTax, otherCharges: editOther });
     state.invoices = state.invoices.map(inv => inv.id === editingId ? Object.assign({}, inv, invoiceObj, {id: editingId}) : inv);
     // If there is a registry for this WD/Doc pair, recompute its leases from the leases
     // now used by its member units (a registry can span multiple leases)
@@ -646,6 +639,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
           invoicing: resolvedInfo.invoicing || '',
           costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
           tax: editTax,
+          other: editOther,
           charge: editCharge
         };
         if(detailIdx !== -1) details[detailIdx] = newDetail; else details.push(newDetail);
@@ -660,13 +654,11 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const invCancel = qs('#invoiceCancelBtn'); if(invCancel) invCancel.style.display = 'none';
     const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
     
-    // Reset unit selection toggle button
-    const unitToggle = qs('#invoiceUnitToggle');
-    if(unitToggle) unitToggle.textContent = 'Select units';
-
-    // Reset lease selection toggle button
-    const leaseToggle = qs('#invoiceLeaseToggle');
-    if(leaseToggle) leaseToggle.textContent = 'Select leases';
+    // Clear any active search filters on the lease/unit pickers and hide the (now empty)
+    // lease detail table — form.reset() already unchecked the underlying checkboxes.
+    const leaseSearchEl = qs('#invoiceLeaseSearch'); if(leaseSearchEl){ leaseSearchEl.value=''; leaseSearchEl.dispatchEvent(new Event('input')); }
+    const unitSearchEl = qs('#invoiceUnitSearch'); if(unitSearchEl){ unitSearchEl.value=''; unitSearchEl.dispatchEvent(new Event('input')); }
+    if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
 
     // Reset the per-unit Charge/Tax breakdown table back to its empty default row
     if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
@@ -729,11 +721,12 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         return belongsToRegistry;
       });
   if(clash){ skipped.push(uVal); return; }
-      // pull this unit's Charge/Tax amounts from the breakdown table
+      // pull this unit's Tax/Other Charges/Amount from the breakdown table
       const rowData = breakdownData[uVal] || {};
       const chargeAmount = (function(){ const n = parseCurrency(rowData.charge||''); return n===null ? '' : n.toFixed(2); })();
       const taxAmount = (function(){ const n = parseCurrency(rowData.tax||''); return n===null ? '' : n.toFixed(2); })();
-      const newInv = Object.assign({}, baseInvoice, resolved, { id: id(), unit: uVal, amount: chargeAmount, taxAmount: taxAmount });
+      const otherCharges = (function(){ const n = parseCurrency(rowData.other||''); return n===null ? '' : n.toFixed(2); })();
+      const newInv = Object.assign({}, baseInvoice, resolved, { id: id(), unit: uVal, amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherCharges });
       state.invoices.push(newInv); createdIds.push(newInv.id); createdUnits.push(uVal);
       if(resolved.lease) createdLeases.push(resolved.lease);
       // Registries don't round-trip through state.invoices (invoices aren't persisted), so
@@ -748,6 +741,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         invoicing: resolved.invoicing || '',
         costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
         tax: taxAmount,
+        other: otherCharges,
         charge: chargeAmount
       });
     });
@@ -826,13 +820,11 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const invCancel = qs('#invoiceCancelBtn'); if(invCancel) invCancel.style.display = 'none';
     const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
     
-    // Reset unit selection toggle button
-    const unitToggle = qs('#invoiceUnitToggle');
-    if(unitToggle) unitToggle.textContent = 'Select units';
-
-    // Reset lease selection toggle button
-    const leaseToggle = qs('#invoiceLeaseToggle');
-    if(leaseToggle) leaseToggle.textContent = 'Select leases';
+    // Clear any active search filters on the lease/unit pickers and hide the (now empty)
+    // lease detail table — form.reset() already unchecked the underlying checkboxes.
+    const leaseSearchEl = qs('#invoiceLeaseSearch'); if(leaseSearchEl){ leaseSearchEl.value=''; leaseSearchEl.dispatchEvent(new Event('input')); }
+    const unitSearchEl = qs('#invoiceUnitSearch'); if(unitSearchEl){ unitSearchEl.value=''; unitSearchEl.dispatchEvent(new Event('input')); }
+    if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
 
     // Reset the per-unit Charge/Tax breakdown table back to its empty default row
     if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
@@ -891,36 +883,22 @@ function resolveInvoiceUnitLeaseInfo(unitVal, fallbackLeases){
   };
 }
 
-// Recompute the readonly Supplier/Company/Arrangement/Invoicing fields and the unit picker
-// whenever the selected lease set changes. When selected leases disagree on a value, show
-// "(multiple)" instead of guessing.
+// Refresh the unit picker and the informational lease detail table whenever the selected
+// lease set changes. Company/Supplier/Arrangement/Invoicing are no longer mirrored into
+// readonly form fields — that info is shown directly in the lease detail table instead.
 function onInvoiceLeaseSelectionChange(){
   const selected = getSelectedInvoiceLeases();
-  const c = qs('#invoiceCompany'); const a = qs('#invoiceArrangement'); const s = qs('#invoiceSupplier'); const inv = qs('#invoiceInvoicing');
-  if(selected.length === 0){
-    if(c) c.value=''; if(a) a.value=''; if(s) s.value=''; if(inv) inv.value='';
-    if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions([]);
-    return;
-  }
-  const matchedLeases = selected.map(val => (state.leases||[]).find(l => (l.leaseNumber === val) || (l.id === val))).filter(Boolean);
-  function distinctOrMultiple(getter){
-    const distinct = Array.from(new Set(matchedLeases.map(getter).map(v => (v||'').toString()).filter(v => v !== '')));
-    if(distinct.length === 0) return '';
-    if(distinct.length === 1) return distinct[0];
-    return '(multiple)';
-  }
-  if(c) c.value = distinctOrMultiple(l => l.company);
-  if(s) s.value = distinctOrMultiple(l => l.supplier);
-  if(a) a.value = distinctOrMultiple(l => l.arrangement);
-  if(inv) inv.value = distinctOrMultiple(l => l.invoicing);
   if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(selected);
+  if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
   // ensure the Submitted date is prefilled to today's date (predetermined actual date)
   const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
 }
 
+// Always-visible box + search input (same format as the Registry Edit modal's lease/unit
+// pickers) — no more toggle button / floating dropdown-panel.
 function syncInvoiceLeaseOptions(selectedValues){
   selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s=>String(s)) : (selectedValues ? [String(selectedValues)] : getSelectedInvoiceLeases());
-  const panel = qs('#invoiceLeasePanel'); const toggle = qs('#invoiceLeaseToggle');
+  const panel = qs('#invoiceLeasePanel');
   if(!panel) return;
 
   const leases = (state.leases || []).filter(l => {
@@ -929,244 +907,264 @@ function syncInvoiceLeaseOptions(selectedValues){
   });
 
   panel.innerHTML = '';
-  if(leases.length === 0){ const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no leases available)'; panel.appendChild(none); if(toggle) toggle.textContent = 'Select leases'; return; }
-
-  // Add search box
-  const searchContainer = document.createElement('div'); searchContainer.style.padding = '8px'; searchContainer.style.borderBottom = '1px solid #e6e6e6';
-  const searchBox = document.createElement('input'); searchBox.type = 'text'; searchBox.placeholder = 'Search leases...'; searchBox.id = 'invoiceLeaseSearch';
-  searchBox.style.width = '100%'; searchBox.style.padding = '6px 8px'; searchBox.style.border = '1px solid #e6e6e6'; searchBox.style.borderRadius = '4px'; searchBox.style.fontSize = '13px';
-  searchContainer.appendChild(searchBox);
-  panel.appendChild(searchContainer);
-
-  // Add small controls: Select all / Clear
-  const ctrl = document.createElement('div'); ctrl.style.display = 'flex'; ctrl.style.justifyContent = 'flex-end'; ctrl.style.gap = '6px'; ctrl.style.padding = '6px 8px';
-  const btnAll = document.createElement('button'); btnAll.type = 'button'; btnAll.className = 'small-link'; btnAll.textContent = 'Select all';
-  const btnClear = document.createElement('button'); btnClear.type = 'button'; btnClear.className = 'small-link'; btnClear.textContent = 'Clear';
-  ctrl.appendChild(btnClear); ctrl.appendChild(btnAll); // Clear on left, Select all on right
-  panel.appendChild(ctrl);
-
-  // Container for checkbox list
-  const checkboxContainer = document.createElement('div'); checkboxContainer.id = 'invoiceLeaseCheckboxContainer';
-  panel.appendChild(checkboxContainer);
+  if(leases.length === 0){ const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no leases available)'; panel.appendChild(none); return; }
 
   leases.forEach(l => {
     const val = (l.leaseNumber || l.id || '').toString();
-    const row = document.createElement('div'); row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px'; row.style.padding = '6px 4px';
+    const row = document.createElement('label');
     row.className = 'lease-checkbox-row';
     row.setAttribute('data-lease-id', val.toLowerCase());
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'invoiceLease'; cb.value = val; cb.id = 'invoiceLease_cb_' + val.replace(/[^a-z0-9_-]/gi,'_');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'invoiceLease'; cb.value = val; cb.style.cursor = 'pointer';
     if(selectedValues.length && selectedValues.indexOf(val) !== -1) cb.checked = true;
-    const lab = document.createElement('label'); lab.htmlFor = cb.id; lab.style.flex = '1 1 auto';
-    lab.textContent = val;
-    cb.addEventListener('change', ()=>{ updateInvoiceLeaseToggleLabel(); onInvoiceLeaseSelectionChange(); });
-    row.appendChild(cb); row.appendChild(lab); checkboxContainer.appendChild(row);
+    const text = document.createElement('span'); text.textContent = val; text.style.fontSize = '13px';
+    cb.addEventListener('change', ()=>{ onInvoiceLeaseSelectionChange(); });
+    row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
   });
 
-  // Add search functionality
-  searchBox.addEventListener('input', () => {
-    const searchTerm = searchBox.value.toLowerCase().trim();
-    const rows = checkboxContainer.querySelectorAll('.lease-checkbox-row');
-    rows.forEach(row => {
-      const leaseId = row.getAttribute('data-lease-id') || '';
-      row.style.display = (searchTerm === '' || leaseId.includes(searchTerm)) ? 'flex' : 'none';
+  // Wire the (static) search box once; it filters whatever rows are currently rendered
+  const searchBox = qs('#invoiceLeaseSearch');
+  if(searchBox && !searchBox.dataset.wired){
+    searchBox.dataset.wired = 'true';
+    searchBox.addEventListener('input', () => {
+      const term = searchBox.value.toLowerCase().trim();
+      const rows = qs('#invoiceLeasePanel') ? qs('#invoiceLeasePanel').querySelectorAll('.lease-checkbox-row') : [];
+      rows.forEach(row => {
+        const lid = row.getAttribute('data-lease-id') || '';
+        row.style.display = (term === '' || lid.includes(term)) ? 'flex' : 'none';
+      });
     });
-  });
-
-  // wiring for Select all / Clear
-  btnAll.addEventListener('click', ()=>{
-    checkboxContainer.querySelectorAll('.lease-checkbox-row').forEach(row => {
-      if(row.style.display !== 'none'){
-        const cb = row.querySelector('input[type="checkbox"][name="invoiceLease"]');
-        if(cb) cb.checked = true;
-      }
-    });
-    updateInvoiceLeaseToggleLabel(); onInvoiceLeaseSelectionChange();
-  });
-  btnClear.addEventListener('click', ()=>{
-    panel.querySelectorAll('input[type="checkbox"][name="invoiceLease"]').forEach(i=> i.checked = false);
-    updateInvoiceLeaseToggleLabel(); onInvoiceLeaseSelectionChange();
-  });
-
-  function updateInvoiceLeaseToggleLabel(){
-    const tbtn = qs('#invoiceLeaseToggle'); if(!tbtn) return;
-    const checked = panel.querySelectorAll('input[type="checkbox"][name="invoiceLease"]:checked').length;
-    if(checked === 0) tbtn.textContent = 'Select leases';
-    else if(checked === 1) tbtn.textContent = panel.querySelector('input[type="checkbox"][name="invoiceLease"]:checked').value;
-    else tbtn.textContent = checked + ' leases selected';
+  }
+  if(searchBox && searchBox.value){
+    searchBox.dispatchEvent(new Event('input'));
   }
 
-  updateInvoiceLeaseToggleLabel();
-
-  if(toggle){
-    try{ toggle.setAttribute('aria-expanded','false'); }catch(e){}
-    const nt = toggle.cloneNode(true);
-    toggle.parentNode.replaceChild(nt, toggle);
-    nt.addEventListener('click', ()=>{
-      const isOpen = panel.style.display !== 'none';
-      panel.style.display = isOpen ? 'none' : 'block';
-      nt.setAttribute('aria-expanded', String(!isOpen));
+  // Wire the (static) Clear button once
+  const clearBtn = qs('#invoiceLeaseClearBtn');
+  if(clearBtn && !clearBtn.dataset.wired){
+    clearBtn.dataset.wired = 'true';
+    clearBtn.addEventListener('click', () => {
+      const p = qs('#invoiceLeasePanel'); if(!p) return;
+      p.querySelectorAll('input[type="checkbox"][name="invoiceLease"]').forEach(cb => cb.checked = false);
+      onInvoiceLeaseSelectionChange();
     });
-
-    if(!window.__agi_invoiceLease_dropdown_init){
-      window.__agi_invoiceLease_dropdown_init = true;
-      document.addEventListener('click', (ev)=>{
-        const panelEl = qs('#invoiceLeasePanel'); const toggleEl = qs('#invoiceLeaseToggle');
-        if(!panelEl || !toggleEl) return;
-        const within = panelEl.contains(ev.target) || toggleEl.contains(ev.target);
-        if(!within){ panelEl.style.display = 'none'; toggleEl.setAttribute('aria-expanded','false'); }
-      });
-      document.addEventListener('keydown', (ev)=>{ if(ev.key === 'Escape'){ const panelEl = qs('#invoiceLeasePanel'); const toggleEl = qs('#invoiceLeaseToggle'); if(panelEl){ panelEl.style.display = 'none'; if(toggleEl) toggleEl.setAttribute('aria-expanded','false'); } } });
-    }
   }
 }
-function syncInvoiceCompanyOptions(){ const sel = qs('#invoiceCompany'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select company)</option>'; (state.meta.devCompanies||[]).forEach(c=>{ const opt = document.createElement('option'); opt.value = c; opt.textContent = c; sel.appendChild(opt); }); if(cur) sel.value = cur; }
-function syncInvoiceArrangementOptions(){ const sel = qs('#invoiceArrangement'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select arrangement)</option>'; (state.meta.devPayments||[]).forEach(p=>{ const opt = document.createElement('option'); opt.value = p; opt.textContent = p; sel.appendChild(opt); }); if(cur) sel.value = cur; }
+// Informational-only table showing full details of the currently selected leases
+// (Lease/Company/Supplier/Arrangement/Invoicing/Status) — no inputs, just for reference.
+function renderInvoiceLeaseDetailTable(){
+  const wrap = qs('#invoiceLeaseDetail'); if(!wrap) return;
+  const selected = getSelectedInvoiceLeases();
+  const leaseRecs = selected.map(val => (state.leases||[]).find(l => (l.leaseNumber||l.id) === val)).filter(Boolean);
+
+  wrap.innerHTML = '';
+  if(leaseRecs.length === 0){ wrap.style.display = 'none'; return; }
+
+  const columns = [
+    { key:'lease', label:'Lease', width:120, get:l => l.leaseNumber||l.id||'' },
+    { key:'company', label:'Company', width:150, get:l => l.company||'' },
+    { key:'supplier', label:'Supplier', width:150, get:l => l.supplier||'' },
+    { key:'arrangement', label:'Arrangement', width:130, get:l => l.arrangement||'' },
+    { key:'invoicing', label:'Invoicing', width:110, get:l => l.invoicing||'' },
+    { key:'status', label:'Status', width:90, get:l => l.status||'Enabled' }
+  ];
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
+  columns.forEach(col => {
+    const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;`;
+    wireColumnAutoFit(d, wrap, col.key, col.label, () => leaseRecs.map(col.get), () => renderInvoiceLeaseDetailTable());
+    header.appendChild(d);
+  });
+  wrap.appendChild(header);
+
+  // Rows scroll in their own fixed-height region (max ~5 rows) so the header/table footprint
+  // stays constant regardless of how many leases are selected — only scrolls past the cap.
+  const rowsContainer = document.createElement('div');
+  rowsContainer.className = 'invoice-lease-detail-rows';
+  wrap.appendChild(rowsContainer);
+
+  // A lease whose Supplier differs from the first selected lease's Supplier gets flagged —
+  // mixing suppliers under one WD invoice is unusual and worth a visual heads-up.
+  const referenceSupplier = (leaseRecs[0] && leaseRecs[0].supplier || '').toString().trim().toLowerCase();
+
+  leaseRecs.forEach((l, idx) => {
+    const supplierMismatch = idx > 0 && referenceSupplier !== '' && (l.supplier||'').toString().trim().toLowerCase() !== referenceSupplier;
+    const row = document.createElement('div');
+    row.className = 'registry-unit-detail-row';
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;cursor:pointer;';
+    if(supplierMismatch){
+      row.style.background = '#fef9c3';
+      row.title = 'This lease has a different Supplier than the first selected lease';
+    }
+    columns.forEach((col, colIdx) => {
+      const c = document.createElement('div'); c.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+      if(supplierMismatch && colIdx === 0){
+        c.textContent = '⚠ ' + col.get(l);
+        c.style.color = '#92400e';
+        c.style.fontWeight = '600';
+      } else {
+        c.textContent = col.get(l);
+      }
+      row.appendChild(c);
+    });
+    row.addEventListener('click', () => {
+      rowsContainer.querySelectorAll('.registry-unit-detail-row').forEach(rr => rr.classList.remove('selected'));
+      row.classList.add('selected');
+    });
+    rowsContainer.appendChild(row);
+  });
+
+  wrap.style.display = 'block';
+}
+
+// Always-visible box + search input (same format as the Registry Edit modal's unit picker),
+// with Select all/Clear kept as a convenience. No more toggle/floating-panel or "Add Units"
+// confirm step — the breakdown table below already live-updates on every checkbox change.
 function syncInvoiceUnitOptions(leaseVal, selectedValues){
   // selectedValues: optional array of values to pre-check
   // leaseVal: optional lease number, or an array of lease numbers (union filter)
   selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s=>String(s)) : [];
-  const panel = qs('#invoiceUnitPanel'); const toggle = qs('#invoiceUnitToggle');
+  const panel = qs('#invoiceUnitPanel');
   const leaseFilter = Array.isArray(leaseVal) ? leaseVal.filter(Boolean) : (leaseVal ? [leaseVal] : []);
   const list = leaseFilter.length === 0 ? (state.units || []).slice() : (state.units || []).filter(u => leaseFilter.indexOf(u.lease) !== -1);
 
-  if(panel){
-    panel.innerHTML = '';
-    if(list.length === 0){ const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no units available)'; panel.appendChild(none); if(toggle) toggle.textContent = 'Select units'; return; }
+  if(!panel) return;
+  panel.innerHTML = '';
+  if(list.length === 0){ const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no units available)'; panel.appendChild(none); return; }
 
-    // Add search box
-    const searchContainer = document.createElement('div'); searchContainer.style.padding = '8px'; searchContainer.style.borderBottom = '1px solid #e6e6e6';
-    const searchBox = document.createElement('input'); searchBox.type = 'text'; searchBox.placeholder = 'Search units...'; searchBox.id = 'invoiceUnitSearch';
-    searchBox.style.width = '100%'; searchBox.style.padding = '6px 8px'; searchBox.style.border = '1px solid #e6e6e6'; searchBox.style.borderRadius = '4px'; searchBox.style.fontSize = '13px';
-    searchContainer.appendChild(searchBox);
-    panel.appendChild(searchContainer);
+  // Sort: active units first, disabled units at the bottom
+  const sortedList = list.slice().sort((a, b) => {
+    const aDisabled = (a.status || '').toLowerCase() === 'disabled';
+    const bDisabled = (b.status || '').toLowerCase() === 'disabled';
+    if(aDisabled === bDisabled) return 0;
+    return aDisabled ? 1 : -1;
+  });
 
-    // Add small controls: Select all / Clear
-    const ctrl = document.createElement('div'); ctrl.style.display = 'flex'; ctrl.style.justifyContent = 'flex-end'; ctrl.style.gap = '6px'; ctrl.style.padding = '6px 8px';
-    const btnAll = document.createElement('button'); btnAll.type = 'button'; btnAll.className = 'small-link'; btnAll.textContent = 'Select all';
-    const btnClear = document.createElement('button'); btnClear.type = 'button'; btnClear.className = 'small-link'; btnClear.textContent = 'Clear';
-    ctrl.appendChild(btnClear); ctrl.appendChild(btnAll); // Clear on left, Select all on right
-    panel.appendChild(ctrl);
+  sortedList.forEach(u => {
+    const val = (u.unitId || u.id || '').toString();
+    const isDisabled = (u.status || '').toLowerCase() === 'disabled';
+    const row = document.createElement('label');
+    row.className = 'unit-checkbox-row';
+    row.setAttribute('data-unit-id', val.toLowerCase());
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;';
+    if(isDisabled) row.style.background = '#fee2e2';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'invoiceUnit'; cb.value = val; cb.style.cursor = 'pointer';
+    if(selectedValues.length && selectedValues.indexOf(val) !== -1) cb.checked = true;
+    const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val + (isDisabled ? ' (Disabled)' : '');
+    if(isDisabled) text.style.color = '#b91c1c';
+    cb.addEventListener('change', ()=>{ refreshInvoiceBreakdownIfVisible(); });
+    row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
+  });
 
-    // Container for checkbox list
-    const checkboxContainer = document.createElement('div'); checkboxContainer.id = 'invoiceUnitCheckboxContainer';
-    panel.appendChild(checkboxContainer);
-
-    // Sort: active units first, disabled units at the bottom
-    const sortedList = list.slice().sort((a, b) => {
-      const aDisabled = (a.status || '').toLowerCase() === 'disabled';
-      const bDisabled = (b.status || '').toLowerCase() === 'disabled';
-      if(aDisabled === bDisabled) return 0;
-      return aDisabled ? 1 : -1;
-    });
-
-    sortedList.forEach(u => {
-      const val = (u.unitId || u.id || '').toString();
-      const isDisabled = (u.status || '').toLowerCase() === 'disabled';
-      const row = document.createElement('div'); row.style.display = 'flex'; row.style.alignItems = 'center'; row.style.gap = '8px'; row.style.padding = '6px 4px';
-      row.className = 'unit-checkbox-row';
-      row.setAttribute('data-unit-id', val.toLowerCase());
-      if(isDisabled){
-        row.style.background = '#fee2e2';
-        row.style.borderRadius = '4px';
-      }
-      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'invoiceUnit'; cb.value = val; cb.id = 'invoiceUnit_cb_' + val.replace(/[^a-z0-9_-]/gi,'_');
-      if(selectedValues.length && selectedValues.indexOf(val) !== -1) cb.checked = true;
-      const lab = document.createElement('label'); lab.htmlFor = cb.id; lab.style.flex = '1 1 auto';
-      lab.textContent = val + (isDisabled ? ' (Disabled)' : '');
-      if(isDisabled) lab.style.color = '#b91c1c';
-      cb.addEventListener('change', ()=>{ updateInvoiceUnitToggleLabel(); refreshInvoiceBreakdownIfVisible(); });
-      row.appendChild(cb); row.appendChild(lab); checkboxContainer.appendChild(row);
-    });
-
-    // Add search functionality
+  // Wire the (static) search box once; it filters whatever rows are currently rendered
+  const searchBox = qs('#invoiceUnitSearch');
+  if(searchBox && !searchBox.dataset.wired){
+    searchBox.dataset.wired = 'true';
     searchBox.addEventListener('input', () => {
-      const searchTerm = searchBox.value.toLowerCase().trim();
-      const rows = checkboxContainer.querySelectorAll('.unit-checkbox-row');
+      const term = searchBox.value.toLowerCase().trim();
+      const rows = qs('#invoiceUnitPanel') ? qs('#invoiceUnitPanel').querySelectorAll('.unit-checkbox-row') : [];
       rows.forEach(row => {
-        const unitId = row.getAttribute('data-unit-id') || '';
-        if(searchTerm === '' || unitId.includes(searchTerm)){
-          row.style.display = 'flex';
-        } else {
-          row.style.display = 'none';
-        }
+        const uid = row.getAttribute('data-unit-id') || '';
+        row.style.display = (term === '' || uid.includes(term)) ? 'flex' : 'none';
       });
     });
+  }
+  if(searchBox && searchBox.value){
+    searchBox.dispatchEvent(new Event('input'));
+  }
 
-    // Add Units button at the bottom: confirms the checked units and renders/refreshes
-    // the per-unit Charge/Tax breakdown table below the form.
-    const addUnitsContainer = document.createElement('div'); addUnitsContainer.style.padding = '8px'; addUnitsContainer.style.borderTop = '1px solid #e6e6e6'; addUnitsContainer.style.display = 'flex'; addUnitsContainer.style.justifyContent = 'center';
-    const addUnitsBtn = document.createElement('button'); addUnitsBtn.type = 'button'; addUnitsBtn.className = 'btn-primary'; addUnitsBtn.textContent = 'Add Units'; addUnitsBtn.style.width = '100%';
-    addUnitsBtn.addEventListener('click', (e) => {
-      e.stopPropagation(); // Prevent event bubbling
-      // Close the dropdown first
-      panel.style.display = 'none';
-      if(toggle) toggle.setAttribute('aria-expanded', 'false');
-      if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
-    });
-    addUnitsContainer.appendChild(addUnitsBtn);
-    panel.appendChild(addUnitsContainer);
-
-    // wiring for Select all / Clear
-    btnAll.addEventListener('click', ()=>{
-      // Only select visible checkboxes
-      checkboxContainer.querySelectorAll('.unit-checkbox-row').forEach(row => {
+  // Wire the (static) Select all button once; only checks whatever rows are currently visible
+  const selectAllBtn = qs('#invoiceUnitSelectAllBtn');
+  if(selectAllBtn && !selectAllBtn.dataset.wired){
+    selectAllBtn.dataset.wired = 'true';
+    selectAllBtn.addEventListener('click', () => {
+      const p = qs('#invoiceUnitPanel'); if(!p) return;
+      p.querySelectorAll('.unit-checkbox-row').forEach(row => {
         if(row.style.display !== 'none'){
           const cb = row.querySelector('input[type="checkbox"][name="invoiceUnit"]');
           if(cb) cb.checked = true;
         }
       });
-      updateInvoiceUnitToggleLabel();
       refreshInvoiceBreakdownIfVisible();
     });
-    btnClear.addEventListener('click', ()=>{
-      panel.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]').forEach(i=> i.checked = false);
-      updateInvoiceUnitToggleLabel();
-      refreshInvoiceBreakdownIfVisible();
-    });
-
-    function updateInvoiceUnitToggleLabel(){
-      const tbtn = qs('#invoiceUnitToggle'); if(!tbtn) return;
-      const checked = panel.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]:checked').length;
-      if(checked === 0) tbtn.textContent = 'Select units';
-      else if(checked === 1) tbtn.textContent = panel.querySelector('input[type="checkbox"][name="invoiceUnit"]:checked').value;
-      else tbtn.textContent = checked + ' units selected';
-    }
-
-    updateInvoiceUnitToggleLabel();
-
-    if(toggle){
-      try{ toggle.setAttribute('aria-expanded','false'); }catch(e){}
-      const nt = toggle.cloneNode(true);
-      toggle.parentNode.replaceChild(nt, toggle);
-      nt.addEventListener('click', ()=>{
-        const isOpen = panel.style.display !== 'none';
-        panel.style.display = isOpen ? 'none' : 'block';
-        nt.setAttribute('aria-expanded', String(!isOpen));
-      });
-
-      if(!window.__agi_invoice_dropdown_init){
-        window.__agi_invoice_dropdown_init = true;
-        document.addEventListener('click', (ev)=>{
-          const panelEl = qs('#invoiceUnitPanel'); const toggleEl = qs('#invoiceUnitToggle');
-          if(!panelEl || !toggleEl) return;
-          const within = panelEl.contains(ev.target) || toggleEl.contains(ev.target);
-          if(!within){ panelEl.style.display = 'none'; toggleEl.setAttribute('aria-expanded','false'); }
-        });
-        document.addEventListener('keydown', (ev)=>{ if(ev.key === 'Escape'){ const panelEl = qs('#invoiceUnitPanel'); const toggleEl = qs('#invoiceUnitToggle'); if(panelEl){ panelEl.style.display = 'none'; if(toggleEl) toggleEl.setAttribute('aria-expanded','false'); } } });
-      }
-    }
-    return;
   }
 
-  // fallback to native select if panel not present
-  const sel = qs('#invoiceUnit'); if(!sel) return; const cur = sel.value; sel.innerHTML = '<option value="">(select unit)</option>';
-  list.forEach(u=>{ const opt = document.createElement('option'); opt.value = u.unitId || u.id; opt.textContent = u.unitId || u.id; if(selectedValues.length && selectedValues.indexOf(opt.value) !== -1) opt.selected = true; sel.appendChild(opt); });
-  if(cur) sel.value = cur;
+  // Wire the (static) Clear button once
+  const unitClearBtn = qs('#invoiceUnitClearBtn');
+  if(unitClearBtn && !unitClearBtn.dataset.wired){
+    unitClearBtn.dataset.wired = 'true';
+    unitClearBtn.addEventListener('click', () => {
+      const p = qs('#invoiceUnitPanel'); if(!p) return;
+      p.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]').forEach(cb => cb.checked = false);
+      refreshInvoiceBreakdownIfVisible();
+    });
+  }
 }
 
 function getSelectedInvoiceUnits(){
   const panel = qs('#invoiceUnitPanel'); if(!panel) return [];
   return Array.from(panel.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]:checked')).map(cb => cb.value);
+}
+
+// --- Excel-style "double-click a column header to fit its widest content" ---
+// Shared by every flex-based table in the app (unit breakdown, lease detail, etc). Custom
+// widths are stored per table instance (on the wrap element's dataset), so resizing one
+// table's columns never affects another table that happens to share column keys.
+let _measureCanvasCtx = null;
+function measureTextWidth(text, font){
+  if(!_measureCanvasCtx){ _measureCanvasCtx = document.createElement('canvas').getContext('2d'); }
+  _measureCanvasCtx.font = font || '12px Arial, sans-serif';
+  return _measureCanvasCtx.measureText(text === null || text === undefined ? '' : String(text)).width;
+}
+function getColWidth(wrap, key, defaultWidth){
+  const stored = wrap.dataset['colw_' + key];
+  const n = stored ? parseInt(stored, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : defaultWidth;
+}
+function setColWidth(wrap, key, width){
+  wrap.dataset['colw_' + key] = String(Math.round(width));
+}
+// Wires a header cell so double-clicking it resizes the column to fit its widest currently
+// visible content (label included), then re-renders via `rerenderFn`.
+function wireColumnAutoFit(headerCell, wrap, colKey, label, getValuesFn, rerenderFn){
+  headerCell.style.cursor = 'pointer';
+  headerCell.style.userSelect = 'none';
+  headerCell.title = (headerCell.title ? headerCell.title + ' — ' : '') + 'Double-click to fit column width';
+  headerCell.addEventListener('dblclick', (e) => {
+    e.preventDefault(); // otherwise the browser's native "double-click selects a word" kicks in
+    e.stopPropagation();
+    let maxWidth = measureTextWidth(label, '600 12px Arial, sans-serif');
+    getValuesFn().forEach(v => {
+      const w = measureTextWidth(v, '12px Arial, sans-serif');
+      if(w > maxWidth) maxWidth = w;
+    });
+    setColWidth(wrap, colKey, maxWidth + 26);
+    rerenderFn();
+  });
+}
+
+// Grows a column's width directly on the live DOM (header cell + every rendered cell/input
+// sharing that column) without a full table re-render, so the user's typing/focus/cursor
+// position in an input is never interrupted. Used for the bounded auto-grow-while-typing
+// behavior; a full, exact fit is still only available via the double-click column auto-fit.
+function growColumnLive(wrap, colKey, newWidth){
+  setColWidth(wrap, colKey, newWidth);
+  const px = newWidth + 'px';
+  const header = wrap.querySelector('[data-col-key="' + colKey + '"]');
+  if(header) header.style.flexBasis = px;
+  wrap.querySelectorAll('.ub-' + colKey).forEach(el => { el.style.flexBasis = px; });
+}
+// Bounded auto-grow: if the input's current value needs more room than the column currently
+// has, grow it — but only up to a modest ceiling (a multiple of the column's own default
+// width) so one column can't dominate the table just from typing; double-click still gives
+// the fully accurate fit beyond that.
+function autoGrowAmountColumn(wrap, colKey, input, defaultWidth){
+  const needed = measureTextWidth(input.value, '12px Arial, sans-serif') + 22;
+  const current = getColWidth(wrap, colKey, defaultWidth);
+  if(needed <= current) return;
+  const cap = Math.round(defaultWidth * 1.6);
+  growColumnLive(wrap, colKey, Math.min(needed, cap));
 }
 
 // --- Generic sortable Company/UnitId/Lease/Cost Center + Tax/Charge breakdown table ---
@@ -1175,10 +1173,10 @@ function getSelectedInvoiceUnits(){
 // declared-amount field id are stashed as data-* attributes on the wrap element itself, so
 // multiple independent tables can coexist without shared JS state.
 const UNIT_BREAKDOWN_COLUMNS = [
-  { key:'company', label:'Company', width:130, get: (u,uid) => u ? (u.company||'') : '' },
-  { key:'unitId', label:'UnitId', width:100, get: (u,uid) => uid },
-  { key:'lease', label:'Lease', width:100, get: (u,uid) => u ? (u.lease||'') : '' },
-  { key:'costCenter', label:'Cost Center', width:110, get: (u,uid) => u ? (u.costCenter||'') : '' }
+  { key:'company', label:'Company', width:150, get: (u,uid) => u ? (u.company||'') : '' },
+  { key:'unitId', label:'UnitId', width:110, get: (u,uid) => uid },
+  { key:'lease', label:'Lease', width:110, get: (u,uid) => u ? (u.lease||'') : '' },
+  { key:'costCenter', label:'Cost Center', width:120, get: (u,uid) => u ? (u.costCenter||'') : '' }
 ];
 
 function getUnitBreakdownRowsData(wrapId){
@@ -1188,9 +1186,20 @@ function getUnitBreakdownRowsData(wrapId){
     const uid = row.dataset.unitId; if(!uid) return;
     const chargeInput = row.querySelector('.ub-charge');
     const taxInput = row.querySelector('.ub-tax');
-    data[uid] = { charge: chargeInput ? chargeInput.value : '', tax: taxInput ? taxInput.value : '' };
+    const otherInput = row.querySelector('.ub-other');
+    data[uid] = { charge: chargeInput ? chargeInput.value : '', tax: taxInput ? taxInput.value : '', other: otherInput ? otherInput.value : '' };
   });
   return data;
+}
+
+// Per-row informational total = Tax + Other Charges + Amount for that one unit.
+function updateUnitBreakdownRowTotal(row){
+  const totalEl = row.querySelector('.ub-row-total'); if(!totalEl) return;
+  const taxInput = row.querySelector('.ub-tax');
+  const otherInput = row.querySelector('.ub-other');
+  const chargeInput = row.querySelector('.ub-charge');
+  const sum = (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0) + (parseCurrency(chargeInput ? chargeInput.value : '') || 0);
+  totalEl.textContent = formatCurrency(sum.toFixed(2));
 }
 
 // Build/refresh the breakdown table from `unitIds`. Already-entered Tax/Charge values are
@@ -1212,10 +1221,10 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
-      const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:0 0 ${col.width}px;`; header.appendChild(d);
+      const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;`; header.appendChild(d);
     });
-    [['Tax Amount',110],['Charge Amount',110]].forEach(([label,w]) => {
-      const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${w}px;`; header.appendChild(d);
+    [['tax','Tax',110],['other','Other Charges',120],['charge','Amount',110],['rowTotal','Total Charge',110]].forEach(([key,label,w]) => {
+      const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;`; header.appendChild(d);
     });
     wrap.appendChild(header);
 
@@ -1258,19 +1267,32 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
   UNIT_BREAKDOWN_COLUMNS.forEach(col => {
     const d = document.createElement('div');
     d.textContent = col.label + (sortCol === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
-    d.style.cssText = `flex:0 0 ${col.width}px;cursor:pointer;user-select:none;`;
+    d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;cursor:pointer;user-select:none;`;
     d.title = 'Click to sort';
     d.addEventListener('click', ()=>{
       const newDir = (wrap.dataset.sortCol === col.key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
       wrap.dataset.sortCol = col.key; wrap.dataset.sortDir = newDir;
       renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, null);
     });
+    wireColumnAutoFit(d, wrap, col.key, col.label, () => rows.map(({uid, unitRec}) => col.get(unitRec, uid)), () => renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, null));
     header.appendChild(d);
   });
-  [['Tax Amount',110],['Charge Amount',110]].forEach(([label,w]) => {
-    const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${w}px;`; header.appendChild(d);
+  [['tax','Tax',110],['other','Other Charges',120],['charge','Amount',110],['rowTotal','Total Charge',110]].forEach(([key,label,w]) => {
+    const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;`;
+    d.dataset.colKey = key;
+    if(key !== 'rowTotal'){
+      wireColumnAutoFit(d, wrap, key, label, () => Array.from(wrap.querySelectorAll('.ub-' + key)).map(inp => inp.value), () => renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, null));
+    }
+    header.appendChild(d);
   });
   wrap.appendChild(header);
+
+  // Rows scroll in their own fixed-height region (max ~10 rows) so the table's footprint on
+  // the page stays constant whether 1 or 15 units are selected, instead of resizing the whole
+  // block every time — the header/total stay put outside this scroll region.
+  const rowsContainer = document.createElement('div');
+  rowsContainer.className = 'unit-breakdown-rows';
+  wrap.appendChild(rowsContainer);
 
   rows.forEach(({uid, unitRec}) => {
     const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
@@ -1278,7 +1300,7 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
 
     const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
-      const cell = mkCell(col.get(unitRec, uid), col.width);
+      const cell = mkCell(col.get(unitRec, uid), getColWidth(wrap, col.key, col.width));
       if(col.key === 'unitId' && uid){
         cell.style.color = '#0b74de';
         cell.style.cursor = 'pointer';
@@ -1292,20 +1314,60 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     });
 
     const taxInput = document.createElement('input'); taxInput.type = 'text'; taxInput.className = 'ub-tax money-input'; taxInput.placeholder = 'Tax'; taxInput.inputMode = 'decimal';
-    taxInput.style.cssText = 'flex:0 0 110px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;';
-    const chargeInput = document.createElement('input'); chargeInput.type = 'text'; chargeInput.className = 'ub-charge money-input'; chargeInput.placeholder = 'Charge'; chargeInput.inputMode = 'decimal';
-    chargeInput.style.cssText = 'flex:0 0 110px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+    taxInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'tax', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
+    const otherInput = document.createElement('input'); otherInput.type = 'text'; otherInput.className = 'ub-other money-input'; otherInput.placeholder = 'Other'; otherInput.inputMode = 'decimal';
+    otherInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'other', 120)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
+    const chargeInput = document.createElement('input'); chargeInput.type = 'text'; chargeInput.className = 'ub-charge money-input'; chargeInput.placeholder = 'Amount'; chargeInput.inputMode = 'decimal';
+    chargeInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'charge', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
+    const rowTotalEl = document.createElement('div'); rowTotalEl.className = 'ub-row-total'; rowTotalEl.style.cssText = `flex:0 0 ${getColWidth(wrap, 'rowTotal', 110)}px;font-size:12px;color:#374151;font-weight:600;`;
 
     const prior = existing[uid] || seedData[uid] || {};
     if(prior.tax !== undefined) taxInput.value = prior.tax;
+    if(prior.other !== undefined) otherInput.value = prior.other;
     if(prior.charge !== undefined) chargeInput.value = prior.charge;
 
-    taxInput.addEventListener('input', ()=> updateUnitBreakdownTotal(wrapId));
-    chargeInput.addEventListener('input', ()=> updateUnitBreakdownTotal(wrapId));
+    const onAmountInput = () => { updateUnitBreakdownTotal(wrapId); updateUnitBreakdownRowTotal(row); };
+    taxInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'tax', taxInput, 110); onAmountInput(); });
+    otherInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'other', otherInput, 120); onAmountInput(); });
+    chargeInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'charge', chargeInput, 110); onAmountInput(); });
 
-    row.appendChild(taxInput); row.appendChild(chargeInput);
-    wrap.appendChild(row);
+    // Highlight the row while editing it, and keep it highlighted when clicked anywhere else in it
+    const selectRow = () => {
+      rowsContainer.querySelectorAll('.unit-breakdown-row').forEach(rr => rr.classList.remove('selected'));
+      row.classList.add('selected');
+    };
+    row.addEventListener('click', selectRow);
+    taxInput.addEventListener('focus', selectRow);
+    otherInput.addEventListener('focus', selectRow);
+    chargeInput.addEventListener('focus', selectRow);
+
+    row.appendChild(taxInput); row.appendChild(otherInput); row.appendChild(chargeInput); row.appendChild(rowTotalEl);
+    rowsContainer.appendChild(row);
+    updateUnitBreakdownRowTotal(row);
   });
+
+  // Expand/collapse arrow, centered on the table's bottom edge: toggles between the capped
+  // (~10 row) scroll height and showing every row at once. State persists across re-renders.
+  if(rows.length > 0){
+    const expandWrap = document.createElement('div');
+    expandWrap.style.cssText = 'display:flex;justify-content:center;margin-top:-1px;position:relative;z-index:1;';
+    const expandBtn = document.createElement('button');
+    expandBtn.type = 'button';
+    expandBtn.className = 'unit-breakdown-expand-btn';
+    const isExpanded = wrap.dataset.expanded === 'true';
+    rowsContainer.classList.toggle('expanded', isExpanded);
+    expandBtn.textContent = isExpanded ? '▲' : '▼';
+    expandBtn.title = isExpanded ? 'Show fewer rows' : 'Show all rows';
+    expandBtn.addEventListener('click', () => {
+      const nowExpanded = wrap.dataset.expanded !== 'true';
+      wrap.dataset.expanded = nowExpanded ? 'true' : 'false';
+      rowsContainer.classList.toggle('expanded', nowExpanded);
+      expandBtn.textContent = nowExpanded ? '▲' : '▼';
+      expandBtn.title = nowExpanded ? 'Show fewer rows' : 'Show all rows';
+    });
+    expandWrap.appendChild(expandBtn);
+    wrap.appendChild(expandWrap);
+  }
 
   const totalRow = document.createElement('div');
   totalRow.className = 'unit-breakdown-total';
@@ -1316,8 +1378,8 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
   updateUnitBreakdownTotal(wrapId);
 }
 
-// The running total is Charge Amount + Tax Amount summed across every unit row; it must equal
-// the declared Amount field (red until it matches, green once it does).
+// The running total is Tax + Other Charges + Amount summed across every unit row; it must
+// equal the declared Amount field (red until it matches, green once it does).
 function updateUnitBreakdownTotal(wrapId){
   const wrap = qs('#' + wrapId); if(!wrap) return;
   const totalEl = wrap.querySelector('.unit-breakdown-total'); if(!totalEl) return;
@@ -1325,13 +1387,14 @@ function updateUnitBreakdownTotal(wrapId){
   wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
     const chargeInput = row.querySelector('.ub-charge');
     const taxInput = row.querySelector('.ub-tax');
-    sum += (parseCurrency(chargeInput ? chargeInput.value : '') || 0) + (parseCurrency(taxInput ? taxInput.value : '') || 0);
+    const otherInput = row.querySelector('.ub-other');
+    sum += (parseCurrency(chargeInput ? chargeInput.value : '') || 0) + (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0);
   });
   const amountFieldId = wrap.dataset.amountFieldId;
   const amountField = amountFieldId ? qs('#' + amountFieldId) : null;
   const declared = parseCurrency(amountField ? amountField.value : '');
   const matches = declared !== null && Math.round(sum*100) === Math.round(declared*100);
-  totalEl.textContent = 'Total (Charge + Tax): ' + formatCurrency(sum.toFixed(2)) + (declared !== null ? ' / declared ' + formatCurrency(declared.toFixed(2)) : '');
+  totalEl.textContent = 'Total (Tax + Other Charges + Amount): ' + formatCurrency(sum.toFixed(2)) + (declared !== null ? ' / declared ' + formatCurrency(declared.toFixed(2)) : '');
   totalEl.style.color = matches ? '#15803d' : '#dc2626';
   wrap.dataset.matches = matches ? 'true' : 'false';
 }
@@ -1351,10 +1414,25 @@ function renderInvoiceUnitBreakdown(seed){
   renderUnitBreakdownTable('invoiceUnitBreakdown', getSelectedInvoiceUnits(), 'invoiceAmount', seed, { showEmptyRow: true });
 }
 
+// Generic "X" quick-clear button for a search input: shown only while it has text, clears
+// it and re-fires the filter on click. Reusable for any future search box the same way.
+function wireSearchClearButton(inputId, clearBtnId){
+  const input = qs('#' + inputId); const clearBtn = qs('#' + clearBtnId);
+  if(!input || !clearBtn) return;
+  const update = () => { clearBtn.style.display = input.value ? 'block' : 'none'; };
+  input.addEventListener('input', update);
+  clearBtn.addEventListener('click', () => {
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+  });
+  update();
+}
+wireSearchClearButton('invoiceLeaseSearch', 'invoiceLeaseSearchClear');
+wireSearchClearButton('invoiceUnitSearch', 'invoiceUnitSearchClear');
+
 // ensure invoice selects are updated when relevant lists change
 if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions();
-if(typeof syncInvoiceCompanyOptions === 'function') syncInvoiceCompanyOptions();
-if(typeof syncInvoiceArrangementOptions === 'function') syncInvoiceArrangementOptions();
 if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions();
 if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
 const invAmountFieldInit = qs('#invoiceAmount');
@@ -1808,18 +1886,15 @@ function renderInvoices(){
       const form = qs('#invoiceForm'); if(!form) return;
       form.dataset.editing = inv.id;
       if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions(inv.lease ? [inv.lease] : []);
-      const s = qs('#invoiceSupplier'); if(s) s.value = inv.supplier || '';
-      const c = qs('#invoiceCompany'); if(c) c.value = inv.company || '';
-      const a = qs('#invoiceArrangement'); if(a) a.value = inv.arrangement || '';
-      const invField = qs('#invoiceInvoicing'); if(invField) invField.value = inv.invoicing || '';
+      if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
       const cat = form.querySelector('#invoiceCategory'); if(cat) cat.value = inv.category || '';
       if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(inv.lease, [inv.unit]);
       const wd = form.querySelector('#invoiceWD'); if(wd) wd.value = inv.wdNumber || '';
       const doc = form.querySelector('#invoiceDoc'); if(doc) doc.value = inv.docNumber || '';
-      // Declared Amount now represents Charge + Tax for the selected unit(s)
+      // Declared Amount now represents Tax + Other Charges + Amount for the selected unit(s)
       const amt = form.querySelector('#invoiceAmount');
-      if(amt){ const chargeN = parseCurrency(inv.amount||'') || 0; const taxN = parseCurrency(inv.taxAmount||'') || 0; amt.value = (chargeN + taxN).toFixed(2); }
-      if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown({ [inv.unit]: { charge: inv.amount || '', tax: inv.taxAmount || '' } });
+      if(amt){ const chargeN = parseCurrency(inv.amount||'') || 0; const taxN = parseCurrency(inv.taxAmount||'') || 0; const otherN = parseCurrency(inv.otherCharges||'') || 0; amt.value = (chargeN + taxN + otherN).toFixed(2); }
+      if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown({ [inv.unit]: { charge: inv.amount || '', tax: inv.taxAmount || '', other: inv.otherCharges || '' } });
       const ps = form.querySelector('#invoicePeriodStart'); if(ps) ps.value = inv.periodStart || '';
       const pe = form.querySelector('#invoicePeriodEnd'); if(pe) pe.value = inv.periodEnd || '';
       const sub = form.querySelector('#invoiceSubmitted'); if(sub) sub.value = inv.submittedDate || new Date().toISOString().slice(0,10);
@@ -1957,6 +2032,7 @@ function getRegistryUnitDetails(r){
       company: unitRec ? (unitRec.company||'') : (inv ? (inv.company||'') : ''),
       costCenter: unitRec ? (unitRec.costCenter||'') : '',
       tax: inv ? (inv.taxAmount||'') : '',
+      other: inv ? (inv.otherCharges||'') : '',
       charge: inv ? (inv.amount||'') : ''
     };
   });
@@ -1976,14 +2052,21 @@ function renderRegistryUnitDetailTable(container, unitDetails){
     { key:'unit', label:'UnitId', width:100 },
     { key:'lease', label:'Lease', width:100 },
     { key:'costCenter', label:'Cost Center', width:110 },
-    { key:'tax', label:'Tax Amount', width:110 },
-    { key:'charge', label:'Charge Amount', width:110 }
+    { key:'tax', label:'Tax', width:100 },
+    { key:'other', label:'Other Charges', width:110 },
+    { key:'charge', label:'Amount', width:100 },
+    { key:'rowTotal', label:'Total Charge', width:110 }
   ];
+
+  const rowTotalOf = d => (parseFloat(d.tax)||0) + (parseFloat(d.other)||0) + (parseFloat(d.charge)||0);
 
   let rows = unitDetails.slice();
   if(sortCol){
-    const isNumeric = sortCol === 'tax' || sortCol === 'charge';
+    const isNumeric = sortCol === 'tax' || sortCol === 'other' || sortCol === 'charge' || sortCol === 'rowTotal';
     rows.sort((a,b) => {
+      if(sortCol === 'rowTotal'){
+        return sortDir === 'asc' ? rowTotalOf(a) - rowTotalOf(b) : rowTotalOf(b) - rowTotalOf(a);
+      }
       if(isNumeric){
         const av = parseFloat(a[sortCol]) || 0; const bv = parseFloat(b[sortCol]) || 0;
         return sortDir === 'asc' ? av - bv : bv - av;
@@ -2013,7 +2096,11 @@ function renderRegistryUnitDetailTable(container, unitDetails){
   container.appendChild(header);
 
   const allUnitIds = rows.map(d => d.unit).filter(Boolean);
-  let totalCharge = 0, totalTax = 0;
+  const rowsContainer = document.createElement('div');
+  rowsContainer.className = 'registry-unit-detail-rows';
+  container.appendChild(rowsContainer);
+
+  let grandTotal = 0;
   rows.forEach(d => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
@@ -2033,15 +2120,17 @@ function renderRegistryUnitDetailTable(container, unitDetails){
     row.appendChild(unitCell);
     row.appendChild(mkCell(d.lease||'', 100));
     row.appendChild(mkCell(d.costCenter||'', 110));
-    row.appendChild(mkCell(formatCurrency(d.tax||'0'), 110));
-    row.appendChild(mkCell(formatCurrency(d.charge||'0'), 110));
-    container.appendChild(row);
-    totalTax += parseFloat(d.tax)||0; totalCharge += parseFloat(d.charge)||0;
+    row.appendChild(mkCell(formatCurrency(d.tax||'0'), 100));
+    row.appendChild(mkCell(formatCurrency(d.other||'0'), 110));
+    row.appendChild(mkCell(formatCurrency(d.charge||'0'), 100));
+    row.appendChild(mkCell(formatCurrency(rowTotalOf(d).toFixed(2)), 110));
+    rowsContainer.appendChild(row);
+    grandTotal += rowTotalOf(d);
   });
 
   const totalRow = document.createElement('div');
   totalRow.style.cssText = 'text-align:right;padding:8px 4px 2px;font-size:13px;font-weight:700;color:#374151;';
-  totalRow.textContent = 'Total (Charge + Tax): ' + formatCurrency((totalCharge+totalTax).toFixed(2));
+  totalRow.textContent = 'Total (Tax + Other Charges + Amount): ' + formatCurrency(grandTotal.toFixed(2));
   container.appendChild(totalRow);
   return true;
 }
@@ -2231,7 +2320,7 @@ function renderRegistries(keepOpenRegistryId){
     deleteBtn.style.color = '#dc2626';
     deleteBtn.addEventListener('mouseenter', () => deleteBtn.style.background = '#fee');
     deleteBtn.addEventListener('mouseleave', () => deleteBtn.style.background = 'transparent');
-    deleteBtn.addEventListener('click', (e) => {
+    deleteBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       menuPanel.style.display = 'none';
       const hasId = !!r.id;
@@ -2239,11 +2328,18 @@ function renderRegistries(keepOpenRegistryId){
         ? `Delete registry ${r.seq}?`
         : `Registry ${r.seq} (WD ${r.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so this app can't target its row there for deletion. Continuing will remove it from this list only — you'll still need to delete the matching row directly in the "invoices" sheet yourself. Continue?`;
       if(confirm(confirmMsg)){
-        // Delete registry from Google Sheets — only when we actually have a safe row identifier.
-        // Without one, calling delete with a blank id risks matching the wrong row on the backend,
-        // so we skip the network call entirely and rely on the user cleaning up the sheet directly.
+        // Delete from Google Sheets FIRST and wait for it to actually complete before touching
+        // local state. A silent-background (fire-and-forget) auto-refresh runs every 60s and
+        // fully overwrites state.registries from whatever Sheets currently has — if we removed
+        // this row locally before the server-side delete finished, that auto-refresh could pull
+        // the still-there row back in and make it reappear until the next refresh cycle.
         if(hasId){
-          DB.deleteRegistry(r.id).catch(e => console.error('Registry delete error:', e));
+          try{
+            await DB.deleteRegistry(r.id);
+          }catch(err){
+            alert('Failed to delete from Google Sheets: ' + err.message);
+            return;
+          }
         }
 
         // Delete the registry from local state by exact object identity (not just id) — several
@@ -3629,8 +3725,9 @@ qs('#userCancelBtn').addEventListener('click', ()=>{
 // invoice cancel button: clear editing state and reset form
 const invCancelBtn = qs('#invoiceCancelBtn'); if(invCancelBtn){ invCancelBtn.addEventListener('click', ()=>{
   const form = qs('#invoiceForm'); if(!form) return; form.reset(); delete form.dataset.editing; const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice'; invCancelBtn.style.display = 'none'; const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
-  const unitToggle = qs('#invoiceUnitToggle'); if(unitToggle) unitToggle.textContent = 'Select units';
-  const leaseToggle = qs('#invoiceLeaseToggle'); if(leaseToggle) leaseToggle.textContent = 'Select leases';
+  const leaseSearchEl2 = qs('#invoiceLeaseSearch'); if(leaseSearchEl2){ leaseSearchEl2.value=''; leaseSearchEl2.dispatchEvent(new Event('input')); }
+  const unitSearchEl2 = qs('#invoiceUnitSearch'); if(unitSearchEl2){ unitSearchEl2.value=''; unitSearchEl2.dispatchEvent(new Event('input')); }
+  if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
   if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
 }); }
 
@@ -3871,6 +3968,8 @@ function startAutoRefresh(){
         category: String(r.category || ''),
         totalAmount: String(r.totalAmount || ''),
         lease: String(r.lease || ''),
+        leases: (()=>{ const v = DB.parseField(r.leases); return Array.isArray(v) ? v : []; })(),
+        unitDetails: (()=>{ const v = DB.parseField(r.unitDetails); return Array.isArray(v) ? v : []; })(),
         periodStart: String(r.periodStart || '').slice(0,10),
         periodEnd: String(r.periodEnd || '').slice(0,10),
         submittedDate: String(r.submittedDate || '').slice(0,10),
@@ -8378,7 +8477,7 @@ function openRegistryEditModal(registry){
   // back to a best-effort reconstruction for older registries that predate that field)
   const seedFromDetails = {};
   getRegistryUnitDetails(registry).forEach(d => {
-    if(d && d.unit) seedFromDetails[d.unit] = { tax: d.tax || '', charge: d.charge || '' };
+    if(d && d.unit) seedFromDetails[d.unit] = { tax: d.tax || '', other: d.other || '', charge: d.charge || '' };
   });
   renderRegistryUnitBreakdown(seedFromDetails);
 
@@ -8451,10 +8550,10 @@ if(registryEditSaveBtn){
     const newUnits = getSelectedRegistryUnits();
     const selectedLeases = getSelectedRegistryLeases();
 
-    // The per-unit Charge + Tax breakdown must add up to the declared Total Amount.
+    // The per-unit Tax + Other Charges + Amount breakdown must add up to the declared Total Amount.
     renderRegistryUnitBreakdown();
     if(!unitBreakdownMatches('registryUnitBreakdown')){
-      alert('The sum of Charge Amount + Tax Amount for the selected units must equal the Total Amount. Edit not saved.');
+      alert('The sum of Tax + Other Charges + Amount for the selected units must equal the Total Amount. Edit not saved.');
       return;
     }
 
@@ -8469,6 +8568,7 @@ if(registryEditSaveBtn){
       const rowData = breakdownData[uid] || {};
       const chargeAmount = (function(){ const n = parseCurrency(rowData.charge||''); return n===null ? '' : n.toFixed(2); })();
       const taxAmount = (function(){ const n = parseCurrency(rowData.tax||''); return n===null ? '' : n.toFixed(2); })();
+      const otherAmount = (function(){ const n = parseCurrency(rowData.other||''); return n===null ? '' : n.toFixed(2); })();
       if(resolved.lease) uniqueLeasesSet.add(resolved.lease);
       newUnitDetails.push({
         unit: uid,
@@ -8479,6 +8579,7 @@ if(registryEditSaveBtn){
         invoicing: resolved.invoicing || '',
         costCenter: unitRec ? (unitRec.costCenter||'') : '',
         tax: taxAmount,
+        other: otherAmount,
         charge: chargeAmount
       });
 
@@ -8489,7 +8590,7 @@ if(registryEditSaveBtn){
         periodStart: newPeriodStart, periodEnd: newPeriodEnd, submittedDate: newSubmittedDate,
         lease: resolved.lease || '', company: resolved.company || '', supplier: resolved.supplier || '',
         arrangement: resolved.arrangement || '', invoicing: resolved.invoicing || '',
-        amount: chargeAmount, taxAmount: taxAmount
+        amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherAmount
       };
       if(existingInv){
         Object.assign(existingInv, invFields);

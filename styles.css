@@ -41,7 +41,7 @@ header h1{margin:0;font-size:18px}
 .actions > .file-label{background:var(--card)}
 .actions > .file-label:hover{background: rgba(0,0,0,0.06); color: #000}
 .file-label input{display:none}
-button{background:var(--accent);color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer}
+button{background:var(--accent);color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer;user-select:none}
 /* Global hover/active transition for buttons: use a light-gray hover background and slight press effect */
 button{transition:background 140ms ease, transform 120ms ease}
 button:hover{background: rgba(0,0,0,0.06) !important; color: #000 !important}
@@ -65,14 +65,45 @@ button[title]{background:#f97316}
 #content{flex:1;background:var(--card);padding:20px;border-radius:0 0 8px 8px;min-height:60vh;border:1px solid #e6e9ee;border-top:none}
 .tab-panel{display:none}
 .tab-panel.active{display:block}
-.invoice-registration-block{border:1px solid #e6e9ee;border-radius:10px;padding:16px 16px 4px;margin-bottom:16px;background:#fbfcfe}
+.invoice-registration-block{border:1px solid #d7dce2;border-radius:10px;padding:16px 16px 4px;margin-bottom:16px;background:#e9ecf0}
 .invoice-registration-block-title{margin:0 0 12px;font-size:15px;font-weight:700;color:#374151}
 .settings-block{border:1px solid #e6e9ee;border-radius:10px;padding:16px 16px 4px;margin-bottom:16px;background:#fbfcfe}
 .settings-block-title{margin:0 0 12px;font-size:15px;font-weight:700;color:#374151}
 .inline-form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .invoice-form-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%}
-.invoice-unit-breakdown{width:100%;border:1px solid #e6e9ee;border-radius:8px;padding:8px 10px;margin:4px 0;background:#fafbfc;overflow-x:auto}
+.invoice-unit-breakdown{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;margin:10px 0;background:#fff;overflow-x:auto;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
+.invoice-picker-row{align-items:flex-start;border-top:1px solid #d7dce2;padding-top:12px;margin-top:8px}
+.invoice-picker-col{flex:1 1 280px;display:flex;flex-direction:column;gap:4px}
+.invoice-picker-label{font-weight:600;font-size:13px;color:#374151}
+.invoice-picker-label-row{display:flex;justify-content:space-between;align-items:center}
+.small-link{border:none;background:transparent;color:#0b74de;font-size:12px;font-weight:600;cursor:pointer;padding:2px 4px;border-radius:4px}
+.small-link:hover{background:#eff6ff;text-decoration:underline}
+.picker-search-wrap{position:relative;width:100%}
+.picker-search{padding:6px 24px 6px 8px;border:1px solid #e6e6e6;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box}
+/* button[title]{background:#f97316} is a global rule that would otherwise paint this orange */
+.picker-search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:none !important;background:transparent !important;cursor:pointer;font-size:16px;font-weight:700;line-height:1;color:#6b7280 !important;display:none;padding:3px 6px;border-radius:4px}
+.picker-search-clear:hover{color:#374151 !important;background:#e5e7eb !important}
+/* Rows are ~30px tall; keep the box between ~3 and ~7 rows tall (fewer rows just leave
+   blank space) instead of jumping in height every time a lease/unit gets checked, while
+   still shrinking the max on shorter screens. */
+.picker-box{min-height:102px;max-height:min(222px, 32vh);overflow-y:auto;border:1px solid #d1d5db;border-radius:6px;padding:6px;display:flex;flex-direction:column;gap:0;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
+.lease-checkbox-row, .unit-checkbox-row{border-bottom:1px solid #eef0f3;user-select:none}
+.lease-checkbox-row:last-child, .unit-checkbox-row:last-child{border-bottom:none}
+.lease-checkbox-row:hover, .unit-checkbox-row:hover{background:#eef4fb}
+.unit-breakdown-row, .registry-unit-detail-row{transition:background 0.12s ease;user-select:none}
+.unit-breakdown-row:hover, .registry-unit-detail-row:hover{background:#eef4fb}
+.unit-breakdown-row:hover .ub-tax, .unit-breakdown-row:hover .ub-other, .unit-breakdown-row:hover .ub-charge{background:#eef4fb}
+.unit-breakdown-row.selected, .registry-unit-detail-row.selected{background:#dbeafe}
+.unit-breakdown-row.selected .ub-tax, .unit-breakdown-row.selected .ub-other, .unit-breakdown-row.selected .ub-charge{background:#dbeafe}
 .registry-unit-detail-table{overflow-x:auto;margin-top:2px}
+/* Fixed-height scroll regions for the row lists (header/total stay outside, fixed) so the
+   block's footprint stays constant whether 1 or 15 rows are shown, only scrolling past the cap. */
+.unit-breakdown-rows{height:min(320px, 46vh);overflow-y:auto}
+.unit-breakdown-rows.expanded{height:auto;max-height:none}
+.invoice-lease-detail-rows{height:min(150px, 26vh);overflow-y:auto}
+.unit-breakdown-expand-btn{border:1px solid #d1d5db !important;background:#fff !important;color:#6b7280 !important;font-size:11px;line-height:1;padding:2px 10px;border-radius:0 0 6px 6px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.06)}
+.unit-breakdown-expand-btn:hover{background:#f3f4f6 !important;color:#374151 !important}
+.invoice-actions-row{border-top:1px solid #d7dce2;padding-top:12px;margin-top:8px}
 .inline-form input{padding:8px;border:1px solid #e6e9ee;border-radius:6px}
 .inline-form select{padding:8px;border:1px solid #000;border-radius:6px;background:#fff;font-size:14px;color:#000;height:36px}
 .inline-form input[type="date"]{height:36px;padding:6px 8px}
