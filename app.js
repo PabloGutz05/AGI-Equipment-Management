@@ -127,6 +127,24 @@ function initWeatherWidgets(){
   }, 600000);
 }
 
+// --- Modal scroll lock ---
+// Each modal toggles its own `style.display`/`aria-hidden` independently (no single shared
+// open/close function to hook into), so instead of touching every call site we just watch all
+// `.modal` elements for style changes and lock body/html scroll whenever any of them is visible.
+// This stops the page behind a modal from scrolling when the user scrolls over the backdrop.
+(function setupModalScrollLock(){
+  const modals = Array.from(document.querySelectorAll('.modal'));
+  if(modals.length === 0) return;
+  function refresh(){
+    const anyOpen = modals.some(m => getComputedStyle(m).display !== 'none');
+    document.documentElement.classList.toggle('modal-open-lock', anyOpen);
+    document.body.classList.toggle('modal-open-lock', anyOpen);
+  }
+  const observer = new MutationObserver(refresh);
+  modals.forEach(m => observer.observe(m, { attributes: true, attributeFilter: ['style'] }));
+  refresh();
+})();
+
 // --- Tabs ---
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -591,7 +609,132 @@ qs('#invoiceForm').addEventListener('submit', e=>{
   };
 
   const editingId = form.dataset.editing || null;
-  if(editingId){
+  let editingGroupIds = null;
+  if(form.dataset.editingGroupIds){
+    try{ editingGroupIds = JSON.parse(form.dataset.editingGroupIds); }catch(e){ editingGroupIds = null; }
+  }
+
+  if(editingGroupIds && editingGroupIds.length){
+    // Editing every invoice in a WD group at once (see the "Edit" action in the invoice list):
+    // reconcile whichever units are now selected against the group's original member invoices,
+    // updating in place, adding newly-checked units, and dropping any that were unchecked.
+    let units = [];
+    if(typeof fd.getAll === 'function'){
+      units = fd.getAll('invoiceUnit').map(s=> (s||'').toString().trim()).filter(Boolean);
+    }
+    if(units.length === 0){
+      const single = (fd.get('invoiceUnit') || '').toString();
+      units = single.split(/[;,]+/).map(s=> s.trim()).filter(Boolean);
+    }
+
+    const selectedLeases = getSelectedInvoiceLeases();
+    const breakdownData = getInvoiceBreakdownRowsData();
+    const originalInvoices = (state.invoices||[]).filter(inv => editingGroupIds.indexOf(inv.id) !== -1);
+
+    const skippedGroup = [];
+    const keepIds = new Set();
+    const finalUnits = [];
+    const finalLeases = [];
+    const finalUnitDetails = [];
+
+    units.forEach(uVal => {
+      const existingForUnit = originalInvoices.find(i => (i.unit||'').toString().trim().toLowerCase() === uVal.toString().trim().toLowerCase());
+      const resolved = resolveInvoiceUnitLeaseInfo(uVal, selectedLeases);
+
+      // Only newly-added units (not already part of this group) need a clash check —
+      // re-saving a unit that was already here is expected, not a duplicate.
+      if(!existingForUnit){
+        const clash = (state.invoices || []).find(inv => {
+          if(editingGroupIds.indexOf(inv.id) !== -1) return false;
+          const aLease = (inv.lease||'').toString().trim().toLowerCase();
+          const aCat = (inv.category||'').toString().trim().toLowerCase();
+          const aUnit = (inv.unit||'').toString().trim().toLowerCase();
+          const aWd = (inv.wdNumber||'').toString().trim().toLowerCase();
+          return aLease === (resolved.lease||'').toString().trim().toLowerCase()
+            && aCat === (baseInvoice.category||'').toString().trim().toLowerCase()
+            && aUnit === uVal.toString().trim().toLowerCase()
+            && aWd === (baseInvoice.wdNumber||'').toString().trim().toLowerCase();
+        });
+        if(clash){ skippedGroup.push(uVal); return; }
+      }
+
+      const rowData = breakdownData[uVal] || {};
+      const chargeAmount = (function(){ const n = parseCurrency(rowData.charge||''); return n===null ? '' : n.toFixed(2); })();
+      const taxAmount = (function(){ const n = parseCurrency(rowData.tax||''); return n===null ? '' : n.toFixed(2); })();
+      const otherCharges = (function(){ const n = parseCurrency(rowData.other||''); return n===null ? '' : n.toFixed(2); })();
+      const targetId = existingForUnit ? existingForUnit.id : id();
+      const invoiceObj = Object.assign({}, baseInvoice, resolved, { id: targetId, unit: uVal, amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherCharges });
+
+      if(existingForUnit){
+        state.invoices = state.invoices.map(inv => inv.id === targetId ? Object.assign({}, inv, invoiceObj) : inv);
+      } else {
+        state.invoices.push(invoiceObj);
+      }
+      keepIds.add(targetId);
+      finalUnits.push(uVal);
+      if(resolved.lease) finalLeases.push(resolved.lease);
+
+      const unitRecForDetail = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim() === uVal.toString().trim());
+      finalUnitDetails.push({
+        unit: uVal,
+        lease: resolved.lease || '',
+        company: resolved.company || '',
+        supplier: resolved.supplier || '',
+        arrangement: resolved.arrangement || '',
+        invoicing: resolved.invoicing || '',
+        costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
+        tax: taxAmount,
+        other: otherCharges,
+        charge: chargeAmount
+      });
+    });
+
+    // Units that were part of the original group but got unchecked during this edit are removed
+    originalInvoices.forEach(inv => {
+      if(!keepIds.has(inv.id)) state.invoices = state.invoices.filter(i => i.id !== inv.id);
+    });
+
+    // Keep the matching registry (by WD/Doc) in sync with the reconciled unit/lease/detail set —
+    // registries carry their own durable snapshot since individual invoices aren't persisted.
+    try{
+      const targetWd = (baseInvoice.wdNumber || '').toString().trim();
+      const targetDoc = (baseInvoice.docNumber || '').toString().trim();
+      const regIdx = (state.registries||[]).findIndex(r => (r.wdNumber||'').toString().trim() === targetWd && (r.docNumber||'').toString().trim() === targetDoc);
+      if(regIdx !== -1){
+        const uniqueLeases = Array.from(new Set(finalLeases.filter(Boolean)));
+        state.registries[regIdx].units = finalUnits.slice();
+        state.registries[regIdx].unitCount = finalUnits.length;
+        state.registries[regIdx].leases = uniqueLeases;
+        state.registries[regIdx].lease = uniqueLeases.join(', ');
+        state.registries[regIdx].unitDetails = finalUnitDetails.slice();
+        state.registries[regIdx].totalAmount = baseInvoice.amount || state.registries[regIdx].totalAmount;
+        DB.updateRegistry(state.registries[regIdx]).catch(e => console.error('Registry sync error:', e));
+      }
+    }catch(e){}
+
+    saveState(); renderInvoices(); renderRegistries();
+    renderUnitOverview(); renderLeaseOverview(); renderOverview();
+    form.reset(); delete form.dataset.editing; delete form.dataset.editingGroupIds;
+    const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice';
+    const invCancel = qs('#invoiceCancelBtn'); if(invCancel) invCancel.style.display = 'none';
+    const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+
+    const leaseSearchEl = qs('#invoiceLeaseSearch'); if(leaseSearchEl){ leaseSearchEl.value=''; leaseSearchEl.dispatchEvent(new Event('input')); }
+    const unitSearchEl = qs('#invoiceUnitSearch'); if(unitSearchEl){ unitSearchEl.value=''; unitSearchEl.dispatchEvent(new Event('input')); }
+    if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
+    if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
+
+    const commentHiddenInput = qs('#invoiceComment');
+    if(commentHiddenInput) commentHiddenInput.value = '';
+    const commentBtn = qs('#invoiceCommentBtn');
+    if(commentBtn){
+      commentBtn.textContent = 'Add Comment';
+      commentBtn.title = '';
+      try{ commentBtn.classList.remove('btn-warning'); commentBtn.classList.add('btn-primary'); }catch(e){}
+    }
+
+    if(skippedGroup.length){ alert('Some units were skipped because a matching invoice already exists elsewhere: ' + skippedGroup.join(', ')); }
+  } else if(editingId){
     // editing an existing single invoice: prefer first selected unit when available
     let unitVal = '';
     if(typeof fd.getAll === 'function'){
@@ -984,6 +1127,7 @@ function renderInvoiceLeaseDetailTable(){
   const rowsContainer = document.createElement('div');
   rowsContainer.className = 'invoice-lease-detail-rows';
   wrap.appendChild(rowsContainer);
+  wireHorizontalScrollSync(rowsContainer, header);
 
   // A lease whose Supplier differs from the first selected lease's Supplier gets flagged —
   // mixing suppliers under one WD invoice is unusual and worth a visual heads-up.
@@ -1125,6 +1269,17 @@ function getColWidth(wrap, key, defaultWidth){
 }
 function setColWidth(wrap, key, width){
   wrap.dataset['colw_' + key] = String(Math.round(width));
+}
+// Keeps a fixed header/total row's horizontal position matched to its scrollable rows region.
+// The rows region is the only one with its own scrollbar (overflow-x:auto); header/total use
+// overflow:hidden so, without this, their later columns would simply be clipped off and never
+// reachable once grown columns push the table wider than its box — this mirrors whatever the
+// user scrolls the rows to instead, so titles always line up with the data beneath them.
+function wireHorizontalScrollSync(scrollEl, ...followers){
+  if(!scrollEl) return;
+  scrollEl.addEventListener('scroll', () => {
+    followers.forEach(el => { if(el) el.scrollLeft = scrollEl.scrollLeft; });
+  });
 }
 // Wires a header cell so double-clicking it resizes the column to fit its widest currently
 // visible content (label included), then re-renders via `rerenderFn`.
@@ -1295,6 +1450,7 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
   const rowsContainer = document.createElement('div');
   rowsContainer.className = 'unit-breakdown-rows';
   wrap.appendChild(rowsContainer);
+  wireHorizontalScrollSync(rowsContainer, header);
 
   rows.forEach(({uid, unitRec}) => {
     const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
@@ -1973,21 +2129,33 @@ function renderInvoices(){
       menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
     });
 
-    // Edit: open invoice form populated with first invoice in group
+    // Edit: open invoice form populated with every invoice in this WD group — not just the
+    // first one. Loading only list[0] meant a multi-unit group always showed a single row,
+    // which is also why "Divide" (only shown for >1 unit) could never appear here.
     editOpt.addEventListener('click', ()=>{
       if(!list || list.length === 0) return; const inv = list[0];
       const form = qs('#invoiceForm'); if(!form) return;
-      form.dataset.editing = inv.id;
-      if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions(inv.lease ? [inv.lease] : []);
+      delete form.dataset.editing;
+      form.dataset.editingGroupIds = JSON.stringify(list.map(i => i.id));
+
+      const groupLeases = Array.from(new Set(list.map(i => i.lease).filter(Boolean)));
+      const groupUnits = list.map(i => i.unit).filter(Boolean);
+
+      if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions(groupLeases);
       if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
       const cat = form.querySelector('#invoiceCategory'); if(cat) cat.value = inv.category || '';
-      if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(inv.lease, [inv.unit]);
+      if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(groupLeases, groupUnits);
       const wd = form.querySelector('#invoiceWD'); if(wd) wd.value = inv.wdNumber || '';
       const doc = form.querySelector('#invoiceDoc'); if(doc) doc.value = inv.docNumber || '';
-      // Declared Amount now represents Tax + Other Charges + Amount for the selected unit(s)
+      // Declared Amount = Tax + Other Charges + Amount summed across every unit in the group
       const amt = form.querySelector('#invoiceAmount');
-      if(amt){ const chargeN = parseCurrency(inv.amount||'') || 0; const taxN = parseCurrency(inv.taxAmount||'') || 0; const otherN = parseCurrency(inv.otherCharges||'') || 0; amt.value = (chargeN + taxN + otherN).toFixed(2); }
-      if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown({ [inv.unit]: { charge: inv.amount || '', tax: inv.taxAmount || '', other: inv.otherCharges || '' } });
+      if(amt){
+        const groupTotal = list.reduce((s,i) => s + (parseCurrency(i.amount||'')||0) + (parseCurrency(i.taxAmount||'')||0) + (parseCurrency(i.otherCharges||'')||0), 0);
+        amt.value = groupTotal.toFixed(2);
+      }
+      const seed = {};
+      list.forEach(i => { if(i.unit) seed[i.unit] = { charge: i.amount || '', tax: i.taxAmount || '', other: i.otherCharges || '' }; });
+      if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown(seed);
       const ps = form.querySelector('#invoicePeriodStart'); if(ps) ps.value = inv.periodStart || '';
       const pe = form.querySelector('#invoicePeriodEnd'); if(pe) pe.value = inv.periodEnd || '';
       const sub = form.querySelector('#invoiceSubmitted'); if(sub) sub.value = inv.submittedDate || new Date().toISOString().slice(0,10);
@@ -3817,7 +3985,7 @@ qs('#userCancelBtn').addEventListener('click', ()=>{
 
 // invoice cancel button: clear editing state and reset form
 const invCancelBtn = qs('#invoiceCancelBtn'); if(invCancelBtn){ invCancelBtn.addEventListener('click', ()=>{
-  const form = qs('#invoiceForm'); if(!form) return; form.reset(); delete form.dataset.editing; const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice'; invCancelBtn.style.display = 'none'; const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+  const form = qs('#invoiceForm'); if(!form) return; form.reset(); delete form.dataset.editing; delete form.dataset.editingGroupIds; const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice'; invCancelBtn.style.display = 'none'; const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
   const leaseSearchEl2 = qs('#invoiceLeaseSearch'); if(leaseSearchEl2){ leaseSearchEl2.value=''; leaseSearchEl2.dispatchEvent(new Event('input')); }
   const unitSearchEl2 = qs('#invoiceUnitSearch'); if(unitSearchEl2){ unitSearchEl2.value=''; unitSearchEl2.dispatchEvent(new Event('input')); }
   if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
@@ -4037,6 +4205,12 @@ function startAutoRefresh(){
     if(!isAuthenticated()) return;
     const root = qs('#appRoot');
     if(!root || root.style.display === 'none') return;
+    // Skip this cycle entirely while the Registry Edit modal is open: replacing
+    // state.registries with freshly-fetched objects mid-edit would invalidate the exact
+    // object reference the edit/save flow holds onto (_registryBeingEdited), causing a
+    // "Registry not found" error on save if the modal stays open past this 60s interval.
+    const registryModal = qs('#registryEditModal');
+    if(registryModal && getComputedStyle(registryModal).display !== 'none') return;
 
     _refreshRunning = true;
     try{
@@ -8663,8 +8837,18 @@ if(registryEditSaveBtn){
     // Use the exact object reference captured when the modal was opened, not a lookup by id —
     // registries with a blank/missing id in Sheets would otherwise all collide on `id === ''`
     // and this could silently save changes onto the wrong registry.
-    const registry = _registryBeingEdited;
-    if(!registry || !state.registries.includes(registry)){ alert('Registry not found - please close and reopen the edit modal'); return; }
+    let registry = _registryBeingEdited;
+    if(registry && !state.registries.includes(registry)){
+      // state.registries got replaced out from under us (e.g. the background auto-refresh
+      // firing right as the modal was open) — fall back to matching the same logical
+      // registry by id (when non-blank; blank ids can collide across multiple rows) or by
+      // its stable seq number, rather than failing the whole save.
+      registry = (registry.id && state.registries.find(r => r.id === registry.id))
+        || (registry.seq !== undefined && state.registries.find(r => r.seq === registry.seq))
+        || null;
+      if(registry) _registryBeingEdited = registry;
+    }
+    if(!registry){ alert('Registry not found - please close and reopen the edit modal'); return; }
 
     // Read the new field values without mutating the registry yet, so a blocked
     // (mismatched-total) save leaves the in-memory registry untouched.
@@ -8678,9 +8862,22 @@ if(registryEditSaveBtn){
     const newUnits = getSelectedRegistryUnits();
     const selectedLeases = getSelectedRegistryLeases();
 
-    // The per-unit Tax + Other Charges + Amount breakdown must add up to the declared Total Amount.
+    // Only enforce the Tax + Other Charges + Amount breakdown matching the declared Total
+    // Amount when the user is actually entering per-unit detail here. Many older registries
+    // were never broken down per unit and never will be (too much retroactive work) — those
+    // should still be editable (WD/Doc/category/dates, etc.) without being forced to fully
+    // detail every unit first. The moment any per-unit amount is typed in, the normal strict
+    // match requirement kicks back in so a half-entered breakdown can't be saved silently.
     renderRegistryUnitBreakdown();
-    if(!unitBreakdownMatches('registryUnitBreakdown')){
+    const breakdownWrapEl = qs('#registryUnitBreakdown');
+    let breakdownSum = 0;
+    if(breakdownWrapEl){
+      breakdownWrapEl.querySelectorAll('.unit-breakdown-row').forEach(row => {
+        const c = row.querySelector('.ub-charge'); const t = row.querySelector('.ub-tax'); const o = row.querySelector('.ub-other');
+        breakdownSum += (parseCurrency(c ? c.value : '') || 0) + (parseCurrency(t ? t.value : '') || 0) + (parseCurrency(o ? o.value : '') || 0);
+      });
+    }
+    if(breakdownSum > 0 && !unitBreakdownMatches('registryUnitBreakdown')){
       alert('The sum of Tax + Other Charges + Amount for the selected units must equal the Total Amount. Edit not saved.');
       return;
     }

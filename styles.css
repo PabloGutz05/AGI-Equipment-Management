@@ -71,7 +71,7 @@ button[title]{background:#f97316}
 .settings-block-title{margin:0 0 12px;font-size:15px;font-weight:700;color:#374151}
 .inline-form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .invoice-form-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%}
-.invoice-unit-breakdown{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;margin:10px 0;background:#fff;overflow-x:auto;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
+.invoice-unit-breakdown{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
 .invoice-picker-row{align-items:flex-start;border-top:1px solid #d7dce2;padding-top:12px;margin-top:8px}
 .invoice-picker-col{flex:1 1 280px;display:flex;flex-direction:column;gap:4px}
 .invoice-picker-label{font-weight:600;font-size:13px;color:#374151}
@@ -102,10 +102,13 @@ button[title]{background:#f97316}
    block's footprint stays constant whether 1 or 15 rows are shown, only scrolling past the cap.
    scrollbar-gutter:stable reserves the scrollbar's width even before it actually appears, and
    the header/total reserve the same gutter (via the matching classes below) so column titles
-   never drift out of alignment with the rows once a scrollbar shows up. */
-.unit-breakdown-rows{height:min(320px, 46vh);overflow-y:auto;scrollbar-gutter:stable}
+   never drift out of alignment with the rows once a scrollbar shows up. overflow-x:auto lets
+   the rows scroll sideways once grown columns exceed the table's width; header/total scroll
+   in lockstep via JS (see wireHorizontalScrollSync) rather than getting their own scrollbar,
+   since overflow:hidden here would otherwise just clip their later columns outright. */
+.unit-breakdown-rows{height:min(320px, 46vh);overflow-y:auto;overflow-x:auto;scrollbar-gutter:stable}
 .unit-breakdown-rows.expanded{height:auto;max-height:none}
-.invoice-lease-detail-rows{height:min(150px, 26vh);overflow-y:auto;scrollbar-gutter:stable}
+.invoice-lease-detail-rows{height:min(150px, 26vh);overflow-y:auto;overflow-x:auto;scrollbar-gutter:stable}
 .unit-breakdown-header, .unit-breakdown-total{overflow:hidden;scrollbar-gutter:stable}
 .invoice-lease-detail-header{overflow:hidden;scrollbar-gutter:stable}
 .unit-breakdown-expand-btn{border:1px solid #d1d5db !important;background:#fff !important;color:#6b7280 !important;font-size:11px;line-height:1;padding:2px 10px;border-radius:0 0 6px 6px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.06)}
@@ -332,6 +335,10 @@ footer{padding:12px;text-align:center;color:var(--muted)}
   .inline-form textarea{width:100%;min-width:0}
   .inline-form button[type="submit"], .inline-form button[type="button"]{min-width:80px}
 }
+
+/* Prevents the page behind a modal from scrolling when the user scrolls/wheels over the
+   backdrop (or any non-scrollable part of the dialog) instead of its own content area. */
+html.modal-open-lock,body.modal-open-lock{overflow:hidden !important;height:100%}
 
 /* Modal for comment editing */
 .modal{position:fixed;inset:0;z-index:120;min-height:100vh;display:flex;align-items:center;justify-content:center}
