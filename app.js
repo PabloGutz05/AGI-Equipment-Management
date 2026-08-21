@@ -2234,13 +2234,17 @@ function renderRegistries(keepOpenRegistryId){
     deleteBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       menuPanel.style.display = 'none';
-      if(!r.id){
-        alert(`Registry ${r.seq} (WD ${r.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so it can't be safely deleted from here — with a blank id, this could accidentally target a different registry that shares the same blank value. Please remove this row directly in the "invoices" sheet, then reload.`);
-        return;
-      }
-      if(confirm(`Delete registry ${r.seq}?`)){
-        // Delete registry from Google Sheets
-        DB.deleteRegistry(r.id).catch(e => console.error('Registry delete error:', e));
+      const hasId = !!r.id;
+      const confirmMsg = hasId
+        ? `Delete registry ${r.seq}?`
+        : `Registry ${r.seq} (WD ${r.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so this app can't target its row there for deletion. Continuing will remove it from this list only — you'll still need to delete the matching row directly in the "invoices" sheet yourself. Continue?`;
+      if(confirm(confirmMsg)){
+        // Delete registry from Google Sheets — only when we actually have a safe row identifier.
+        // Without one, calling delete with a blank id risks matching the wrong row on the backend,
+        // so we skip the network call entirely and rely on the user cleaning up the sheet directly.
+        if(hasId){
+          DB.deleteRegistry(r.id).catch(e => console.error('Registry delete error:', e));
+        }
 
         // Delete the registry from local state by exact object identity (not just id) — several
         // registries can end up sharing a blank/duplicate id if their id never made it to Sheets,
@@ -8434,10 +8438,6 @@ if(registryEditSaveBtn){
     // and this could silently save changes onto the wrong registry.
     const registry = _registryBeingEdited;
     if(!registry || !state.registries.includes(registry)){ alert('Registry not found - please close and reopen the edit modal'); return; }
-    if(!registry.id){
-      alert(`Registry ${registry.seq} (WD ${registry.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so changes can't be safely synced there from here. Please edit this row directly in the "invoices" sheet, then reload.`);
-      return;
-    }
 
     // Read the new field values without mutating the registry yet, so a blocked
     // (mismatched-total) save leaves the in-memory registry untouched.
@@ -8523,8 +8523,21 @@ if(registryEditSaveBtn){
     registry.leases = uniqueLeases;
     registry.lease = uniqueLeases.join(', ');
 
-    // Save to Google Sheets and wait for confirmation before rendering
+    // Save to Google Sheets and wait for confirmation before rendering. Without a saved
+    // identifier we can't safely target this row on the backend (it could match the wrong
+    // one), so skip the network call and keep the change local-only, with a clear warning.
     const saveBtn = qs('#registryEditSaveBtn');
+    if(!registry.id){
+      saveState();
+      renderRegistries(registry.id);
+      renderInvoices();
+      renderUnitOverview();
+      renderLeaseOverview();
+      renderOverview();
+      closeRegistryEditModal();
+      alert(`Registry ${registry.seq} (WD ${registry.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so these changes were only saved in this browser session — they have NOT been synced to Sheets. Add an identifier to that row directly in the "invoices" sheet, then reload, before editing it again.`);
+      return;
+    }
     if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
     try {
       await DB.updateRegistry(registry);
