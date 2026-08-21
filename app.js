@@ -2234,13 +2234,19 @@ function renderRegistries(keepOpenRegistryId){
     deleteBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       menuPanel.style.display = 'none';
+      if(!r.id){
+        alert(`Registry ${r.seq} (WD ${r.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so it can't be safely deleted from here — with a blank id, this could accidentally target a different registry that shares the same blank value. Please remove this row directly in the "invoices" sheet, then reload.`);
+        return;
+      }
       if(confirm(`Delete registry ${r.seq}?`)){
         // Delete registry from Google Sheets
         DB.deleteRegistry(r.id).catch(e => console.error('Registry delete error:', e));
 
-        // Delete the registry from state
-        state.registries = state.registries.filter(reg => reg.id !== r.id);
-        
+        // Delete the registry from local state by exact object identity (not just id) — several
+        // registries can end up sharing a blank/duplicate id if their id never made it to Sheets,
+        // and matching by id alone would remove all of them at once instead of just this one.
+        state.registries = state.registries.filter(reg => reg !== r);
+
         // Also delete all invoices associated with this registry (matching WD number and units)
         const registryWdNumber = (r.wdNumber || '').toString().trim().toLowerCase();
         const registryUnits = Array.isArray(r.units) ? r.units.map(u => (u||'').toString().trim().toLowerCase()) : [];
@@ -8282,9 +8288,16 @@ function syncRegistryUnitOptions(leaseVals, selectedUnits){
   }
 }
 
+// Tracks the exact registry object currently open in the edit modal. Some registries have no
+// (or a blank/duplicate) id in Sheets, so looking them back up by id — as the save handler used
+// to — could silently match and overwrite a *different* registry. Holding the direct object
+// reference instead sidesteps that entirely.
+let _registryBeingEdited = null;
+
 function openRegistryEditModal(registry){
   const modal = qs('#registryEditModal');
   if(!modal) return;
+  _registryBeingEdited = registry;
 
   // Clear any leftover breakdown rows/sort-state from a previously edited registry so its
   // Tax/Charge values can't leak in as false "existing" data ahead of this registry's own seed.
@@ -8416,10 +8429,15 @@ if(editRegistryAmountField) editRegistryAmountField.addEventListener('input', ()
 const registryEditSaveBtn = qs('#registryEditSaveBtn');
 if(registryEditSaveBtn){
   registryEditSaveBtn.addEventListener('click', async () => {
-    const registryId = qs('#editRegistryId').value;
-    const registry = state.registries.find(r => r.id === registryId);
-    console.log('Registry save - ID:', registryId, 'Found:', !!registry);
-    if(!registry){ alert('Registry not found - please close and reopen the edit modal'); return; }
+    // Use the exact object reference captured when the modal was opened, not a lookup by id —
+    // registries with a blank/missing id in Sheets would otherwise all collide on `id === ''`
+    // and this could silently save changes onto the wrong registry.
+    const registry = _registryBeingEdited;
+    if(!registry || !state.registries.includes(registry)){ alert('Registry not found - please close and reopen the edit modal'); return; }
+    if(!registry.id){
+      alert(`Registry ${registry.seq} (WD ${registry.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so changes can't be safely synced there from here. Please edit this row directly in the "invoices" sheet, then reload.`);
+      return;
+    }
 
     // Read the new field values without mutating the registry yet, so a blocked
     // (mismatched-total) save leaves the in-memory registry untouched.
