@@ -1371,9 +1371,26 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     wrap.appendChild(expandWrap);
   }
 
+  // Bottom bar: "Divide" (only when more than one unit is listed — helps with invoices that
+  // don't break the amount out per unit) on the left, running total on the right.
   const totalRow = document.createElement('div');
   totalRow.className = 'unit-breakdown-total';
-  totalRow.style.cssText = 'text-align:right;padding:8px 4px 2px;font-size:14px;font-weight:700;';
+  totalRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 4px 2px;font-size:14px;';
+  if(rows.length > 1){
+    const divideBtn = document.createElement('button');
+    divideBtn.type = 'button';
+    divideBtn.className = 'small-link';
+    divideBtn.textContent = 'Divide';
+    divideBtn.title = "Split an invoice's Tax/Other Charges/Amount evenly across the selected units";
+    divideBtn.addEventListener('click', (e) => { e.stopPropagation(); openDivideAmountsModal(wrapId); });
+    totalRow.appendChild(divideBtn);
+  } else {
+    totalRow.appendChild(document.createElement('div'));
+  }
+  const totalTextEl = document.createElement('div');
+  totalTextEl.className = 'unit-breakdown-total-text';
+  totalTextEl.style.fontWeight = '700';
+  totalRow.appendChild(totalTextEl);
   wrap.appendChild(totalRow);
 
   wrap.style.display = 'block';
@@ -1384,7 +1401,7 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
 // equal the declared Amount field (red until it matches, green once it does).
 function updateUnitBreakdownTotal(wrapId){
   const wrap = qs('#' + wrapId); if(!wrap) return;
-  const totalEl = wrap.querySelector('.unit-breakdown-total'); if(!totalEl) return;
+  const totalEl = wrap.querySelector('.unit-breakdown-total-text'); if(!totalEl) return;
   let sum = 0;
   wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
     const chargeInput = row.querySelector('.ub-charge');
@@ -1406,6 +1423,77 @@ function unitBreakdownMatches(wrapId){
   return wrap.dataset.matches === 'true';
 }
 
+// --- "Divide" modal: for invoices that don't break the amount out per unit — splits a
+// declared Tax/Other Charges/Amount total evenly across whichever units are currently listed
+// in a given breakdown table (invoice creation or the Registry Edit modal, same component). ---
+let _divideTargetWrapId = null;
+
+function openDivideAmountsModal(wrapId){
+  const modal = qs('#divideAmountsModal'); if(!modal) return;
+  const wrap = qs('#' + wrapId); if(!wrap) return;
+  _divideTargetWrapId = wrapId;
+  const rowCount = wrap.querySelectorAll('.unit-breakdown-row').length;
+  const countEl = qs('#divideUnitCount'); if(countEl) countEl.textContent = String(rowCount);
+  const form = qs('#divideAmountsForm'); if(form) form.reset();
+  modal.style.display = 'block';
+}
+function closeDivideAmountsModal(){
+  const modal = qs('#divideAmountsModal'); if(modal) modal.style.display = 'none';
+  _divideTargetWrapId = null;
+}
+
+// Splits `totalVal` into `n` parts that sum back exactly to it (working in cents to avoid
+// floating-point drift), any leftover cent going to the first units.
+function splitAmountEvenly(totalVal, n){
+  const totalCents = Math.round((totalVal || 0) * 100);
+  const q = Math.floor(totalCents / n);
+  const rem = totalCents - q * n;
+  const parts = [];
+  for(let i=0;i<n;i++){ const cents = q + (i < rem ? 1 : 0); parts.push((cents/100).toFixed(2)); }
+  return parts;
+}
+
+const divideAmountsCancelBtn = qs('#divideAmountsCancelBtn');
+if(divideAmountsCancelBtn) divideAmountsCancelBtn.addEventListener('click', closeDivideAmountsModal);
+const divideAmountsModalEl = qs('#divideAmountsModal');
+if(divideAmountsModalEl){
+  const backdrop = divideAmountsModalEl.querySelector('.modal-backdrop');
+  if(backdrop) backdrop.addEventListener('click', closeDivideAmountsModal);
+}
+const divideAmountsForm = qs('#divideAmountsForm');
+if(divideAmountsForm){
+  divideAmountsForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const wrapId = _divideTargetWrapId;
+    const wrap = wrapId ? qs('#' + wrapId) : null;
+    if(!wrap){ closeDivideAmountsModal(); return; }
+
+    const rowEls = Array.from(wrap.querySelectorAll('.unit-breakdown-row'));
+    if(rowEls.length === 0){ closeDivideAmountsModal(); return; }
+
+    const taxTotal = parseCurrency(qs('#divideTax').value) || 0;
+    const otherTotal = parseCurrency(qs('#divideOther').value) || 0;
+    const chargeTotal = parseCurrency(qs('#divideCharge').value) || 0;
+
+    const taxParts = splitAmountEvenly(taxTotal, rowEls.length);
+    const otherParts = splitAmountEvenly(otherTotal, rowEls.length);
+    const chargeParts = splitAmountEvenly(chargeTotal, rowEls.length);
+
+    rowEls.forEach((row, i) => {
+      const taxInput = row.querySelector('.ub-tax');
+      const otherInput = row.querySelector('.ub-other');
+      const chargeInput = row.querySelector('.ub-charge');
+      // Dispatch a real "input" event on each so the existing auto-grow/total-recalculation
+      // listeners fire naturally, same as if the user had typed the value themselves.
+      if(taxInput){ taxInput.value = taxParts[i]; taxInput.dispatchEvent(new Event('input')); }
+      if(otherInput){ otherInput.value = otherParts[i]; otherInput.dispatchEvent(new Event('input')); }
+      if(chargeInput){ chargeInput.value = chargeParts[i]; chargeInput.dispatchEvent(new Event('input')); }
+    });
+
+    closeDivideAmountsModal();
+  });
+}
+
 // --- Invoice-form-specific thin wrappers around the generic breakdown table ---
 function getInvoiceBreakdownRowsData(){ return getUnitBreakdownRowsData('invoiceUnitBreakdown'); }
 function refreshInvoiceBreakdownIfVisible(){
@@ -1422,12 +1510,15 @@ function wireSearchClearButton(inputId, clearBtnId){
   const input = qs('#' + inputId); const clearBtn = qs('#' + clearBtnId);
   if(!input || !clearBtn) return;
   const update = () => { clearBtn.style.display = input.value ? 'block' : 'none'; };
-  input.addEventListener('input', update);
-  clearBtn.addEventListener('click', () => {
-    input.value = '';
-    input.dispatchEvent(new Event('input'));
-    input.focus();
-  });
+  if(!input.dataset.clearWired){
+    input.dataset.clearWired = 'true';
+    input.addEventListener('input', update);
+    clearBtn.addEventListener('click', () => {
+      input.value = '';
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+    });
+  }
   update();
 }
 wireSearchClearButton('invoiceLeaseSearch', 'invoiceLeaseSearchClear');
@@ -8176,29 +8267,32 @@ function showOverviewSection(sectionId){
     else if(sectionId === 'report'){ renderReport(); }
     else if(sectionId === 'anualOverview'){ renderAnualOverview(); }
   }catch(e){ /* ignore render errors */ }
-      if(sec === 'anualOverview') renderAnualOverview();
 }
 
-function initOverviewSubtabs(){
-  state.meta = state.meta || {};
-
-// --- Annual Overview placeholder ---
+// --- Annual Overview: not built yet, show a clear "under construction" notice ---
 function renderAnualOverview(){
   const el = qs('#anualOverview'); if(!el) return;
   el.innerHTML = '';
   const container = document.createElement('div');
-  container.style.cssText = 'padding:10px;border:1px solid #eef2f7;border-radius:6px;';
+  container.style.cssText = 'padding:24px;border:1px dashed #d7dce2;border-radius:8px;text-align:center;background:#f8fafc;';
+  const icon = document.createElement('div');
+  icon.style.cssText = 'font-size:28px;margin-bottom:8px;';
+  icon.textContent = '🚧';
   const title = document.createElement('div');
-  title.style.fontWeight = '600';
-  title.textContent = 'Annual Overview';
+  title.style.cssText = 'font-weight:600;font-size:15px;color:#374151;';
+  title.textContent = 'Under Construction';
   const desc = document.createElement('div');
   desc.className = 'small-muted';
   desc.style.marginTop = '6px';
-  desc.textContent = 'This section is a placeholder for annual summaries.';
+  desc.textContent = 'The Anual Overview section is not available yet — we\'ll be building this out in the near future.';
+  container.appendChild(icon);
   container.appendChild(title);
   container.appendChild(desc);
   el.appendChild(container);
 }
+
+function initOverviewSubtabs(){
+  state.meta = state.meta || {};
   // Default to Report so users immediately see the report tables
   const defaultSection = state.meta.overviewSection || 'report';
   document.querySelectorAll('.overview-tab').forEach(btn => {
@@ -8280,8 +8374,6 @@ function syncRegistryLeaseOptions(selectedValues){
     const text = document.createElement('span'); text.textContent = val; text.style.fontSize = '13px';
 
     label.appendChild(cb); label.appendChild(text);
-    label.addEventListener('mouseenter', () => { label.style.background = '#f3f6fb'; });
-    label.addEventListener('mouseleave', () => { label.style.background = 'transparent'; });
     cb.addEventListener('change', ()=>{ onRegistryLeaseSelectionChange(); });
 
     panel.appendChild(label);
@@ -8304,6 +8396,19 @@ function syncRegistryLeaseOptions(selectedValues){
     // Re-apply any active filter after the list has been rebuilt
     searchBox.dispatchEvent(new Event('input'));
   }
+
+  // Wire the (static) Clear button once
+  const clearBtn = qs('#editRegistryLeaseClearBtn');
+  if(clearBtn && !clearBtn.dataset.wired){
+    clearBtn.dataset.wired = 'true';
+    clearBtn.addEventListener('click', () => {
+      const p = qs('#editRegistryLeasePanel'); if(!p) return;
+      p.querySelectorAll('input[type="checkbox"][name="editRegistryLease"]').forEach(cb => cb.checked = false);
+      onRegistryLeaseSelectionChange();
+    });
+  }
+
+  wireSearchClearButton('editRegistryLeaseSearch', 'editRegistryLeaseSearchClear');
 }
 
 // When the selected lease set changes, refresh the union of available units and the breakdown.
@@ -8361,14 +8466,6 @@ function syncRegistryUnitOptions(leaseVals, selectedUnits){
     label.appendChild(checkbox);
     label.appendChild(text);
 
-    // Hover effect
-    label.addEventListener('mouseenter', () => {
-      label.style.background = '#f3f6fb';
-    });
-    label.addEventListener('mouseleave', () => {
-      label.style.background = 'transparent';
-    });
-
     checkbox.addEventListener('change', ()=>{ if(typeof renderRegistryUnitBreakdown === 'function') renderRegistryUnitBreakdown(); });
 
     container.appendChild(label);
@@ -8391,6 +8488,35 @@ function syncRegistryUnitOptions(leaseVals, selectedUnits){
     // Re-apply any active filter after the list has been rebuilt (e.g. lease selection changed)
     searchBox.dispatchEvent(new Event('input'));
   }
+
+  // Wire the (static) Select all button once; only checks whatever rows are currently visible
+  const selectAllBtn = qs('#editRegistryUnitSelectAllBtn');
+  if(selectAllBtn && !selectAllBtn.dataset.wired){
+    selectAllBtn.dataset.wired = 'true';
+    selectAllBtn.addEventListener('click', () => {
+      const p = qs('#editRegistryUnits'); if(!p) return;
+      p.querySelectorAll('.edit-registry-unit-row').forEach(row => {
+        if(row.style.display !== 'none'){
+          const cb = row.querySelector('input[type="checkbox"]');
+          if(cb) cb.checked = true;
+        }
+      });
+      if(typeof renderRegistryUnitBreakdown === 'function') renderRegistryUnitBreakdown();
+    });
+  }
+
+  // Wire the (static) Clear button once
+  const unitClearBtn = qs('#editRegistryUnitClearBtn');
+  if(unitClearBtn && !unitClearBtn.dataset.wired){
+    unitClearBtn.dataset.wired = 'true';
+    unitClearBtn.addEventListener('click', () => {
+      const p = qs('#editRegistryUnits'); if(!p) return;
+      p.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+      if(typeof renderRegistryUnitBreakdown === 'function') renderRegistryUnitBreakdown();
+    });
+  }
+
+  wireSearchClearButton('editRegistryUnitSearch', 'editRegistryUnitSearchClear');
 }
 
 // Tracks the exact registry object currently open in the edit modal. Some registries have no
@@ -8678,6 +8804,80 @@ if(registryEditModal){
   if(backdrop){
     backdrop.addEventListener('click', closeRegistryEditModal);
   }
+}
+
+// Drag-to-resize from any border/corner handle. The dialog starts out centered via
+// `top:50%;left:50%;transform:translate(-50%,-50%)` (see .modal-dialog in styles.css); the
+// first drag snapshots its current on-screen rect and switches it to explicit top/left/width
+// /height pixel values (transform:none) so resizing doesn't fight the centering transform.
+function makeModalResizable(dialog){
+  if(!dialog || dialog.dataset.resizeWired) return;
+  dialog.dataset.resizeWired = 'true';
+
+  const MIN_W = 480, MIN_H = 320;
+  let dir = null, startX = 0, startY = 0, startRect = null;
+
+  function pinToPixelRect(){
+    const r = dialog.getBoundingClientRect();
+    dialog.style.transform = 'none';
+    dialog.style.top = r.top + 'px';
+    dialog.style.left = r.left + 'px';
+    dialog.style.width = r.width + 'px';
+    dialog.style.height = r.height + 'px';
+    dialog.style.maxWidth = 'none';
+    return r;
+  }
+
+  function onMouseMove(e){
+    if(!dir) return;
+    const dx = e.clientX - startX, dy = e.clientY - startY;
+    let { top, left, width, height } = startRect;
+
+    if(dir.includes('e')) width = Math.max(MIN_W, startRect.width + dx);
+    if(dir.includes('s')) height = Math.max(MIN_H, startRect.height + dy);
+    if(dir.includes('w')){
+      width = Math.max(MIN_W, startRect.width - dx);
+      left = startRect.left + (startRect.width - width);
+    }
+    if(dir.includes('n')){
+      height = Math.max(MIN_H, startRect.height - dy);
+      top = startRect.top + (startRect.height - height);
+    }
+
+    // Keep the dialog fully within the viewport
+    left = Math.max(0, Math.min(left, window.innerWidth - MIN_W));
+    top = Math.max(0, Math.min(top, window.innerHeight - MIN_H));
+    width = Math.min(width, window.innerWidth - left);
+    height = Math.min(height, window.innerHeight - top);
+
+    dialog.style.left = left + 'px';
+    dialog.style.top = top + 'px';
+    dialog.style.width = width + 'px';
+    dialog.style.height = height + 'px';
+  }
+
+  function onMouseUp(){
+    dir = null;
+    dialog.classList.remove('resizing');
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+  }
+
+  dialog.querySelectorAll('.modal-resize-handle').forEach(handle => {
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      dir = handle.dataset.dir;
+      startX = e.clientX; startY = e.clientY;
+      startRect = pinToPixelRect();
+      dialog.classList.add('resizing');
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
+}
+if(registryEditModal){
+  const registryEditDialog = registryEditModal.querySelector('.modal-dialog');
+  if(registryEditDialog) makeModalResizable(registryEditDialog);
 }
 
 // initialize overview sub-tabs if DOM is ready

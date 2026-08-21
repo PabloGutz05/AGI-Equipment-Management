@@ -87,11 +87,11 @@
   <main id="appRoot" style="display:none">
     <div class="layout">
       <nav class="tabs" role="tablist">
-      <button class="tab" data-tab="overview">
+      <button class="tab active" data-tab="overview">
         <span class="tab-title">Overview</span>
         <span class="tab-desc">Summary & counts</span>
       </button>
-      <button class="tab active" data-tab="invoices">
+      <button class="tab" data-tab="invoices">
         <span class="tab-title">Invoices</span>
         <span class="tab-desc">Create & manage</span>
       </button>
@@ -118,7 +118,7 @@
     </nav>
 
       <section id="content">
-      <div id="overview" class="tab-panel">
+      <div id="overview" class="tab-panel active">
         <h2>Overview</h2>
         <div class="overview-tabs" style="margin-top:12px;display:flex;gap:8px;align-items:center">
           <button class="overview-tab active-sub" data-section="generalOverview">General Overview</button>
@@ -132,17 +132,10 @@
         <div id="unitOverview" style="display:none;margin-top:12px"></div>
         <div id="leaseOverview" style="display:none;margin-top:12px"></div>
         <div id="report" style="display:none;margin-top:12px"></div>
-        <div id="anualOverview" style="display:none;margin-top:12px">
-          <div class="annual-tabs" style="margin-top:0;display:flex;gap:8px;align-items:center">
-            <button class="annual-tab active-sub" data-annual="annualUnitLease">Unit/Lease</button>
-            <button class="annual-tab" data-annual="annualSupplier">Supplier</button>
-          </div>
-          <div id="annualUnitLease" style="margin-top:12px"></div>
-          <div id="annualSupplier" style="display:none;margin-top:12px"></div>
-        </div>
+        <div id="anualOverview" style="display:none;margin-top:12px"></div>
       </div>
 
-  <div id="invoices" class="tab-panel active">
+  <div id="invoices" class="tab-panel">
         <h2>Invoices</h2>
         <div class="invoice-registration-block">
           <h3 class="invoice-registration-block-title">Invoice Registration</h3>
@@ -618,6 +611,33 @@
   </main>
 
   <!-- Comment modal (in-page modal editor used by the Add Comment button) -->
+  <!-- Divide Amounts modal: for invoices that don't break the amount out per unit -->
+  <div id="divideAmountsModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document" style="max-width:380px;">
+      <h3>Divide Amounts Evenly</h3>
+      <div class="small-muted" style="margin-bottom:12px;">Enter the invoice's total Tax, Other Charges, and Amount — each will be split evenly across the <strong id="divideUnitCount">0</strong> selected units.</div>
+      <form id="divideAmountsForm" style="display:flex;flex-direction:column;gap:12px;">
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Tax</span>
+          <input id="divideTax" type="text" class="money-input" inputmode="decimal" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Other Charges</span>
+          <input id="divideOther" type="text" class="money-input" inputmode="decimal" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Amount</span>
+          <input id="divideCharge" type="text" class="money-input" inputmode="decimal" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+        </label>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
+          <button type="button" id="divideAmountsCancelBtn">Cancel</button>
+          <button type="submit" class="btn-primary">Divide</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="commentModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
     <div class="modal-backdrop"></div>
     <div class="modal-dialog" role="document">
@@ -633,7 +653,15 @@
   <!-- Registry Edit modal -->
   <div id="registryEditModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
     <div class="modal-backdrop"></div>
-    <div class="modal-dialog" role="document" style="max-width:980px;width:95%;">
+    <div class="modal-dialog is-resizable" role="document" style="max-width:980px;width:95%;">
+      <div class="modal-resize-handle rh-n" data-dir="n"></div>
+      <div class="modal-resize-handle rh-s" data-dir="s"></div>
+      <div class="modal-resize-handle rh-e" data-dir="e"></div>
+      <div class="modal-resize-handle rh-w" data-dir="w"></div>
+      <div class="modal-resize-handle rh-ne" data-dir="ne"></div>
+      <div class="modal-resize-handle rh-nw" data-dir="nw"></div>
+      <div class="modal-resize-handle rh-se" data-dir="se"></div>
+      <div class="modal-resize-handle rh-sw" data-dir="sw"></div>
       <h3>Edit Registry</h3>
       <form id="registryEditForm" style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
         <input type="hidden" id="editRegistryId" />
@@ -662,22 +690,33 @@
           </label>
         </div>
 
-        <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
-            <span style="font-weight:600;font-size:13px;">Lease(s)</span>
-            <input id="editRegistryLeaseSearch" type="text" placeholder="Search leases..." style="padding:6px 8px;border:1px solid #e6e6e6;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box;" />
-            <div id="editRegistryLeasePanel" style="max-height:120px;overflow-y:auto;border:1px solid #e6e6e6;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px;">
-              <!-- Checkboxes will be dynamically generated -->
+        <div class="invoice-picker-row" style="display:flex;gap:12px;flex-wrap:wrap;">
+          <div class="invoice-picker-col" style="flex:1 1 220px;">
+            <div class="invoice-picker-label-row">
+              <div class="invoice-picker-label">Lease(s)</div>
+              <button type="button" id="editRegistryLeaseClearBtn" class="small-link">Clear</button>
             </div>
-          </label>
+            <div class="picker-search-wrap">
+              <input type="text" id="editRegistryLeaseSearch" class="picker-search" placeholder="Search leases...">
+              <button type="button" id="editRegistryLeaseSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
+            </div>
+            <div id="editRegistryLeasePanel" class="picker-box"></div>
+          </div>
 
-          <label style="display:flex;flex-direction:column;gap:4px;flex:2 1 320px;">
-            <span style="font-weight:600;font-size:13px;">Units</span>
-            <input id="editRegistryUnitSearch" type="text" placeholder="Search units..." style="padding:6px 8px;border:1px solid #e6e6e6;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box;" />
-            <div id="editRegistryUnits" style="max-height:120px;overflow-y:auto;border:1px solid #e6e6e6;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px;">
-              <!-- Checkboxes will be dynamically generated -->
+          <div class="invoice-picker-col" style="flex:2 1 320px;">
+            <div class="invoice-picker-label-row">
+              <div class="invoice-picker-label">Units</div>
+              <div>
+                <button type="button" id="editRegistryUnitSelectAllBtn" class="small-link">Select all</button>
+                <button type="button" id="editRegistryUnitClearBtn" class="small-link">Clear</button>
+              </div>
             </div>
-          </label>
+            <div class="picker-search-wrap">
+              <input type="text" id="editRegistryUnitSearch" class="picker-search" placeholder="Search units...">
+              <button type="button" id="editRegistryUnitSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
+            </div>
+            <div id="editRegistryUnits" class="picker-box"></div>
+          </div>
         </div>
 
         <!-- Per-unit Company/UnitId/Lease/Cost Center + Tax/Charge breakdown, editable -->

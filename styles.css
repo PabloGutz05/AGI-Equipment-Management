@@ -76,8 +76,10 @@ button[title]{background:#f97316}
 .invoice-picker-col{flex:1 1 280px;display:flex;flex-direction:column;gap:4px}
 .invoice-picker-label{font-weight:600;font-size:13px;color:#374151}
 .invoice-picker-label-row{display:flex;justify-content:space-between;align-items:center}
-.small-link{border:none;background:transparent;color:#0b74de;font-size:12px;font-weight:600;cursor:pointer;padding:2px 4px;border-radius:4px}
-.small-link:hover{background:#eff6ff;text-decoration:underline}
+/* !important needed: button[title]{background:#f97316} would otherwise win over this whenever
+   a .small-link button also has a title attribute (e.g. the "Divide" button's tooltip) */
+.small-link{border:none !important;background:transparent !important;color:#0b74de !important;font-size:12px;font-weight:600;cursor:pointer;padding:2px 4px;border-radius:4px}
+.small-link:hover{background:#eff6ff !important;text-decoration:underline}
 .picker-search-wrap{position:relative;width:100%}
 .picker-search{padding:6px 24px 6px 8px;border:1px solid #e6e6e6;border-radius:6px;font-size:13px;width:100%;box-sizing:border-box}
 /* button[title]{background:#f97316} is a global rule that would otherwise paint this orange */
@@ -87,9 +89,9 @@ button[title]{background:#f97316}
    blank space) instead of jumping in height every time a lease/unit gets checked, while
    still shrinking the max on shorter screens. */
 .picker-box{min-height:102px;max-height:min(222px, 32vh);overflow-y:auto;border:1px solid #d1d5db;border-radius:6px;padding:6px;display:flex;flex-direction:column;gap:0;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
-.lease-checkbox-row, .unit-checkbox-row{border-bottom:1px solid #eef0f3;user-select:none}
-.lease-checkbox-row:last-child, .unit-checkbox-row:last-child{border-bottom:none}
-.lease-checkbox-row:hover, .unit-checkbox-row:hover{background:#eef4fb}
+.lease-checkbox-row, .unit-checkbox-row, .edit-registry-lease-row, .edit-registry-unit-row{border-bottom:1px solid #eef0f3;user-select:none}
+.lease-checkbox-row:last-child, .unit-checkbox-row:last-child, .edit-registry-lease-row:last-child, .edit-registry-unit-row:last-child{border-bottom:none}
+.lease-checkbox-row:hover, .unit-checkbox-row:hover, .edit-registry-lease-row:hover, .edit-registry-unit-row:hover{background:#eef4fb}
 .unit-breakdown-row, .registry-unit-detail-row{transition:background 0.12s ease;user-select:none}
 .unit-breakdown-row:hover, .registry-unit-detail-row:hover{background:#eef4fb}
 .unit-breakdown-row:hover .ub-tax, .unit-breakdown-row:hover .ub-other, .unit-breakdown-row:hover .ub-charge{background:#eef4fb}
@@ -339,6 +341,19 @@ footer{padding:12px;text-align:center;color:var(--muted)}
 .modal-content{position:relative;background:#fff;padding:20px;border-radius:8px;box-shadow:0 12px 30px rgba(2,6,23,0.12);z-index:121;max-height:80vh;overflow-y:auto}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #e6e9ee}
 .modal-dialog h3{margin:0 0 8px 0}
+
+/* Drag-to-resize handles (currently used by the Registry Edit modal) */
+.modal-dialog.is-resizable{min-width:480px;min-height:320px}
+.modal-resize-handle{position:absolute;z-index:130;user-select:none}
+.modal-resize-handle.rh-n{top:0;left:14px;right:14px;height:6px;cursor:ns-resize}
+.modal-resize-handle.rh-s{bottom:0;left:14px;right:14px;height:6px;cursor:ns-resize}
+.modal-resize-handle.rh-e{top:14px;bottom:14px;right:0;width:6px;cursor:ew-resize}
+.modal-resize-handle.rh-w{top:14px;bottom:14px;left:0;width:6px;cursor:ew-resize}
+.modal-resize-handle.rh-ne{top:0;right:0;width:14px;height:14px;cursor:nesw-resize}
+.modal-resize-handle.rh-nw{top:0;left:0;width:14px;height:14px;cursor:nwse-resize}
+.modal-resize-handle.rh-se{bottom:0;right:0;width:14px;height:14px;cursor:nwse-resize}
+.modal-resize-handle.rh-sw{bottom:0;left:0;width:14px;height:14px;cursor:nesw-resize}
+.modal-dialog.resizing{transition:none !important}
 .info-button{background:#eef6ff;color:#0b74de;border:1px solid #dbeefe;padding:8px 12px;border-radius:6px;cursor:pointer}
 
 /* Utility button styles to match invoice submit and saved states */
