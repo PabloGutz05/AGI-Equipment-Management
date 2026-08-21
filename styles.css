@@ -98,19 +98,19 @@ button[title]{background:#f97316}
 .unit-breakdown-row.selected, .registry-unit-detail-row.selected{background:#dbeafe}
 .unit-breakdown-row.selected .ub-tax, .unit-breakdown-row.selected .ub-other, .unit-breakdown-row.selected .ub-charge{background:#dbeafe}
 .registry-unit-detail-table{overflow-x:auto;margin-top:2px}
-/* Fixed-height scroll regions for the row lists (header/total stay outside, fixed) so the
-   block's footprint stays constant whether 1 or 15 rows are shown, only scrolling past the cap.
-   scrollbar-gutter:stable reserves the scrollbar's width even before it actually appears, and
-   the header/total reserve the same gutter (via the matching classes below) so column titles
-   never drift out of alignment with the rows once a scrollbar shows up. overflow-x:auto lets
-   the rows scroll sideways once grown columns exceed the table's width; header/total scroll
-   in lockstep via JS (see wireHorizontalScrollSync) rather than getting their own scrollbar,
-   since overflow:hidden here would otherwise just clip their later columns outright. */
-.unit-breakdown-rows{height:min(320px, 46vh);overflow-y:auto;overflow-x:auto;scrollbar-gutter:stable}
+/* Fixed-height scroll regions for the row lists. The header now lives INSIDE this same
+   scrollable box (as its first child, pinned via position:sticky below) instead of as a
+   separate sibling kept in sync via JS — a single shared scroll container is what actually
+   guarantees titles never drift from their column's data, in both scroll directions, since
+   there's only one scroll position for the browser to track instead of two to reconcile.
+   scrollbar-gutter:stable reserves the scrollbar's width even before it actually appears; the
+   Total row below reserves the same gutter (it's a separate sibling, outside the scroll box)
+   so its right edge still lines up with the scrollable area above it. */
+.unit-breakdown-rows{height:min(320px, 46vh);overflow:auto;scrollbar-gutter:stable}
 .unit-breakdown-rows.expanded{height:auto;max-height:none}
-.invoice-lease-detail-rows{height:min(150px, 26vh);overflow-y:auto;overflow-x:auto;scrollbar-gutter:stable}
-.unit-breakdown-header, .unit-breakdown-total{overflow:hidden;scrollbar-gutter:stable}
-.invoice-lease-detail-header{overflow:hidden;scrollbar-gutter:stable}
+.invoice-lease-detail-rows{height:min(150px, 26vh);overflow:auto;scrollbar-gutter:stable}
+.unit-breakdown-header, .invoice-lease-detail-header{position:sticky;top:0;z-index:2}
+.unit-breakdown-total{overflow:hidden;scrollbar-gutter:stable}
 .unit-breakdown-expand-btn{border:1px solid #d1d5db !important;background:#fff !important;color:#6b7280 !important;font-size:11px;line-height:1;padding:2px 10px;border-radius:0 0 6px 6px;cursor:pointer;box-shadow:0 1px 2px rgba(15,23,42,0.06)}
 .unit-breakdown-expand-btn:hover{background:#f3f4f6 !important;color:#374151 !important}
 .invoice-actions-row{border-top:1px solid #d7dce2;padding-top:12px;margin-top:8px}

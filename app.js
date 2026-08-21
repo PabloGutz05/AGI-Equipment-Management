@@ -1114,20 +1114,21 @@ function renderInvoiceLeaseDetailTable(){
 
   const header = document.createElement('div');
   header.className = 'invoice-lease-detail-header';
-  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
+  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;background:#fff;';
   columns.forEach(col => {
     const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;`;
     wireColumnAutoFit(d, wrap, col.key, col.label, () => leaseRecs.map(col.get), () => renderInvoiceLeaseDetailTable());
     header.appendChild(d);
   });
-  wrap.appendChild(header);
 
-  // Rows scroll in their own fixed-height region (max ~5 rows) so the header/table footprint
-  // stays constant regardless of how many leases are selected — only scrolls past the cap.
+  // Header lives inside the same scrollable box as the rows (pinned to the top via
+  // position:sticky) instead of as a separate sibling — this locks titles to their column's
+  // data natively in both scroll directions, with no drift, since resizing/scrolling only
+  // ever moves the one shared box.
   const rowsContainer = document.createElement('div');
   rowsContainer.className = 'invoice-lease-detail-rows';
   wrap.appendChild(rowsContainer);
-  wireHorizontalScrollSync(rowsContainer, header);
+  rowsContainer.appendChild(header);
 
   // A lease whose Supplier differs from the first selected lease's Supplier gets flagged —
   // mixing suppliers under one WD invoice is unusual and worth a visual heads-up.
@@ -1270,17 +1271,6 @@ function getColWidth(wrap, key, defaultWidth){
 function setColWidth(wrap, key, width){
   wrap.dataset['colw_' + key] = String(Math.round(width));
 }
-// Keeps a fixed header/total row's horizontal position matched to its scrollable rows region.
-// The rows region is the only one with its own scrollbar (overflow-x:auto); header/total use
-// overflow:hidden so, without this, their later columns would simply be clipped off and never
-// reachable once grown columns push the table wider than its box — this mirrors whatever the
-// user scrolls the rows to instead, so titles always line up with the data beneath them.
-function wireHorizontalScrollSync(scrollEl, ...followers){
-  if(!scrollEl) return;
-  scrollEl.addEventListener('scroll', () => {
-    followers.forEach(el => { if(el) el.scrollLeft = scrollEl.scrollLeft; });
-  });
-}
 // Wires a header cell so double-clicking it resizes the column to fit its widest currently
 // visible content (label included), then re-renders via `rerenderFn`.
 function wireColumnAutoFit(headerCell, wrap, colKey, label, getValuesFn, rerenderFn){
@@ -1404,6 +1394,12 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
 
   const sortCol = wrap.dataset.sortCol || '';
   const sortDir = wrap.dataset.sortDir || 'asc';
+  const AMOUNT_SORT_KEYS = ['tax','other','charge','rowTotal'];
+  const getAmountSortValue = (uid, key) => {
+    const prior = existing[uid] || seedData[uid] || {};
+    if(key === 'rowTotal') return (parseCurrency(prior.tax||'')||0) + (parseCurrency(prior.other||'')||0) + (parseCurrency(prior.charge||'')||0);
+    return parseCurrency(prior[key]||'') || 0;
+  };
   if(sortCol){
     const col = UNIT_BREAKDOWN_COLUMNS.find(c => c.key === sortCol);
     if(col){
@@ -1414,13 +1410,18 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
         if(av > bv) return sortDir === 'asc' ? 1 : -1;
         return 0;
       });
+    } else if(AMOUNT_SORT_KEYS.indexOf(sortCol) !== -1){
+      rows.sort((a,b) => {
+        const av = getAmountSortValue(a.uid, sortCol), bv = getAmountSortValue(b.uid, sortCol);
+        return sortDir === 'asc' ? av - bv : bv - av;
+      });
     }
   }
 
   wrap.innerHTML = '';
   const header = document.createElement('div');
   header.className = 'unit-breakdown-header';
-  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
+  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;background:#fff;';
   UNIT_BREAKDOWN_COLUMNS.forEach(col => {
     const d = document.createElement('div');
     d.textContent = col.label + (sortCol === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
@@ -1435,22 +1436,30 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     header.appendChild(d);
   });
   [['tax','Tax',110],['other','Other Charges',120],['charge','Amount',110],['rowTotal','Total Charge',110]].forEach(([key,label,w]) => {
-    const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;`;
+    const d = document.createElement('div');
+    d.textContent = label + (sortCol === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+    d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;cursor:pointer;user-select:none;`;
+    d.title = 'Click to sort';
     d.dataset.colKey = key;
+    d.addEventListener('click', ()=>{
+      const newDir = (wrap.dataset.sortCol === key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
+      wrap.dataset.sortCol = key; wrap.dataset.sortDir = newDir;
+      renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, null);
+    });
     if(key !== 'rowTotal'){
       wireColumnAutoFit(d, wrap, key, label, () => Array.from(wrap.querySelectorAll('.ub-' + key)).map(inp => inp.value), () => renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, null));
     }
     header.appendChild(d);
   });
-  wrap.appendChild(header);
 
-  // Rows scroll in their own fixed-height region (max ~10 rows) so the table's footprint on
-  // the page stays constant whether 1 or 15 units are selected, instead of resizing the whole
-  // block every time — the header/total stay put outside this scroll region.
+  // Header lives inside the same scrollable box as the rows (pinned to the top via
+  // position:sticky) instead of as a separate sibling kept in sync via JS — this locks
+  // titles to their column's data natively in both scroll directions, with zero drift,
+  // since resizing/scrolling now only ever moves a single shared box.
   const rowsContainer = document.createElement('div');
   rowsContainer.className = 'unit-breakdown-rows';
   wrap.appendChild(rowsContainer);
-  wireHorizontalScrollSync(rowsContainer, header);
+  rowsContainer.appendChild(header);
 
   rows.forEach(({uid, unitRec}) => {
     const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
