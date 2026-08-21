@@ -349,6 +349,11 @@ html.modal-open-lock,body.modal-open-lock{overflow:hidden !important;height:100%
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #e6e9ee}
 .modal-dialog h3{margin:0 0 8px 0}
 
+/* The Divide modal can be opened from inside the Registry Edit modal, so it needs to sit
+   above it — same z-index as other modals would otherwise lose to later DOM order. */
+#divideAmountsModal{z-index:200}
+#divideAmountsModal .modal-dialog{z-index:201}
+
 /* Drag-to-resize handles (currently used by the Registry Edit modal) */
 .modal-dialog.is-resizable{min-width:480px;min-height:320px}
 .modal-resize-handle{position:absolute;z-index:130;user-select:none}
