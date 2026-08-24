@@ -159,7 +159,7 @@ document.querySelectorAll('.tab').forEach(btn => {
         if(typeof showOverviewSection === 'function') showOverviewSection(sec);
       }catch(e){ renderOverview(); }
     } else if(btn.dataset.tab === 'accruals'){
-      try{ if(typeof renderAccrualsMissingPeriods === 'function') renderAccrualsMissingPeriods(); }catch(e){}
+      try{ if(typeof renderAccrualsMissingPeriods === 'function') renderAccrualsMissingPeriods(true); }catch(e){}
     } else {
       renderOverview();
     }
@@ -10369,13 +10369,42 @@ function buildUnitStats(unit){
 // they intentionally don't share any state/wiring with it and will be deleted later.
 
 // Walks day-by-day from rangeStart to rangeEnd (inclusive) and groups consecutive days that
-// are neither disabled nor rental-covered into missing-coverage periods. Reuses getDayState —
-// the same day-level logic that drives the Coverage History popup — so a unit flagged here
-// always matches what that popup would show for the same days.
+// are neither disabled nor rental-covered into missing-coverage periods.
+//
+// This deliberately does NOT call the generic getDayState per day like the Coverage History
+// popup does — that rescans every registry in the whole system for every single day, which
+// is fine for one unit's popup but far too slow across every unit's full date range (that
+// was the actual cause of the Accruals tab feeling slow, not anything to do with Sheets
+// storage — this table is computed client-side and was never meant to be persisted). Instead
+// each unit's own registries are filtered down once up front, then the day loop only ever
+// checks that small per-unit list — same coverage/disabled semantics, far fewer comparisons.
 function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
   const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
-  const registries = state.registries || [];
   const invoices = state.invoices || [];
+
+  const unitRentalPeriods = (state.registries || [])
+    .filter(reg => {
+      const units = Array.isArray(reg.units) ? reg.units : [];
+      return units.some(u => String(u).trim().toLowerCase() === unitIdNorm);
+    })
+    .map(reg => {
+      if(!reg.periodStart || !reg.periodEnd) return null;
+      let cat = String(reg.category || '').toLowerCase();
+      if(!cat){
+        const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
+        cat = inv ? String(inv.category||'').toLowerCase() : '';
+      }
+      if(cat !== 'rental') return null;
+      const sp = String(reg.periodStart).split('-'), ep = String(reg.periodEnd).split('-');
+      if(sp.length < 3 || ep.length < 3) return null;
+      return {
+        start: `${sp[0]}-${sp[1].padStart(2,'0')}-${sp[2].padStart(2,'0')}`,
+        end: `${ep[0]}-${ep[1].padStart(2,'0')}-${ep[2].padStart(2,'0')}`
+      };
+    })
+    .filter(Boolean);
+
+  const disabledPeriods = getDisabledPeriods(unit);
 
   // Don't flag days before the unit actually existed in the fleet
   let effectiveStart = new Date(rangeStart);
@@ -10394,8 +10423,14 @@ function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
 
   let curStart = null;
   for(let cur = new Date(effectiveStart); cur <= rangeEnd; cur.setDate(cur.getDate()+1)){
-    const ds = getDayState(unitIdNorm, cur.getFullYear(), cur.getMonth(), cur.getDate(), registries, invoices, unit);
-    const missing = !ds.disabled && !ds.covered;
+    const y = cur.getFullYear(), m = cur.getMonth(), d = cur.getDate();
+    const disabled = isDateInDisabledPeriod(y, m, d, disabledPeriods);
+    let covered = false;
+    if(!disabled){
+      const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      covered = unitRentalPeriods.some(p => dateStr >= p.start && dateStr <= p.end);
+    }
+    const missing = !disabled && !covered;
     if(missing){
       if(!curStart) curStart = new Date(cur);
     } else if(curStart){
@@ -10412,37 +10447,50 @@ function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
 // Click-to-sort state for Provisional Table 1 (not persisted — this table is throwaway).
 let _accrualsMissingSort = { column: 'unitId', ascending: true };
 
+// Cached result of the (relatively expensive) per-unit computation, so clicking a column
+// header to sort just re-sorts and re-renders instead of recomputing every unit's missing
+// periods from scratch each time — that recompute-on-every-click was the other big chunk of
+// the slowness, on top of the per-day registry scan fixed in computeUnitMissingPeriods.
+let _accrualsMissingRowsCache = null;
+
 // Provisional Table 1: every missing coverage period, for every unit, from Jan 1 of the
 // current year through the end of the current month. A day only ever counts as "missing"
 // when the unit was available (not disabled) that day and not rental-covered — see
 // computeUnitMissingPeriods, which never lets a disabled day start or extend a missing
 // period in the first place, so a period that falls under a disabled stretch simply never
 // produces a row here.
-function renderAccrualsMissingPeriods(){
+// Pass forceRecompute=true to rebuild from current state (used when entering the tab);
+// omit it to just re-sort/re-render the already-computed rows (used when sorting).
+function renderAccrualsMissingPeriods(forceRecompute){
   const tableEl = qs('#accrualsMissingPeriodsTable');
   const summaryEl = qs('#accrualsMissingPeriodsSummary');
   if(!tableEl) return;
 
-  const now = new Date();
-  // Fixed anchor for this accrual initiative — always 01/01/2026, not "start of current
-  // year" (which would silently roll forward to 2027 once the calendar turns over).
-  const rangeStart = new Date(2026, 0, 1);
-  const rangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  if(forceRecompute || !_accrualsMissingRowsCache){
+    const now = new Date();
+    // Fixed anchor for this accrual initiative — always 01/01/2026, not "start of current
+    // year" (which would silently roll forward to 2027 once the calendar turns over).
+    const rangeStart = new Date(2026, 0, 1);
+    const rangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-  const fmtMDY = (d) => `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
-
-  const rows = [];
-  (state.units || []).forEach(unit => {
-    const uid = (unit.unitId || unit.id || '').toString();
-    if(!uid) return;
-    let periods = [];
-    try{ periods = computeUnitMissingPeriods(unit, rangeStart, rangeEnd); }catch(e){ periods = []; }
-    const status = (unit.status || 'Operational').toString();
-    periods.forEach(p => {
-      const days = Math.round((p.end - p.start) / 86400000) + 1;
-      rows.push({ unitId: uid, lease: unit.lease || '', supplier: unit.supplier || '', costCenter: unit.costCenter || '', status, start: p.start, end: p.end, days });
+    const rows = [];
+    (state.units || []).forEach(unit => {
+      const uid = (unit.unitId || unit.id || '').toString();
+      if(!uid) return;
+      let periods = [];
+      try{ periods = computeUnitMissingPeriods(unit, rangeStart, rangeEnd); }catch(e){ periods = []; }
+      const status = (unit.status || 'Operational').toString();
+      periods.forEach(p => {
+        const days = Math.round((p.end - p.start) / 86400000) + 1;
+        rows.push({ unitId: uid, lease: unit.lease || '', supplier: unit.supplier || '', costCenter: unit.costCenter || '', status, start: p.start, end: p.end, days });
+      });
     });
-  });
+
+    _accrualsMissingRowsCache = { rows, rangeStart, rangeEnd };
+  }
+
+  const { rows, rangeStart, rangeEnd } = _accrualsMissingRowsCache;
+  const fmtMDY = (d) => `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
 
   const COLUMNS = [
     { key: 'unitId', label: 'UnitId', get: r => r.unitId },
