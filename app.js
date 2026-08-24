@@ -158,6 +158,8 @@ document.querySelectorAll('.tab').forEach(btn => {
         const sec = (state.meta && state.meta.overviewSection) ? state.meta.overviewSection : 'generalOverview';
         if(typeof showOverviewSection === 'function') showOverviewSection(sec);
       }catch(e){ renderOverview(); }
+    } else if(btn.dataset.tab === 'accruals'){
+      try{ if(typeof renderAccrualsMissingPeriods === 'function') renderAccrualsMissingPeriods(); }catch(e){}
     } else {
       renderOverview();
     }
@@ -10360,6 +10362,189 @@ function buildUnitStats(unit){
       <div style="font-size:11px;color:#4b5563;margin-top:3px;font-weight:500;">${s.label}</div>
     </div>
   `).join('');
+}
+
+// ========== Accruals tab — provisional working tables ==========
+// These are throwaway data-extraction/cleanup aids for building the real Accruals view;
+// they intentionally don't share any state/wiring with it and will be deleted later.
+
+// Walks day-by-day from rangeStart to rangeEnd (inclusive) and groups consecutive days that
+// are neither disabled nor rental-covered into missing-coverage periods. Reuses getDayState —
+// the same day-level logic that drives the Coverage History popup — so a unit flagged here
+// always matches what that popup would show for the same days.
+function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
+  const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
+  const registries = state.registries || [];
+  const invoices = state.invoices || [];
+
+  // Don't flag days before the unit actually existed in the fleet
+  let effectiveStart = new Date(rangeStart);
+  try{
+    const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
+    if(hist.length > 0){
+      const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
+      const d = new Date(firstOp.date);
+      const firstOpDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      if(firstOpDate > effectiveStart) effectiveStart = firstOpDate;
+    }
+  }catch(e){}
+
+  const periods = [];
+  if(effectiveStart > rangeEnd) return periods;
+
+  let curStart = null;
+  for(let cur = new Date(effectiveStart); cur <= rangeEnd; cur.setDate(cur.getDate()+1)){
+    const ds = getDayState(unitIdNorm, cur.getFullYear(), cur.getMonth(), cur.getDate(), registries, invoices, unit);
+    const missing = !ds.disabled && !ds.covered;
+    if(missing){
+      if(!curStart) curStart = new Date(cur);
+    } else if(curStart){
+      const end = new Date(cur); end.setDate(end.getDate() - 1);
+      periods.push({ start: curStart, end });
+      curStart = null;
+    }
+  }
+  if(curStart) periods.push({ start: curStart, end: new Date(rangeEnd) });
+
+  return periods;
+}
+
+// Click-to-sort state for Provisional Table 1 (not persisted — this table is throwaway).
+let _accrualsMissingSort = { column: 'unitId', ascending: true };
+
+// Provisional Table 1: every missing coverage period, for every unit, from Jan 1 of the
+// current year through the end of the current month. A day only ever counts as "missing"
+// when the unit was available (not disabled) that day and not rental-covered — see
+// computeUnitMissingPeriods, which never lets a disabled day start or extend a missing
+// period in the first place, so a period that falls under a disabled stretch simply never
+// produces a row here.
+function renderAccrualsMissingPeriods(){
+  const tableEl = qs('#accrualsMissingPeriodsTable');
+  const summaryEl = qs('#accrualsMissingPeriodsSummary');
+  if(!tableEl) return;
+
+  const now = new Date();
+  // Fixed anchor for this accrual initiative — always 01/01/2026, not "start of current
+  // year" (which would silently roll forward to 2027 once the calendar turns over).
+  const rangeStart = new Date(2026, 0, 1);
+  const rangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+  const fmtMDY = (d) => `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
+
+  const rows = [];
+  (state.units || []).forEach(unit => {
+    const uid = (unit.unitId || unit.id || '').toString();
+    if(!uid) return;
+    let periods = [];
+    try{ periods = computeUnitMissingPeriods(unit, rangeStart, rangeEnd); }catch(e){ periods = []; }
+    const status = (unit.status || 'Operational').toString();
+    periods.forEach(p => {
+      const days = Math.round((p.end - p.start) / 86400000) + 1;
+      rows.push({ unitId: uid, lease: unit.lease || '', supplier: unit.supplier || '', costCenter: unit.costCenter || '', status, start: p.start, end: p.end, days });
+    });
+  });
+
+  const COLUMNS = [
+    { key: 'unitId', label: 'UnitId', get: r => r.unitId },
+    { key: 'lease', label: 'Lease', get: r => r.lease },
+    { key: 'supplier', label: 'Supplier', get: r => r.supplier },
+    { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
+    { key: 'status', label: 'Status', get: r => r.status },
+    { key: 'period', label: 'Missing Period', get: r => r.start, numeric: true },
+    { key: 'days', label: 'Days', get: r => r.days, numeric: true, alignRight: true }
+  ];
+
+  const sortCol = COLUMNS.find(c => c.key === _accrualsMissingSort.column) || COLUMNS[0];
+  const ascending = _accrualsMissingSort.ascending;
+  rows.sort((a, b) => {
+    const av = sortCol.get(a), bv = sortCol.get(b);
+    let cmp;
+    if(sortCol.numeric){
+      cmp = av - bv;
+    } else {
+      const as = av.toString().toLowerCase(), bs = bv.toString().toLowerCase();
+      cmp = as < bs ? -1 : (as > bs ? 1 : 0);
+    }
+    if(cmp === 0) cmp = a.start - b.start; // stable secondary order: chronological
+    return ascending ? cmp : -cmp;
+  });
+
+  if(summaryEl){
+    const totalDays = rows.reduce((s, r) => s + r.days, 0);
+    const uniqueUnits = new Set(rows.map(r => r.unitId.toLowerCase())).size;
+    summaryEl.textContent = rows.length === 0
+      ? `No missing coverage periods found for ${fmtMDY(rangeStart)} — ${fmtMDY(rangeEnd)}.`
+      : `${rows.length} missing period(s) across ${uniqueUnits} unit(s), ${totalDays} total day(s) — range ${fmtMDY(rangeStart)} — ${fmtMDY(rangeEnd)}.`;
+  }
+
+  tableEl.innerHTML = '';
+  if(rows.length === 0) return;
+
+  const unitIdList = Array.from(new Set(rows.map(r => r.unitId)));
+
+  const table = document.createElement('table');
+  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;';
+
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+
+  const thCounter = document.createElement('th');
+  thCounter.textContent = '#';
+  thCounter.style.cssText = 'text-align:left;padding:6px 8px;font-size:12px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
+  headerRow.appendChild(thCounter);
+
+  COLUMNS.forEach(col => {
+    const th = document.createElement('th');
+    th.textContent = col.label + (sortCol.key === col.key ? (ascending ? ' ▲' : ' ▼') : '');
+    th.style.cssText = `text-align:${col.alignRight ? 'right' : 'left'};padding:6px 8px;font-size:12px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;cursor:pointer;user-select:none;`;
+    th.title = 'Click to sort';
+    th.addEventListener('click', () => {
+      if(_accrualsMissingSort.column === col.key) _accrualsMissingSort.ascending = !_accrualsMissingSort.ascending;
+      else _accrualsMissingSort = { column: col.key, ascending: true };
+      renderAccrualsMissingPeriods();
+    });
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #f0f0f0';
+
+    const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:6px 8px;color:#6b7280;';
+    tr.appendChild(tdCounter);
+
+    const tdUnit = document.createElement('td');
+    tdUnit.textContent = r.unitId;
+    tdUnit.style.cssText = 'padding:6px 8px;color:#0b74de;cursor:pointer;font-weight:600;';
+    tdUnit.title = 'View coverage history';
+    tdUnit.addEventListener('click', () => {
+      try{ openUnitWdNumbersModal(r.unitId, r.start.getFullYear(), r.start.getMonth(), unitIdList); }catch(e){}
+    });
+    tr.appendChild(tdUnit);
+
+    const tdLease = document.createElement('td'); tdLease.textContent = r.lease; tdLease.style.padding = '6px 8px';
+    tr.appendChild(tdLease);
+    const tdSupplier = document.createElement('td'); tdSupplier.textContent = r.supplier; tdSupplier.style.padding = '6px 8px';
+    tr.appendChild(tdSupplier);
+    const tdCC = document.createElement('td'); tdCC.textContent = r.costCenter; tdCC.style.padding = '6px 8px';
+    tr.appendChild(tdCC);
+    const tdStatus = document.createElement('td');
+    tdStatus.textContent = r.status;
+    tdStatus.style.cssText = `padding:6px 8px;font-weight:600;color:${r.status.toLowerCase() === 'disabled' ? '#dc2626' : '#15803d'};`;
+    tr.appendChild(tdStatus);
+    const tdPeriod = document.createElement('td'); tdPeriod.textContent = `${fmtMDY(r.start)} - ${fmtMDY(r.end)}`; tdPeriod.style.padding = '6px 8px';
+    tr.appendChild(tdPeriod);
+    const tdDays = document.createElement('td'); tdDays.textContent = r.days; tdDays.style.cssText = 'padding:6px 8px;text-align:right;';
+    tr.appendChild(tdDays);
+
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  tableEl.appendChild(table);
 }
 
 function closeUnitWdNumbersModal() {
