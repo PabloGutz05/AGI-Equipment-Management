@@ -10162,6 +10162,9 @@ function showDayDetail(unit, y, m, d, registries, invoices, popupEl){
     return dateStr >= start && dateStr <= end;
   });
 
+  // Newest coverage period first
+  matchingRegs.sort((a, b) => new Date(b.periodStart || 0) - new Date(a.periodStart || 0));
+
   popupEl.style.display = 'block';
   if(matchingRegs.length === 0){
     popupEl.innerHTML = `<div style="color:#6b7280;font-size:13px;">No invoice covering <strong style="color:#e2e8f0;">${monthName}</strong></div>`;
@@ -10219,6 +10222,9 @@ function showMonthDetail(unit, y, m, popupEl){
     const mEnd = new Date(y, m, daysInMonth);
     return start <= mEnd && end >= mStart;
   });
+
+  // Newest coverage period first
+  matchingRegs.sort((a, b) => new Date(b.periodStart || 0) - new Date(a.periodStart || 0));
 
   popupEl.style.display = 'block';
 
