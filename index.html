@@ -235,6 +235,34 @@
 
             <div class="invoice-form-row">
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">WD Invoice Num</span>
+                <input id="itWdInvoiceNum" type="text" placeholder="WD Invoice Num">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Supplier Invoice Doc</span>
+                <input id="itSupplierInvoiceDoc" type="text" placeholder="Supplier Invoice Doc">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Invoice Amount</span>
+                <input id="itInvoiceAmount" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">WD Invoice Date</span>
+                <input id="itWdInvoiceDate" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">From Date</span>
+                <input id="itFromDate" type="date">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">To Date</span>
+                <input id="itToDate" type="date">
+              </label>
+            </div>
+            <div id="itAmountMatchNote" class="small-muted" style="margin:-4px 0 4px;"></div>
+
+            <div class="invoice-form-row">
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Supplier</span>
                 <select id="itSupplier" disabled style="background:#f3f4f6;color:#6b7280;"><option value="">Select lease(s) below</option></select>
               </label>
@@ -281,31 +309,12 @@
 
             <div class="invoice-form-row">
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
-                <span style="font-weight:600;font-size:13px;">Supplier Invoice Doc</span>
-                <input id="itSupplierInvoiceDoc" type="text" placeholder="Supplier Invoice Doc">
-              </label>
-              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
-                <span style="font-weight:600;font-size:13px;">Invoice Amount</span>
-                <input id="itInvoiceAmount" type="text" class="money-input" inputmode="decimal" placeholder="0.00" readonly style="background:#f3f4f6;color:#6b7280;">
-              </label>
-              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Amount in Dispute</span>
                 <input id="itAmountInDispute" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Amount Due</span>
                 <input id="itAmountDue" type="text" class="money-input" inputmode="decimal" placeholder="0.00" readonly style="background:#f3f4f6;color:#6b7280;">
-              </label>
-            </div>
-
-            <div class="invoice-form-row">
-              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
-                <span style="font-weight:600;font-size:13px;">WD Invoice Num</span>
-                <input id="itWdInvoiceNum" type="text" placeholder="WD Invoice Num">
-              </label>
-              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
-                <span style="font-weight:600;font-size:13px;">WD Invoice Date</span>
-                <input id="itWdInvoiceDate" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Invoice Status</span>
@@ -323,17 +332,6 @@
                   <option value="Paid">Paid</option>
                   <option value="Unpaid">Unpaid</option>
                 </select>
-              </label>
-            </div>
-
-            <div class="invoice-form-row">
-              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
-                <span style="font-weight:600;font-size:13px;">From Date</span>
-                <input id="itFromDate" type="date">
-              </label>
-              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
-                <span style="font-weight:600;font-size:13px;">To Date</span>
-                <input id="itToDate" type="date">
               </label>
             </div>
 

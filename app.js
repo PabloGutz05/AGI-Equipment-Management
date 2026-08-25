@@ -10930,21 +10930,49 @@ function updateInvoiceTrackingBreakdownRowTotal(row){
   totalEl.textContent = formatCurrency(sum.toFixed(2));
 }
 
-// Invoice Amount (locked) = sum of every unit's Total Charge. Amount Due recomputes off of
-// that plus whatever Amount in Dispute currently holds (typed independently, see below).
-function updateInvoiceTrackingBreakdownTotal(){
+// Invoice Amount is typed directly (the total from the actual supplier invoice) rather than
+// computed — same as Invoice Registration's declared Amount — and must match the per-unit
+// Tax + Other Charges + Amount breakdown below; a mismatch is flagged here live and blocks
+// submission (see the double-check in the form's submit handler), exactly like that form.
+function updateInvoiceTrackingAmountMatch(){
   const wrap = qs('#itUnitAmountBreakdown');
-  let invoiceSum = 0;
+  const noteEl = qs('#itAmountMatchNote');
+  let breakdownSum = 0;
+  let hasRows = false;
   if(wrap){
-    wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+    const rows = wrap.querySelectorAll('.unit-breakdown-row');
+    hasRows = rows.length > 0;
+    rows.forEach(row => {
       const taxInput = row.querySelector('.itb-tax');
       const otherInput = row.querySelector('.itb-other');
       const chargeInput = row.querySelector('.itb-charge');
-      invoiceSum += (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0) + (parseCurrency(chargeInput ? chargeInput.value : '') || 0);
+      breakdownSum += (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0) + (parseCurrency(chargeInput ? chargeInput.value : '') || 0);
     });
   }
   const invoiceField = qs('#itInvoiceAmount');
-  if(invoiceField) invoiceField.value = invoiceSum ? invoiceSum.toFixed(2) : '';
+  const declared = parseCurrency(invoiceField ? invoiceField.value : '');
+  const matches = hasRows && declared !== null && Math.round(breakdownSum * 100) === Math.round(declared * 100);
+  if(wrap) wrap.dataset.matches = matches ? 'true' : 'false';
+  if(noteEl){
+    if(!hasRows){
+      noteEl.textContent = '';
+    } else {
+      noteEl.textContent = 'Unit breakdown total (Tax + Other Charges + Amount): ' + formatCurrency(breakdownSum.toFixed(2)) +
+        (declared !== null ? ' / Invoice Amount: ' + formatCurrency(declared.toFixed(2)) : ' — enter Invoice Amount above to validate');
+      noteEl.style.color = matches ? '#15803d' : '#dc2626';
+      noteEl.style.fontWeight = '600';
+    }
+  }
+  return { breakdownSum, hasRows, matches };
+}
+
+function invoiceTrackingAmountMatches(){
+  return updateInvoiceTrackingAmountMatch().matches;
+}
+
+// Called whenever a per-unit Tax/Other/Amount changes.
+function updateInvoiceTrackingBreakdownTotal(){
+  updateInvoiceTrackingAmountMatch();
   updateInvoiceTrackingAmountDue();
 }
 
@@ -10959,6 +10987,8 @@ function updateInvoiceTrackingAmountDue(){
 }
 const itAmountInDisputeEl = qs('#itAmountInDispute');
 if(itAmountInDisputeEl) itAmountInDisputeEl.addEventListener('input', updateInvoiceTrackingAmountDue);
+const itInvoiceAmountEl = qs('#itInvoiceAmount');
+if(itInvoiceAmountEl) itInvoiceAmountEl.addEventListener('input', () => { updateInvoiceTrackingAmountMatch(); updateInvoiceTrackingAmountDue(); });
 
 // Tax/Other/Amount are editable inputs; rowTotal is a read-only computed display — same
 // three-editable-plus-one-computed shape as Invoice Registration's own breakdown table.
@@ -11283,6 +11313,15 @@ const invoiceTrackingForm = qs('#invoiceTrackingForm');
 if(invoiceTrackingForm){
   invoiceTrackingForm.addEventListener('submit', (e) => {
     e.preventDefault();
+
+    // Double-check, same as Invoice Registration: if units are listed in the breakdown table,
+    // their Tax + Other Charges + Amount must sum to the declared Invoice Amount, or the entry
+    // is not saved.
+    const matchResult = updateInvoiceTrackingAmountMatch();
+    if(matchResult.hasRows && !matchResult.matches){
+      alert('The sum of Tax + Other Charges + Amount for the selected units must equal the Invoice Amount. Entry not saved.');
+      return;
+    }
 
     const toMoney = (elId) => { const n = parseCurrency(qs('#'+elId) ? qs('#'+elId).value : ''); return n === null ? '' : n.toFixed(2); };
 
