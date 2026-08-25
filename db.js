@@ -30,7 +30,7 @@ function _invoiceTrackingToSheetRow(record){
   Object.keys(INVOICE_TRACKING_FIELD_MAP).forEach(key => {
     const header = INVOICE_TRACKING_FIELD_MAP[key];
     let v = record[key];
-    if(key === 'unitsInDispute') v = Array.isArray(v) ? JSON.stringify(v) : (v || '[]');
+    if(key === 'unitsInDispute' || key === 'lease') v = Array.isArray(v) ? JSON.stringify(v) : (v || '[]');
     out[header] = v !== undefined && v !== null ? v : '';
   });
   return out;
@@ -41,7 +41,7 @@ function _invoiceTrackingFromSheetRow(row){
   Object.keys(INVOICE_TRACKING_FIELD_MAP).forEach(key => {
     const header = INVOICE_TRACKING_FIELD_MAP[key];
     let v = row[header];
-    if(key === 'unitsInDispute'){ const parsed = DB.parseField(v); rec[key] = Array.isArray(parsed) ? parsed : []; }
+    if(key === 'unitsInDispute' || key === 'lease'){ const parsed = DB.parseField(v); rec[key] = Array.isArray(parsed) ? parsed : []; }
     else rec[key] = v !== undefined && v !== null ? String(v) : '';
   });
   return rec;

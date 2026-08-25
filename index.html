@@ -100,7 +100,7 @@
         <span class="tab-desc">Month-end closing</span>
       </button>
       <button class="tab" data-tab="invoiceTracking">
-        <span class="tab-title">Invoice Tracking</span>
+        <span class="tab-title">Invoice Dispute</span>
         <span class="tab-desc">Disputes & issues</span>
       </button>
       <button class="tab" data-tab="unitControl">
@@ -227,7 +227,7 @@
       </div>
 
       <div id="invoiceTracking" class="tab-panel">
-        <h2>Invoice Tracking</h2>
+        <h2>Invoice Dispute Tracking</h2>
 
         <div class="invoice-registration-block">
           <h3 class="invoice-registration-block-title">Add Invoice Tracking Entry</h3>
@@ -236,12 +236,25 @@
             <div class="invoice-form-row">
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Supplier</span>
-                <select id="itSupplier" disabled style="background:#f3f4f6;color:#6b7280;"><option value="">Select unit(s) in dispute below</option></select>
+                <select id="itSupplier" disabled style="background:#f3f4f6;color:#6b7280;"><option value="">Select lease(s) below</option></select>
               </label>
-              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
-                <span style="font-weight:600;font-size:13px;">Lease</span>
-                <select id="itLease" disabled style="background:#f3f4f6;color:#6b7280;"><option value="">Select unit(s) in dispute below</option></select>
-              </label>
+            </div>
+
+            <div class="invoice-picker-row">
+              <div class="invoice-picker-col" style="flex:1 1 100%;">
+                <div class="invoice-picker-label-row">
+                  <div class="invoice-picker-label">Lease(s)</div>
+                  <div>
+                    <button type="button" id="itLeaseSelectAllBtn" class="small-link">Select all</button>
+                    <button type="button" id="itLeaseClearBtn" class="small-link">Clear</button>
+                  </div>
+                </div>
+                <div class="picker-search-wrap">
+                  <input type="text" id="itLeaseSearch" class="picker-search" placeholder="Search leases...">
+                  <button type="button" id="itLeaseSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
+                </div>
+                <div id="itLeasePanel" class="picker-box"></div>
+              </div>
             </div>
 
             <div class="invoice-picker-row">

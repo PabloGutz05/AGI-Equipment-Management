@@ -24,7 +24,7 @@ let _invoiceTrackingSort = { column: 'wdInvoiceNum', ascending: true };
 
 const INVOICE_TRACKING_COLUMNS = [
   { key: 'supplier', label: 'Supplier' },
-  { key: 'lease', label: 'Lease' },
+  { key: 'lease', label: 'Lease', get: r => (Array.isArray(r.lease) ? r.lease.join(', ') : '') },
   { key: 'unitsInDispute', label: 'Units in Dispute', get: r => (Array.isArray(r.unitsInDispute) ? r.unitsInDispute.join(', ') : '') },
   { key: 'supplierInvoiceDoc', label: 'Supplier Invoice Doc' },
   { key: 'invoiceAmount', label: 'Invoice Amount', numeric: true },
@@ -1786,7 +1786,7 @@ qs('#unitForm').addEventListener('submit', e=>{
   saveState();
   renderUnits();
   if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions();
-  try{ if(typeof syncInvoiceTrackingUnitOptions === 'function') syncInvoiceTrackingUnitOptions(getSelectedInvoiceTrackingUnits()); }catch(e){}
+  try{ if(typeof syncInvoiceTrackingUnitOptions === 'function') syncInvoiceTrackingUnitOptions(getSelectedInvoiceTrackingLeases(), getSelectedInvoiceTrackingUnits()); }catch(e){}
   form.reset();
   delete form.dataset.editing;
   const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'New';
@@ -1886,6 +1886,7 @@ qs('#leaseForm').addEventListener('submit', e=>{
   renderLeases();
   if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions();
   try{ if(typeof populateInvoiceTrackingDropdowns === 'function') populateInvoiceTrackingDropdowns(); }catch(e){}
+  try{ if(typeof syncInvoiceTrackingLeaseOptions === 'function') syncInvoiceTrackingLeaseOptions(getSelectedInvoiceTrackingLeases()); }catch(e){}
   form.reset();
   delete form.dataset.editing;
   const submitBtn = form.querySelector('button[type="submit"]');
@@ -4241,6 +4242,7 @@ async function loadStateFromDB(){
     try{ renderArrangementList(); }catch(e){}
     try{ renderPaymentList(); }catch(e){}
     try{ populateInvoiceTrackingDropdowns(); }catch(e){}
+    try{ syncInvoiceTrackingLeaseOptions(); }catch(e){}
     try{ syncInvoiceTrackingUnitOptions(); }catch(e){}
     // Start auto-refresh if not already running
     startAutoRefresh();
@@ -10679,34 +10681,110 @@ function populateInvoiceTrackingDropdowns(){
   const supplierSel = qs('#itSupplier');
   if(supplierSel){
     const cur = supplierSel.value;
-    supplierSel.innerHTML = '<option value="">Select unit(s) in dispute below</option>';
+    supplierSel.innerHTML = '<option value="">Select lease(s) below</option>';
     (state.meta.devSuppliers || []).forEach(s => {
       const opt = document.createElement('option'); opt.value = s; opt.textContent = s; supplierSel.appendChild(opt);
     });
     if(cur) supplierSel.value = cur;
   }
+}
 
-  const leaseSel = qs('#itLease');
-  if(leaseSel){
-    const cur = leaseSel.value;
-    leaseSel.innerHTML = '<option value="">Select unit(s) in dispute below</option>';
-    (state.leases || []).forEach(l => {
-      const val = (l.leaseNumber || l.id || '').toString();
-      if(!val) return;
-      const opt = document.createElement('option'); opt.value = val; opt.textContent = val; leaseSel.appendChild(opt);
-    });
-    if(cur) leaseSel.value = cur;
+// Always-visible checkbox box + search for selecting one or more leases (same format as the
+// invoice form's lease picker). Selecting lease(s) here restricts which units show up below.
+function syncInvoiceTrackingLeaseOptions(selectedValues){
+  selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s => String(s)) : (selectedValues ? [String(selectedValues)] : getSelectedInvoiceTrackingLeases());
+  const panel = qs('#itLeasePanel');
+  if(!panel) return;
+
+  const leases = (state.leases || []).filter(l => (l.status || 'Enabled').toString().toLowerCase() !== 'disabled');
+
+  panel.innerHTML = '';
+  if(leases.length === 0){
+    const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no leases available)'; panel.appendChild(none);
+    return;
   }
+
+  leases.forEach(l => {
+    const val = (l.leaseNumber || l.id || '').toString();
+    const row = document.createElement('label');
+    row.className = 'lease-checkbox-row';
+    row.setAttribute('data-lease-id', val.toLowerCase());
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'itLease'; cb.value = val; cb.style.cursor = 'pointer';
+    if(selectedValues.indexOf(val) !== -1) cb.checked = true;
+    const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val;
+    cb.addEventListener('change', () => { try{ onInvoiceTrackingLeaseSelectionChange(); }catch(e){} });
+    row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
+  });
+
+  const searchBox = qs('#itLeaseSearch');
+  if(searchBox && !searchBox.dataset.wired){
+    searchBox.dataset.wired = 'true';
+    searchBox.addEventListener('input', () => {
+      const groups = parseSearchGroups(searchBox.value);
+      panel.querySelectorAll('.lease-checkbox-row').forEach(row => {
+        const lid = row.getAttribute('data-lease-id') || '';
+        row.style.display = matchesSearchGroups(groups, [lid]) ? 'flex' : 'none';
+      });
+    });
+  }
+  if(searchBox && searchBox.value) searchBox.dispatchEvent(new Event('input'));
+
+  const selectAllBtn = qs('#itLeaseSelectAllBtn');
+  if(selectAllBtn && !selectAllBtn.dataset.wired){
+    selectAllBtn.dataset.wired = 'true';
+    selectAllBtn.addEventListener('click', () => {
+      panel.querySelectorAll('.lease-checkbox-row').forEach(row => {
+        if(row.style.display !== 'none'){
+          const cb = row.querySelector('input[type="checkbox"]');
+          if(cb) cb.checked = true;
+        }
+      });
+      onInvoiceTrackingLeaseSelectionChange();
+    });
+  }
+
+  const clearBtn = qs('#itLeaseClearBtn');
+  if(clearBtn && !clearBtn.dataset.wired){
+    clearBtn.dataset.wired = 'true';
+    clearBtn.addEventListener('click', () => {
+      panel.querySelectorAll('input[type="checkbox"][name="itLease"]').forEach(cb => cb.checked = false);
+      onInvoiceTrackingLeaseSelectionChange();
+    });
+  }
+
+  wireSearchClearButton('itLeaseSearch', 'itLeaseSearchClear');
+}
+
+function getSelectedInvoiceTrackingLeases(){
+  const panel = qs('#itLeasePanel'); if(!panel) return [];
+  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="itLease"]:checked')).map(cb => cb.value);
+}
+
+// Re-filter the unit list to the newly-selected lease(s), dropping any previously-checked
+// unit that no longer belongs to one of them, then refresh Supplier/Cost Center.
+function onInvoiceTrackingLeaseSelectionChange(){
+  const selectedLeases = getSelectedInvoiceTrackingLeases();
+  const stillValidUnits = getSelectedInvoiceTrackingUnits().filter(uid => {
+    const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
+    return u && (selectedLeases.length === 0 || selectedLeases.indexOf(u.lease) !== -1);
+  });
+  syncInvoiceTrackingUnitOptions(selectedLeases, stillValidUnits);
+  updateInvoiceTrackingDerivedFields();
 }
 
 // Always-visible checkbox box + search (same format/behavior as the invoice form's unit
-// picker), scoped to this form only.
-function syncInvoiceTrackingUnitOptions(selectedValues){
+// picker), scoped to this form only. Restricted to whichever lease(s) are currently selected
+// above (all units when none are selected yet, matching the invoice form's own convention).
+function syncInvoiceTrackingUnitOptions(leaseVals, selectedValues){
   selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s => String(s)) : [];
   const panel = qs('#itUnitPanel');
   if(!panel) return;
 
-  const units = (state.units || []).slice().sort((a, b) => {
+  const leaseFilter = Array.isArray(leaseVals) ? leaseVals.filter(Boolean) : (leaseVals ? [leaseVals] : []);
+  const filtered = leaseFilter.length === 0 ? (state.units || []).slice() : (state.units || []).filter(u => leaseFilter.indexOf(u.lease) !== -1);
+
+  const units = filtered.sort((a, b) => {
     const aDisabled = (a.status || '').toLowerCase() === 'disabled';
     const bDisabled = (b.status || '').toLowerCase() === 'disabled';
     if(aDisabled === bDisabled) return 0;
@@ -10726,6 +10804,7 @@ function syncInvoiceTrackingUnitOptions(selectedValues){
     row.className = 'unit-checkbox-row';
     row.setAttribute('data-unit-id', val.toLowerCase());
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;';
+    if(isDisabled) row.style.background = '#fee2e2';
     const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'itUnit'; cb.value = val; cb.style.cursor = 'pointer';
     if(selectedValues.indexOf(val) !== -1) cb.checked = true;
     const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val + (isDisabled ? ' (Disabled)' : '');
@@ -10778,32 +10857,30 @@ function getSelectedInvoiceTrackingUnits(){
   return Array.from(panel.querySelectorAll('input[type="checkbox"][name="itUnit"]:checked')).map(cb => cb.value);
 }
 
-// Cost Center, Supplier and Lease are all derived from whichever unit(s) are currently
-// checked in Units in Dispute, rather than typed/picked independently. Cost Center joins
-// every distinct value across the selection; Supplier/Lease are single-select dropdowns so
-// they take the first selected unit's own values (still editable afterward if needed).
+// Cost Center mirrors whichever unit(s) are checked in Units in Dispute (joining every
+// distinct value). Supplier mirrors whichever lease(s) are checked above it — a single-select
+// dropdown, so it takes the first selected lease's own supplier (still editable afterward
+// if it needs correcting).
 function updateInvoiceTrackingDerivedFields(){
   const ccField = qs('#itCostCenter');
   const supplierSel = qs('#itSupplier');
-  const leaseSel = qs('#itLease');
-  const selected = getSelectedInvoiceTrackingUnits();
-  const selectedUnitRecs = selected
-    .map(uid => (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase()))
-    .filter(Boolean);
 
+  const selectedUnits = getSelectedInvoiceTrackingUnits();
   if(ccField){
     const ccSet = new Set();
-    selectedUnitRecs.forEach(u => { if(u.costCenter) ccSet.add(u.costCenter); });
+    selectedUnits.forEach(uid => {
+      const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
+      if(u && u.costCenter) ccSet.add(u.costCenter);
+    });
     ccField.value = Array.from(ccSet).join(', ');
   }
 
-  if(selectedUnitRecs.length > 0){
-    const first = selectedUnitRecs[0];
-    if(supplierSel && first.supplier) supplierSel.value = first.supplier;
-    if(leaseSel && first.lease) leaseSel.value = first.lease;
-  } else {
-    if(supplierSel) supplierSel.value = '';
-    if(leaseSel) leaseSel.value = '';
+  const selectedLeases = getSelectedInvoiceTrackingLeases();
+  if(supplierSel){
+    const firstLeaseRec = selectedLeases.length
+      ? (state.leases || []).find(l => (l.leaseNumber || l.id || '').toString() === selectedLeases[0])
+      : null;
+    supplierSel.value = (firstLeaseRec && firstLeaseRec.supplier) || '';
   }
 }
 
@@ -10959,7 +11036,7 @@ if(invoiceTrackingForm){
     const record = {
       id: id(),
       supplier: (qs('#itSupplier') || {}).value || '',
-      lease: (qs('#itLease') || {}).value || '',
+      lease: getSelectedInvoiceTrackingLeases(),
       unitsInDispute: getSelectedInvoiceTrackingUnits(),
       supplierInvoiceDoc: ((qs('#itSupplierInvoiceDoc') || {}).value || '').trim(),
       invoiceAmount: toMoney('itInvoiceAmount'),
@@ -10985,9 +11062,11 @@ if(invoiceTrackingForm){
     if(typeof renderRegistries === 'function') renderRegistries();
 
     invoiceTrackingForm.reset();
-    syncInvoiceTrackingUnitOptions([]);
+    syncInvoiceTrackingLeaseOptions([]);
+    syncInvoiceTrackingUnitOptions([], []);
     updateInvoiceTrackingDerivedFields();
     const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
+    const leaseSearchEl = qs('#itLeaseSearch'); if(leaseSearchEl){ leaseSearchEl.value = ''; leaseSearchEl.dispatchEvent(new Event('input')); }
     const searchEl = qs('#itUnitSearch'); if(searchEl){ searchEl.value = ''; searchEl.dispatchEvent(new Event('input')); }
   });
 }
