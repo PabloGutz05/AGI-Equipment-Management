@@ -10889,6 +10889,13 @@ function renderInvoiceTrackingUnitBreakdown(){
       row.appendChild(c);
     });
 
+    if(isDisabled && unitRec && unitRec.disabledDate){
+      const disabledDateCell = document.createElement('div');
+      disabledDateCell.textContent = 'Disabled: ' + (formatDate(unitRec.disabledDate) || unitRec.disabledDate);
+      disabledDateCell.style.cssText = 'flex:1 1 140px;font-size:11px;color:#b91c1c;font-weight:600;white-space:nowrap;';
+      row.appendChild(disabledDateCell);
+    }
+
     rowsContainer.appendChild(row);
   });
 
@@ -11149,8 +11156,13 @@ if(invoiceTrackingForm){
 
     state.invoiceTracking = state.invoiceTracking || [];
     if(existingRecord){
-      // Editing: keep the same id and its existing binnacle log, just update the fields.
+      // Editing: keep the same id and its existing binnacle log, just update the fields —
+      // and log a summary of what changed so the binnacle reflects edits made here too.
+      const changes = describeInvoiceTrackingFieldChanges(existingRecord, fields);
       Object.assign(existingRecord, fields);
+      if(changes.length > 0){
+        addInvoiceTrackingLogEntry(existingRecord, 'Entry edited:\n' + changes.join('\n'), 'auto-edit');
+      }
       DB.updateInvoiceTracking(existingRecord).catch(e => console.error('Invoice Tracking update error:', e));
     } else {
       const record = Object.assign({ id: id() }, fields);
@@ -11240,6 +11252,32 @@ function linkifyText(text){
   });
 }
 
+// Compares an existing record's operator-facing fields against the values about to be saved
+// from the Edit form, so an edit made there can be auto-logged to the binnacle the same way
+// the detail popup already logs its own Description/Request/Status edits.
+const INVOICE_TRACKING_CHANGE_LABELS = {
+  wdInvoiceNum: 'WD Invoice Num',
+  unitsInDispute: 'Units in Dispute',
+  amountInDispute: 'Amount in Dispute',
+  amountDue: 'Amount Due',
+  invoiceStatus: 'Invoice Status',
+  paymentStatus: 'Payment Status',
+  descriptionOfIssue: 'Description of Issue',
+  request: 'Request',
+  status: 'Status'
+};
+function describeInvoiceTrackingFieldChanges(oldRecord, newFields){
+  const changes = [];
+  Object.keys(INVOICE_TRACKING_CHANGE_LABELS).forEach(key => {
+    const oldVal = Array.isArray(oldRecord[key]) ? oldRecord[key].join(', ') : (oldRecord[key] || '');
+    const newVal = Array.isArray(newFields[key]) ? newFields[key].join(', ') : (newFields[key] || '');
+    if(oldVal !== newVal){
+      changes.push(INVOICE_TRACKING_CHANGE_LABELS[key] + ': "' + (oldVal || '(empty)') + '" → "' + (newVal || '(empty)') + '"');
+    }
+  });
+  return changes;
+}
+
 function addInvoiceTrackingLogEntry(record, text, type){
   record.log = Array.isArray(record.log) ? record.log : [];
   record.log.push({ text, user: getCurrentUserDisplayName(), timestamp: new Date().toISOString(), type: type || 'manual' });
@@ -11274,10 +11312,15 @@ function closeInvoiceTrackingDetailModal(){
   return true;
 }
 
-function renderInvoiceTrackingLogList(record){
-  const listEl = qs('#itDetailLogList'); if(!listEl) return;
+// Renders a record's binnacle into any container (the small inline list, or the bigger
+// full-window list) — `hideAuto` filters out auto-* entries so operators can clean the view
+// down to manual/completion entries without those being permanently removed.
+function renderInvoiceTrackingLogListInto(record, listEl, hideAuto){
+  if(!listEl) return;
   const canManage = isFullAccessRole();
-  const indexed = (Array.isArray(record.log) ? record.log : []).map((entry, idx) => ({ entry, idx })).reverse();
+  let indexed = (Array.isArray(record.log) ? record.log : []).map((entry, idx) => ({ entry, idx }));
+  if(hideAuto) indexed = indexed.filter(({ entry }) => !(entry.type && entry.type.indexOf('auto') === 0));
+  indexed = indexed.reverse();
   if(indexed.length === 0){
     listEl.innerHTML = '<div class="small-muted">No entries yet.</div>';
     return;
@@ -11328,6 +11371,54 @@ function renderInvoiceTrackingLogList(record){
       saveInvoiceTrackingRecord(rec);
       renderInvoiceTrackingLogList(rec);
     });
+  });
+}
+
+// Keeps the small inline binnacle in sync, plus the bigger full-window list if it's currently
+// open (respecting whatever "Hide auto entries" state that window is in).
+function renderInvoiceTrackingLogList(record){
+  renderInvoiceTrackingLogListInto(record, qs('#itDetailLogList'), false);
+  const fullModal = qs('#itBinnacleFullModal');
+  if(fullModal && fullModal.style.display !== 'none'){
+    const hideAutoCb = qs('#itBinnacleHideAutoCheckbox');
+    renderInvoiceTrackingLogListInto(record, qs('#itBinnacleFullList'), hideAutoCb ? hideAutoCb.checked : false);
+  }
+}
+
+function openBinnacleFullModal(record){
+  const modal = qs('#itBinnacleFullModal'); if(!modal) return;
+  const wdLabel = qs('#itBinnacleFullWd'); if(wdLabel) wdLabel.textContent = record.wdInvoiceNum || '';
+  const hideAutoCb = qs('#itBinnacleHideAutoCheckbox');
+  renderInvoiceTrackingLogListInto(record, qs('#itBinnacleFullList'), hideAutoCb ? hideAutoCb.checked : false);
+  modal.style.display = 'flex';
+}
+
+function closeBinnacleFullModal(){
+  const modal = qs('#itBinnacleFullModal'); if(modal) modal.style.display = 'none';
+}
+
+const itBinnacleExpandBtn = qs('#itBinnacleExpandBtn');
+if(itBinnacleExpandBtn){
+  itBinnacleExpandBtn.addEventListener('click', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    openBinnacleFullModal(record);
+  });
+}
+
+const itBinnacleFullCloseBtn = qs('#itBinnacleFullCloseBtn');
+if(itBinnacleFullCloseBtn) itBinnacleFullCloseBtn.addEventListener('click', closeBinnacleFullModal);
+
+const itBinnacleFullModalEl = qs('#itBinnacleFullModal');
+if(itBinnacleFullModalEl){
+  const itBinnacleFullBackdrop = itBinnacleFullModalEl.querySelector('.modal-backdrop');
+  if(itBinnacleFullBackdrop) itBinnacleFullBackdrop.addEventListener('click', closeBinnacleFullModal);
+}
+
+const itBinnacleHideAutoCheckbox = qs('#itBinnacleHideAutoCheckbox');
+if(itBinnacleHideAutoCheckbox){
+  itBinnacleHideAutoCheckbox.addEventListener('change', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    renderInvoiceTrackingLogListInto(record, qs('#itBinnacleFullList'), itBinnacleHideAutoCheckbox.checked);
   });
 }
 
@@ -11634,7 +11725,19 @@ function refreshInvoiceTrackingRecordFromSource(record){
     return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', charge: d ? d.charge : '' };
   });
 
-  addInvoiceTrackingLogEntry(record, 'Data refreshed from source registry/unit records (supplier, dates, amounts, and unit cost center detail re-synced).', 'auto-refresh');
+  // Amount in Dispute is normally the sum of Tax/Other/Amount across the disputed units at
+  // the time the entry was created — if the registry was missing that detail back then (or
+  // it's since been corrected), re-derive it the same way here so it stays in sync, then
+  // recompute Amount Due (Invoice Amount − Amount in Dispute) off the refreshed total.
+  const recomputedDispute = record.unitAmountDetails.reduce((sum, d) =>
+    sum + (parseCurrency(d.tax || '') || 0) + (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0), 0);
+  record.amountInDispute = recomputedDispute ? recomputedDispute.toFixed(2) : '';
+  const invoiceAmountNum = parseCurrency(record.invoiceAmount || '') || 0;
+  const amountInDisputeNum = parseCurrency(record.amountInDispute || '') || 0;
+  const dueNum = invoiceAmountNum - amountInDisputeNum;
+  record.amountDue = dueNum ? dueNum.toFixed(2) : '';
+
+  addInvoiceTrackingLogEntry(record, 'Data refreshed from source registry/unit records (supplier, dates, amounts, unit cost center detail, and Amount in Dispute/Amount Due re-synced).', 'auto-refresh');
   saveInvoiceTrackingRecord(record);
   renderInvoiceTrackingDetailModal(record);
 }

@@ -810,7 +810,10 @@
       </div>
 
       <div style="border-top:1px solid #e6e9ee;padding-top:10px;">
-        <h4 style="margin:0 0 8px;font-size:14px;">Binnacle</h4>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <h4 style="margin:0;font-size:14px;">Binnacle</h4>
+          <button type="button" id="itBinnacleExpandBtn" title="View all entries" style="background:#fff;border:1px solid #ddd;border-radius:4px;width:26px;height:26px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;">⤢</button>
+        </div>
         <div style="display:flex;gap:8px;margin-bottom:12px;align-items:flex-start;">
           <textarea id="itDetailLogInput" rows="2" placeholder="Post an update... (links stay clickable)" style="flex:1;padding:8px;border:1px solid #e6e9ee;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
           <button type="button" id="itDetailLogAddBtn" class="btn-primary">Add Entry</button>
@@ -822,6 +825,21 @@
         <button type="button" id="itDetailCancelBtn" disabled style="background:#6b7280;color:#fff;opacity:0.5;cursor:not-allowed;">Cancel</button>
         <button type="button" id="itDetailSaveBtn" class="btn-primary" disabled style="opacity:0.5;cursor:not-allowed;">Save</button>
       </div>
+    </div>
+  </div>
+
+  <div id="itBinnacleFullModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document" style="max-width:720px;width:94%;max-height:88vh;overflow:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;">
+        <h3 style="margin:0;">Binnacle — <span id="itBinnacleFullWd"></span></h3>
+        <button type="button" id="itBinnacleFullCloseBtn" title="Close" style="font-size:18px;font-weight:700;">&times;</button>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:12px;cursor:pointer;">
+        <input type="checkbox" id="itBinnacleHideAutoCheckbox" style="cursor:pointer;">
+        Hide auto entries
+      </label>
+      <div id="itBinnacleFullList"></div>
     </div>
   </div>
 
