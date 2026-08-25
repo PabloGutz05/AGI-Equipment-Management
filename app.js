@@ -8,6 +8,7 @@ const defaultData = {
   users: [],
   registries: [],
   ccCenters: [],
+  invoiceTracking: [],
   comments: {}, // Store comments by unitId
   meta: { createdAt: new Date().toISOString(), registrySeq: 0 }
 };
@@ -1758,6 +1759,7 @@ qs('#unitForm').addEventListener('submit', e=>{
   saveState();
   renderUnits();
   if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions();
+  try{ if(typeof syncInvoiceTrackingUnitOptions === 'function') syncInvoiceTrackingUnitOptions(getSelectedInvoiceTrackingUnits()); }catch(e){}
   form.reset();
   delete form.dataset.editing;
   const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'New';
@@ -1856,6 +1858,7 @@ qs('#leaseForm').addEventListener('submit', e=>{
   saveState();
   renderLeases();
   if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions();
+  try{ if(typeof populateInvoiceTrackingDropdowns === 'function') populateInvoiceTrackingDropdowns(); }catch(e){}
   form.reset();
   delete form.dataset.editing;
   const submitBtn = form.querySelector('button[type="submit"]');
@@ -2408,6 +2411,14 @@ function renderRegistryUnitDetailTable(container, unitDetails){
 }
 
 // Render registry of grouped submissions (registries created when multiple units are submitted under a WD)
+// Matches a registry to any Invoice Tracking dispute entr(y/ies) opened against the same WD
+// number — the only link between the two tabs for now (per-unit/lease matching may follow).
+function getInvoiceTrackingForRegistry(r){
+  const wd = (r.wdNumber || '').toString().trim().toLowerCase();
+  if(!wd) return [];
+  return (state.invoiceTracking || []).filter(t => (t.wdInvoiceNum || '').toString().trim().toLowerCase() === wd);
+}
+
 function renderRegistries(keepOpenRegistryId){
   const wrap = qs('#registryList'); if(!wrap) return; 
   
@@ -2676,6 +2687,15 @@ function renderRegistries(keepOpenRegistryId){
     menuContainer.appendChild(menuBtn);
     document.body.appendChild(menuPanel);
     
+    const disputeEntries = getInvoiceTrackingForRegistry(r);
+    if(disputeEntries.length > 0){
+      const disputeBadge = document.createElement('span');
+      disputeBadge.textContent = '⚠ Dispute' + (disputeEntries.length > 1 ? ' (' + disputeEntries.length + ')' : '');
+      disputeBadge.title = 'This invoice has an open Invoice Tracking entry';
+      disputeBadge.style.cssText = 'font-size:11px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:10px;padding:2px 8px;';
+      rightInfo.appendChild(disputeBadge);
+    }
+
     rightInfo.appendChild(amountInfo);
     rightInfo.appendChild(menuContainer);
     
@@ -2937,6 +2957,35 @@ function renderRegistries(keepOpenRegistryId){
       infoGrid.appendChild(el);
     });
     details.appendChild(infoGrid);
+
+    // Preview of any Invoice Tracking entr(y/ies) opened against this WD number — surfaces
+    // the dispute right on the registry itself so it doesn't require cross-checking the
+    // separate Invoice Tracking tab. Matched purely by WD number for now.
+    if(disputeEntries.length > 0){
+      const disputeSection = document.createElement('div');
+      disputeSection.style.cssText = 'margin-bottom:10px;';
+      disputeEntries.forEach(dt => {
+        const card = document.createElement('div');
+        card.style.cssText = 'background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-bottom:6px;';
+        const rowsHtml = [
+          ['Units in Dispute', Array.isArray(dt.unitsInDispute) ? dt.unitsInDispute.join(', ') : ''],
+          ['Amount in Dispute', dt.amountInDispute ? formatCurrency(dt.amountInDispute) : ''],
+          ['Amount Due', dt.amountDue ? formatCurrency(dt.amountDue) : ''],
+          ['Invoice Status', dt.invoiceStatus || ''],
+          ['Payment Status', dt.paymentStatus || ''],
+          ['Description of Issue', dt.descriptionOfIssue || ''],
+          ['Request', dt.request || ''],
+          ['Status', dt.status || '']
+        ].filter(([,v]) => v);
+        card.innerHTML = '<div style="font-weight:700;color:#92400e;margin-bottom:4px;">⚠ Invoice Tracking — Open Dispute</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:4px 20px;">' +
+          rowsHtml.map(([label,val]) => `<div style="flex:1 1 160px;min-width:140px;"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(val)}</div>`).join('') +
+          '</div>';
+        disputeSection.appendChild(card);
+      });
+      details.appendChild(disputeSection);
+    }
+
     // Per-unit detail table sits at the bottom, right above the comments/Add Comment button
     details.appendChild(unitsList);
     details.appendChild(commentsSection);
@@ -4164,6 +4213,8 @@ async function loadStateFromDB(){
     try{ renderRentalList(); }catch(e){}
     try{ renderArrangementList(); }catch(e){}
     try{ renderPaymentList(); }catch(e){}
+    try{ populateInvoiceTrackingDropdowns(); }catch(e){}
+    try{ syncInvoiceTrackingUnitOptions(); }catch(e){}
     // Start auto-refresh if not already running
     startAutoRefresh();
   } catch(e) {
@@ -4662,7 +4713,7 @@ function renderCCControl(){
   qs('#ccCancelBtn').addEventListener('click', () => clearCCForm());
 })();
 
-function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); renderReport(); renderCCControl(); }
+function renderAll(){ renderOverview(); renderInvoices(); renderRegistries(); renderUnits(); renderLeases(); renderUsers(); renderUnitOverview(); renderLeaseOverview(); renderReport(); renderCCControl(); if(typeof renderInvoiceTrackingTable === 'function') renderInvoiceTrackingTable(); }
 
 // Helper function to format date from YYYY-MM-DD to MM/DD/YYYY
 function formatDateToUS(dateStr){
@@ -8173,6 +8224,7 @@ function renderSupplierList(){
     devSupplierListEl.appendChild(li);
   });
   syncLeaseSupplierOptions();
+  try{ if(typeof populateInvoiceTrackingDropdowns === 'function') populateInvoiceTrackingDropdowns(); }catch(e){}
 }
 
 const saveSupplierBtn = qs('#saveDevSupplier');
@@ -10593,6 +10645,323 @@ function renderAccrualsMissingPeriods(forceRecompute){
   table.appendChild(tbody);
 
   tableEl.appendChild(table);
+}
+
+// ========== Invoice Tracking tab ==========
+function populateInvoiceTrackingDropdowns(){
+  const supplierSel = qs('#itSupplier');
+  if(supplierSel){
+    const cur = supplierSel.value;
+    supplierSel.innerHTML = '<option value="">Select Supplier</option>';
+    (state.meta.devSuppliers || []).forEach(s => {
+      const opt = document.createElement('option'); opt.value = s; opt.textContent = s; supplierSel.appendChild(opt);
+    });
+    if(cur) supplierSel.value = cur;
+  }
+
+  const leaseSel = qs('#itLease');
+  if(leaseSel){
+    const cur = leaseSel.value;
+    leaseSel.innerHTML = '<option value="">Select Lease</option>';
+    (state.leases || []).forEach(l => {
+      const val = (l.leaseNumber || l.id || '').toString();
+      if(!val) return;
+      const opt = document.createElement('option'); opt.value = val; opt.textContent = val; leaseSel.appendChild(opt);
+    });
+    if(cur) leaseSel.value = cur;
+  }
+}
+
+// Always-visible checkbox box + search (same format/behavior as the invoice form's unit
+// picker), scoped to this form only.
+function syncInvoiceTrackingUnitOptions(selectedValues){
+  selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s => String(s)) : [];
+  const panel = qs('#itUnitPanel');
+  if(!panel) return;
+
+  const units = (state.units || []).slice().sort((a, b) => {
+    const aDisabled = (a.status || '').toLowerCase() === 'disabled';
+    const bDisabled = (b.status || '').toLowerCase() === 'disabled';
+    if(aDisabled === bDisabled) return 0;
+    return aDisabled ? 1 : -1;
+  });
+
+  panel.innerHTML = '';
+  if(units.length === 0){
+    const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no units available)'; panel.appendChild(none);
+    return;
+  }
+
+  units.forEach(u => {
+    const val = (u.unitId || u.id || '').toString();
+    const isDisabled = (u.status || '').toLowerCase() === 'disabled';
+    const row = document.createElement('label');
+    row.className = 'unit-checkbox-row';
+    row.setAttribute('data-unit-id', val.toLowerCase());
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'itUnit'; cb.value = val; cb.style.cursor = 'pointer';
+    if(selectedValues.indexOf(val) !== -1) cb.checked = true;
+    const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val + (isDisabled ? ' (Disabled)' : '');
+    if(isDisabled) text.style.color = '#b91c1c';
+    cb.addEventListener('change', () => { try{ updateInvoiceTrackingCostCenter(); }catch(e){} });
+    row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
+  });
+
+  const searchBox = qs('#itUnitSearch');
+  if(searchBox && !searchBox.dataset.wired){
+    searchBox.dataset.wired = 'true';
+    searchBox.addEventListener('input', () => {
+      const groups = parseSearchGroups(searchBox.value);
+      panel.querySelectorAll('.unit-checkbox-row').forEach(row => {
+        const uid = row.getAttribute('data-unit-id') || '';
+        row.style.display = matchesSearchGroups(groups, [uid]) ? 'flex' : 'none';
+      });
+    });
+  }
+  if(searchBox && searchBox.value) searchBox.dispatchEvent(new Event('input'));
+
+  const selectAllBtn = qs('#itUnitSelectAllBtn');
+  if(selectAllBtn && !selectAllBtn.dataset.wired){
+    selectAllBtn.dataset.wired = 'true';
+    selectAllBtn.addEventListener('click', () => {
+      panel.querySelectorAll('.unit-checkbox-row').forEach(row => {
+        if(row.style.display !== 'none'){
+          const cb = row.querySelector('input[type="checkbox"]');
+          if(cb) cb.checked = true;
+        }
+      });
+      updateInvoiceTrackingCostCenter();
+    });
+  }
+
+  const clearBtn = qs('#itUnitClearBtn');
+  if(clearBtn && !clearBtn.dataset.wired){
+    clearBtn.dataset.wired = 'true';
+    clearBtn.addEventListener('click', () => {
+      panel.querySelectorAll('input[type="checkbox"][name="itUnit"]').forEach(cb => cb.checked = false);
+      updateInvoiceTrackingCostCenter();
+    });
+  }
+
+  wireSearchClearButton('itUnitSearch', 'itUnitSearchClear');
+}
+
+function getSelectedInvoiceTrackingUnits(){
+  const panel = qs('#itUnitPanel'); if(!panel) return [];
+  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="itUnit"]:checked')).map(cb => cb.value);
+}
+
+// Cost Center is derived, not typed — it mirrors whichever unit(s) are currently selected in
+// dispute (joining more than one unit's cost center if they differ).
+function updateInvoiceTrackingCostCenter(){
+  const ccField = qs('#itCostCenter'); if(!ccField) return;
+  const selected = getSelectedInvoiceTrackingUnits();
+  const ccSet = new Set();
+  selected.forEach(uid => {
+    const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
+    if(u && u.costCenter) ccSet.add(u.costCenter);
+  });
+  ccField.value = Array.from(ccSet).join(', ');
+}
+
+// Looks the typed WD number up against the invoice registries: if a match exists, pulls its
+// coverage dates (and, once that Sheets column exists, its Invoice Date) into this form; if
+// not, marks the invoice as not yet submitted rather than leaving the date field ambiguous.
+function lookupInvoiceTrackingWd(){
+  const wdInput = qs('#itWdInvoiceNum');
+  const wdDateField = qs('#itWdInvoiceDate');
+  const fromField = qs('#itFromDate');
+  const toField = qs('#itToDate');
+  if(!wdInput) return;
+
+  const wdVal = wdInput.value.trim();
+  if(!wdVal){
+    if(wdDateField) wdDateField.value = '';
+    return;
+  }
+
+  const reg = (state.registries || []).find(r => (r.wdNumber || '').toString().trim().toLowerCase() === wdVal.toLowerCase());
+  if(reg){
+    // "Invoice Date" isn't captured anywhere upstream yet (new Sheets column on the invoices
+    // sheet, still to be wired into the invoice registration form) — populate it once that
+    // exists; for now leave it blank rather than fabricate a value.
+    if(wdDateField) wdDateField.value = reg.invoiceDate || '';
+    if(fromField && reg.periodStart) fromField.value = reg.periodStart;
+    if(toField && reg.periodEnd) toField.value = reg.periodEnd;
+  } else {
+    if(wdDateField) wdDateField.value = 'Not Submitted';
+  }
+}
+const itWdInvoiceNumEl = qs('#itWdInvoiceNum');
+if(itWdInvoiceNumEl) itWdInvoiceNumEl.addEventListener('input', lookupInvoiceTrackingWd);
+
+// Click-to-sort state for the Invoice Tracking list (not persisted).
+let _invoiceTrackingSort = { column: 'wdInvoiceNum', ascending: true };
+
+const INVOICE_TRACKING_COLUMNS = [
+  { key: 'supplier', label: 'Supplier' },
+  { key: 'lease', label: 'Lease' },
+  { key: 'unitsInDispute', label: 'Units in Dispute', get: r => (Array.isArray(r.unitsInDispute) ? r.unitsInDispute.join(', ') : '') },
+  { key: 'supplierInvoiceDoc', label: 'Supplier Invoice Doc' },
+  { key: 'invoiceAmount', label: 'Invoice Amount', numeric: true },
+  { key: 'amountInDispute', label: 'Amount in Dispute', numeric: true },
+  { key: 'amountDue', label: 'Amount Due', numeric: true },
+  { key: 'wdInvoiceNum', label: 'WD Invoice Num' },
+  { key: 'wdInvoiceDate', label: 'WD Invoice Date' },
+  { key: 'invoiceStatus', label: 'Invoice Status' },
+  { key: 'paymentStatus', label: 'Payment Status' },
+  { key: 'fromDate', label: 'From Date' },
+  { key: 'toDate', label: 'To Date' },
+  { key: 'costCenter', label: 'Cost Center' },
+  { key: 'descriptionOfIssue', label: 'Description of Issue' },
+  { key: 'request', label: 'Request' },
+  { key: 'status', label: 'Status' }
+];
+
+function renderInvoiceTrackingTable(){
+  const headerRow = qs('#invoiceTrackingHeaderRow');
+  const tbody = qs('#invoiceTrackingTableBody');
+  if(!headerRow || !tbody) return;
+
+  const thStyle = 'text-align:left;padding:6px 8px;font-size:12px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;white-space:nowrap;';
+
+  headerRow.innerHTML = '';
+  const thCounter = document.createElement('th');
+  thCounter.textContent = '#';
+  thCounter.style.cssText = thStyle;
+  headerRow.appendChild(thCounter);
+
+  INVOICE_TRACKING_COLUMNS.forEach(col => {
+    const th = document.createElement('th');
+    th.textContent = col.label + (_invoiceTrackingSort.column === col.key ? (_invoiceTrackingSort.ascending ? ' ▲' : ' ▼') : '');
+    th.style.cssText = thStyle + 'cursor:pointer;user-select:none;';
+    th.title = 'Click to sort';
+    th.addEventListener('click', () => {
+      if(_invoiceTrackingSort.column === col.key) _invoiceTrackingSort.ascending = !_invoiceTrackingSort.ascending;
+      else _invoiceTrackingSort = { column: col.key, ascending: true };
+      renderInvoiceTrackingTable();
+    });
+    headerRow.appendChild(th);
+  });
+  const thActions = document.createElement('th');
+  thActions.style.cssText = thStyle;
+  headerRow.appendChild(thActions);
+
+  const rows = (state.invoiceTracking || []).slice();
+  const sortCol = INVOICE_TRACKING_COLUMNS.find(c => c.key === _invoiceTrackingSort.column) || INVOICE_TRACKING_COLUMNS[0];
+  const ascending = _invoiceTrackingSort.ascending;
+  rows.sort((a, b) => {
+    const av = (sortCol.get ? sortCol.get(a) : (a[sortCol.key] || '')).toString();
+    const bv = (sortCol.get ? sortCol.get(b) : (b[sortCol.key] || '')).toString();
+    let cmp;
+    if(sortCol.numeric) cmp = (parseCurrency(av) || 0) - (parseCurrency(bv) || 0);
+    else cmp = av.toLowerCase() < bv.toLowerCase() ? -1 : (av.toLowerCase() > bv.toLowerCase() ? 1 : 0);
+    return ascending ? cmp : -cmp;
+  });
+
+  tbody.innerHTML = '';
+  if(rows.length === 0){
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = INVOICE_TRACKING_COLUMNS.length + 2;
+    td.className = 'small-muted';
+    td.style.padding = '12px';
+    td.textContent = 'No tracked invoices yet.';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  const fmtShortDate = (s) => {
+    if(!s) return '';
+    const p = String(s).split('-');
+    if(p.length < 3) return s;
+    const d = new Date(parseInt(p[0]), parseInt(p[1]) - 1, parseInt(p[2]));
+    return isNaN(d) ? s : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+  };
+
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #f0f0f0';
+
+    const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:6px 8px;color:#6b7280;';
+    tr.appendChild(tdCounter);
+
+    INVOICE_TRACKING_COLUMNS.forEach(col => {
+      const td = document.createElement('td');
+      td.style.cssText = 'padding:6px 8px;white-space:nowrap;';
+      let val = col.get ? col.get(r) : (r[col.key] || '');
+      if(col.key === 'invoiceAmount' || col.key === 'amountInDispute' || col.key === 'amountDue'){
+        val = val ? formatCurrency(val) : '';
+      } else if(col.key === 'fromDate' || col.key === 'toDate'){
+        val = fmtShortDate(val);
+      }
+      td.textContent = val;
+      tr.appendChild(td);
+    });
+
+    const tdActions = document.createElement('td');
+    tdActions.style.cssText = 'padding:6px 8px;';
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'small-link';
+    delBtn.textContent = 'Delete';
+    delBtn.style.color = '#dc2626';
+    delBtn.addEventListener('click', async () => {
+      if(!confirm('Delete this tracked invoice entry?')) return;
+      try{ if(r.id) await DB.deleteInvoiceTracking(r.id); }catch(e){ console.error('Invoice Tracking delete error:', e); }
+      state.invoiceTracking = (state.invoiceTracking || []).filter(x => x !== r);
+      renderInvoiceTrackingTable();
+      if(typeof renderRegistries === 'function') renderRegistries();
+    });
+    tdActions.appendChild(delBtn);
+    tr.appendChild(tdActions);
+
+    tbody.appendChild(tr);
+  });
+}
+
+const invoiceTrackingForm = qs('#invoiceTrackingForm');
+if(invoiceTrackingForm){
+  invoiceTrackingForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+
+    const toMoney = (elId) => { const n = parseCurrency(qs('#'+elId) ? qs('#'+elId).value : ''); return n === null ? '' : n.toFixed(2); };
+
+    const record = {
+      id: id(),
+      supplier: (qs('#itSupplier') || {}).value || '',
+      lease: (qs('#itLease') || {}).value || '',
+      unitsInDispute: getSelectedInvoiceTrackingUnits(),
+      supplierInvoiceDoc: ((qs('#itSupplierInvoiceDoc') || {}).value || '').trim(),
+      invoiceAmount: toMoney('itInvoiceAmount'),
+      amountInDispute: toMoney('itAmountInDispute'),
+      amountDue: toMoney('itAmountDue'),
+      wdInvoiceNum: ((qs('#itWdInvoiceNum') || {}).value || '').trim(),
+      wdInvoiceDate: (qs('#itWdInvoiceDate') || {}).value || '',
+      invoiceStatus: (qs('#itInvoiceStatus') || {}).value || '',
+      paymentStatus: (qs('#itPaymentStatus') || {}).value || '',
+      fromDate: (qs('#itFromDate') || {}).value || '',
+      toDate: (qs('#itToDate') || {}).value || '',
+      costCenter: (qs('#itCostCenter') || {}).value || '',
+      descriptionOfIssue: ((qs('#itDescriptionOfIssue') || {}).value || '').trim(),
+      request: ((qs('#itRequest') || {}).value || '').trim(),
+      status: ((qs('#itStatus') || {}).value || '').trim()
+    };
+
+    state.invoiceTracking = state.invoiceTracking || [];
+    state.invoiceTracking.push(record);
+    DB.saveInvoiceTracking(record).catch(e => console.error('Invoice Tracking save error:', e));
+
+    renderInvoiceTrackingTable();
+    if(typeof renderRegistries === 'function') renderRegistries();
+
+    invoiceTrackingForm.reset();
+    syncInvoiceTrackingUnitOptions([]);
+    updateInvoiceTrackingCostCenter();
+    const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
+    const searchEl = qs('#itUnitSearch'); if(searchEl){ searchEl.value = ''; searchEl.dispatchEvent(new Event('input')); }
+  });
 }
 
 function closeUnitWdNumbersModal() {

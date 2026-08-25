@@ -99,6 +99,10 @@
         <span class="tab-title">Accruals</span>
         <span class="tab-desc">Month-end closing</span>
       </button>
+      <button class="tab" data-tab="invoiceTracking">
+        <span class="tab-title">Invoice Tracking</span>
+        <span class="tab-desc">Disputes & issues</span>
+      </button>
       <button class="tab" data-tab="unitControl">
         <span class="tab-title">Unit Control</span>
         <span class="tab-desc">Vehicles / units</span>
@@ -219,6 +223,137 @@
           <h3 class="settings-block-title">Provisional Table 1 — Missing Coverage Periods</h3>
           <div id="accrualsMissingPeriodsSummary" class="small-muted" style="margin-bottom:8px"></div>
           <div id="accrualsMissingPeriodsTable" style="overflow-x:auto"></div>
+        </div>
+      </div>
+
+      <div id="invoiceTracking" class="tab-panel">
+        <h2>Invoice Tracking</h2>
+
+        <div class="invoice-registration-block">
+          <h3 class="invoice-registration-block-title">Add Invoice Tracking Entry</h3>
+          <form id="invoiceTrackingForm" class="inline-form" style="flex-direction:column;">
+
+            <div class="invoice-form-row">
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Supplier</span>
+                <select id="itSupplier"><option value="">Select Supplier</option></select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Lease</span>
+                <select id="itLease"><option value="">Select Lease</option></select>
+              </label>
+            </div>
+
+            <div class="invoice-picker-row">
+              <div class="invoice-picker-col" style="flex:1 1 100%;">
+                <div class="invoice-picker-label-row">
+                  <div class="invoice-picker-label">Units in Dispute</div>
+                  <div>
+                    <button type="button" id="itUnitSelectAllBtn" class="small-link">Select all</button>
+                    <button type="button" id="itUnitClearBtn" class="small-link">Clear</button>
+                  </div>
+                </div>
+                <div class="picker-search-wrap">
+                  <input type="text" id="itUnitSearch" class="picker-search" placeholder="Search units...">
+                  <button type="button" id="itUnitSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
+                </div>
+                <div id="itUnitPanel" class="picker-box"></div>
+              </div>
+            </div>
+
+            <div class="invoice-form-row">
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Supplier Invoice Doc</span>
+                <input id="itSupplierInvoiceDoc" type="text" placeholder="Supplier Invoice Doc">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Invoice Amount</span>
+                <input id="itInvoiceAmount" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Amount in Dispute</span>
+                <input id="itAmountInDispute" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Amount Due</span>
+                <input id="itAmountDue" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
+              </label>
+            </div>
+
+            <div class="invoice-form-row">
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">WD Invoice Num</span>
+                <input id="itWdInvoiceNum" type="text" placeholder="WD Invoice Num">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">WD Invoice Date</span>
+                <input id="itWdInvoiceDate" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Invoice Status</span>
+                <select id="itInvoiceStatus">
+                  <option value="">Select</option>
+                  <option value="Approved">Approved</option>
+                  <option value="Draft">Draft</option>
+                  <option value="Cancelled">Cancelled</option>
+                </select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Payment Status</span>
+                <select id="itPaymentStatus">
+                  <option value="">Select</option>
+                  <option value="Paid">Paid</option>
+                  <option value="Unpaid">Unpaid</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="invoice-form-row">
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">From Date</span>
+                <input id="itFromDate" type="date">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">To Date</span>
+                <input id="itToDate" type="date">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Cost Center</span>
+                <input id="itCostCenter" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
+              </label>
+            </div>
+
+            <div class="invoice-form-row">
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
+                <span style="font-weight:600;font-size:13px;">Description of Issue</span>
+                <input id="itDescriptionOfIssue" type="text" placeholder="Description of Issue">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
+                <span style="font-weight:600;font-size:13px;">Request</span>
+                <input id="itRequest" type="text" placeholder="Request">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+                <span style="font-weight:600;font-size:13px;">Status</span>
+                <input id="itStatus" type="text" placeholder="Status">
+              </label>
+            </div>
+
+            <div class="invoice-actions-row">
+              <button type="submit" class="btn-primary">Add Entry</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="settings-block">
+          <h3 class="settings-block-title">Tracked Invoices</h3>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+              <thead>
+                <tr id="invoiceTrackingHeaderRow"></tr>
+              </thead>
+              <tbody id="invoiceTrackingTableBody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
 

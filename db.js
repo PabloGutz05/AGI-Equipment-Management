@@ -2,6 +2,51 @@
 const DB_URL = 'https://script.google.com/macros/s/AKfycbwpEY_5_GYygJzfwlyZDcz-MLxhk8eRwahRupYEcNDMhGljCNgLJfqeWlRss9eDV8QeWA/exec';
 const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
+// The Invoice Tracking sheet's header row uses the exact human-readable labels shown in the
+// app (spaces and all), unlike every other sheet here which uses short camelCase headers —
+// this maps between the two so the rest of the app can keep using normal camelCase fields.
+const INVOICE_TRACKING_FIELD_MAP = {
+  supplier: 'Supplier',
+  lease: 'Lease',
+  unitsInDispute: 'Units in Dispute',
+  supplierInvoiceDoc: 'Supplier Invoice Doc',
+  invoiceAmount: 'Invoice Amount',
+  amountInDispute: 'Amount in Dispute',
+  amountDue: 'Amount Due',
+  wdInvoiceNum: 'WD Invoice Num',
+  wdInvoiceDate: 'WD Invoice Date',
+  invoiceStatus: 'Invoice Status',
+  paymentStatus: 'Payment Status',
+  fromDate: 'From Date',
+  toDate: 'To Date',
+  costCenter: 'Cost Center',
+  descriptionOfIssue: 'Description of Issue',
+  request: 'Request',
+  status: 'Status'
+};
+
+function _invoiceTrackingToSheetRow(record){
+  const out = { id: record.id || '' };
+  Object.keys(INVOICE_TRACKING_FIELD_MAP).forEach(key => {
+    const header = INVOICE_TRACKING_FIELD_MAP[key];
+    let v = record[key];
+    if(key === 'unitsInDispute') v = Array.isArray(v) ? JSON.stringify(v) : (v || '[]');
+    out[header] = v !== undefined && v !== null ? v : '';
+  });
+  return out;
+}
+
+function _invoiceTrackingFromSheetRow(row){
+  const rec = { id: String(row.id || '') };
+  Object.keys(INVOICE_TRACKING_FIELD_MAP).forEach(key => {
+    const header = INVOICE_TRACKING_FIELD_MAP[key];
+    let v = row[header];
+    if(key === 'unitsInDispute'){ const parsed = DB.parseField(v); rec[key] = Array.isArray(parsed) ? parsed : []; }
+    else rec[key] = v !== undefined && v !== null ? String(v) : '';
+  });
+  return rec;
+}
+
 const DB = {
 
   _fetchWithTimeout(fetchPromise, ms = 30000) {
@@ -47,12 +92,13 @@ const DB = {
   async loadAll() {
     try {
       showLoadingOverlay('Loading your data...');
-      const [registries, units, leases, users, ccCentersRaw, meta] = await Promise.all([
+      const [registries, units, leases, users, ccCentersRaw, invoiceTrackingRaw, meta] = await Promise.all([
         DB.get({ action: 'getAll', sheet: 'invoices' }),
         DB.get({ action: 'getAll', sheet: 'units' }),
         DB.get({ action: 'getAll', sheet: 'leases' }),
         DB.get({ action: 'getAll', sheet: 'users' }),
         DB.get({ action: 'getAll', sheet: 'ccControl' }),
+        DB.get({ action: 'getAll', sheet: 'Invoice Tracking' }),
         DB.get({ action: 'getMeta' })
       ]);
 
@@ -143,6 +189,8 @@ const DB = {
         createdAt: String(c.createdAt || '')
       }));
 
+      const parsedInvoiceTracking = (Array.isArray(invoiceTrackingRaw) ? invoiceTrackingRaw : []).map(_invoiceTrackingFromSheetRow);
+
       const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
       arrayFields.forEach(f => {
         const v = sanitizedMeta[f];
@@ -161,6 +209,7 @@ const DB = {
         leases: parsedLeases,
         users: parsedUsers,
         ccCenters: parsedCCCenters,
+        invoiceTracking: parsedInvoiceTracking,
         comments: {},
         meta: sanitizedMeta
       };
@@ -250,6 +299,18 @@ const DB = {
 
   async deleteCCCenter(id) {
     return DB.post({ action: 'delete', sheet: 'ccControl', id });
+  },
+
+  async saveInvoiceTracking(record) {
+    return DB.post({ action: 'save', sheet: 'Invoice Tracking', data: _invoiceTrackingToSheetRow(record) });
+  },
+
+  async updateInvoiceTracking(record) {
+    return DB.post({ action: 'update', sheet: 'Invoice Tracking', id: record.id, data: _invoiceTrackingToSheetRow(record) });
+  },
+
+  async deleteInvoiceTracking(id) {
+    return DB.post({ action: 'delete', sheet: 'Invoice Tracking', id });
   },
 
   async saveUser(record) {
