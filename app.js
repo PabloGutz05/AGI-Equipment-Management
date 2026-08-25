@@ -10679,7 +10679,7 @@ function populateInvoiceTrackingDropdowns(){
   const supplierSel = qs('#itSupplier');
   if(supplierSel){
     const cur = supplierSel.value;
-    supplierSel.innerHTML = '<option value="">Select Supplier</option>';
+    supplierSel.innerHTML = '<option value="">Select unit(s) in dispute below</option>';
     (state.meta.devSuppliers || []).forEach(s => {
       const opt = document.createElement('option'); opt.value = s; opt.textContent = s; supplierSel.appendChild(opt);
     });
@@ -10689,7 +10689,7 @@ function populateInvoiceTrackingDropdowns(){
   const leaseSel = qs('#itLease');
   if(leaseSel){
     const cur = leaseSel.value;
-    leaseSel.innerHTML = '<option value="">Select Lease</option>';
+    leaseSel.innerHTML = '<option value="">Select unit(s) in dispute below</option>';
     (state.leases || []).forEach(l => {
       const val = (l.leaseNumber || l.id || '').toString();
       if(!val) return;
