@@ -10730,7 +10730,7 @@ function syncInvoiceTrackingUnitOptions(selectedValues){
     if(selectedValues.indexOf(val) !== -1) cb.checked = true;
     const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val + (isDisabled ? ' (Disabled)' : '');
     if(isDisabled) text.style.color = '#b91c1c';
-    cb.addEventListener('change', () => { try{ updateInvoiceTrackingCostCenter(); }catch(e){} });
+    cb.addEventListener('change', () => { try{ updateInvoiceTrackingDerivedFields(); }catch(e){} });
     row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
   });
 
@@ -10757,7 +10757,7 @@ function syncInvoiceTrackingUnitOptions(selectedValues){
           if(cb) cb.checked = true;
         }
       });
-      updateInvoiceTrackingCostCenter();
+      updateInvoiceTrackingDerivedFields();
     });
   }
 
@@ -10766,7 +10766,7 @@ function syncInvoiceTrackingUnitOptions(selectedValues){
     clearBtn.dataset.wired = 'true';
     clearBtn.addEventListener('click', () => {
       panel.querySelectorAll('input[type="checkbox"][name="itUnit"]').forEach(cb => cb.checked = false);
-      updateInvoiceTrackingCostCenter();
+      updateInvoiceTrackingDerivedFields();
     });
   }
 
@@ -10778,17 +10778,33 @@ function getSelectedInvoiceTrackingUnits(){
   return Array.from(panel.querySelectorAll('input[type="checkbox"][name="itUnit"]:checked')).map(cb => cb.value);
 }
 
-// Cost Center is derived, not typed — it mirrors whichever unit(s) are currently selected in
-// dispute (joining more than one unit's cost center if they differ).
-function updateInvoiceTrackingCostCenter(){
-  const ccField = qs('#itCostCenter'); if(!ccField) return;
+// Cost Center, Supplier and Lease are all derived from whichever unit(s) are currently
+// checked in Units in Dispute, rather than typed/picked independently. Cost Center joins
+// every distinct value across the selection; Supplier/Lease are single-select dropdowns so
+// they take the first selected unit's own values (still editable afterward if needed).
+function updateInvoiceTrackingDerivedFields(){
+  const ccField = qs('#itCostCenter');
+  const supplierSel = qs('#itSupplier');
+  const leaseSel = qs('#itLease');
   const selected = getSelectedInvoiceTrackingUnits();
-  const ccSet = new Set();
-  selected.forEach(uid => {
-    const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
-    if(u && u.costCenter) ccSet.add(u.costCenter);
-  });
-  ccField.value = Array.from(ccSet).join(', ');
+  const selectedUnitRecs = selected
+    .map(uid => (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase()))
+    .filter(Boolean);
+
+  if(ccField){
+    const ccSet = new Set();
+    selectedUnitRecs.forEach(u => { if(u.costCenter) ccSet.add(u.costCenter); });
+    ccField.value = Array.from(ccSet).join(', ');
+  }
+
+  if(selectedUnitRecs.length > 0){
+    const first = selectedUnitRecs[0];
+    if(supplierSel && first.supplier) supplierSel.value = first.supplier;
+    if(leaseSel && first.lease) leaseSel.value = first.lease;
+  } else {
+    if(supplierSel) supplierSel.value = '';
+    if(leaseSel) leaseSel.value = '';
+  }
 }
 
 // Looks the typed WD number up against the invoice registries: if a match exists, pulls its
@@ -10883,6 +10899,11 @@ function renderInvoiceTrackingTable(){
     const d = new Date(parseInt(p[0]), parseInt(p[1]) - 1, parseInt(p[2]));
     return isNaN(d) ? s : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
   };
+  // Description/Request can be several sentences long — a full-length cell would blow out
+  // row height and column width across the whole table. Show a short preview for now; a
+  // popup with the full text is planned as a follow-up.
+  const PREVIEW_LEN = 40;
+  const previewText = (s) => (s && s.length > PREVIEW_LEN) ? s.slice(0, PREVIEW_LEN).trim() + '…' : (s || '');
 
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
@@ -10899,6 +10920,9 @@ function renderInvoiceTrackingTable(){
         val = val ? formatCurrency(val) : '';
       } else if(col.key === 'fromDate' || col.key === 'toDate'){
         val = fmtShortDate(val);
+      } else if(col.key === 'descriptionOfIssue' || col.key === 'request'){
+        if(val) td.title = val;
+        val = previewText(val);
       }
       td.textContent = val;
       tr.appendChild(td);
@@ -10962,7 +10986,7 @@ if(invoiceTrackingForm){
 
     invoiceTrackingForm.reset();
     syncInvoiceTrackingUnitOptions([]);
-    updateInvoiceTrackingCostCenter();
+    updateInvoiceTrackingDerivedFields();
     const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
     const searchEl = qs('#itUnitSearch'); if(searchEl){ searchEl.value = ''; searchEl.dispatchEvent(new Event('input')); }
   });

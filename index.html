@@ -326,15 +326,19 @@
             <div class="invoice-form-row">
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
                 <span style="font-weight:600;font-size:13px;">Description of Issue</span>
-                <input id="itDescriptionOfIssue" type="text" placeholder="Description of Issue">
+                <textarea id="itDescriptionOfIssue" rows="2" placeholder="Description of Issue" style="padding:8px;border:1px solid #e6e9ee;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
                 <span style="font-weight:600;font-size:13px;">Request</span>
-                <input id="itRequest" type="text" placeholder="Request">
+                <textarea id="itRequest" rows="2" placeholder="Request" style="padding:8px;border:1px solid #e6e9ee;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Status</span>
-                <input id="itStatus" type="text" placeholder="Status">
+                <select id="itStatus">
+                  <option value="">Select</option>
+                  <option value="Pending">Pending</option>
+                  <option value="Notified">Notified</option>
+                </select>
               </label>
             </div>
 
