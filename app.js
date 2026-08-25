@@ -538,11 +538,9 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const pEnd = (fd.get('invoicePeriodEnd') || '').toString().trim();
     const submitted = (fd.get('invoiceSubmitted') || '').toString().trim();
 
-    // Units selection (support multiple selection via getAll)
-    let selectedUnits = [];
-    if(typeof fd.getAll === 'function'){
-      selectedUnits = fd.getAll('invoiceUnit').map(s=> (s||'').toString().trim()).filter(Boolean);
-    }
+    // Units selection — read in the order units were actually checked (not the picker's own
+    // display order), so the stored order matches the physical invoice's line order.
+    let selectedUnits = getSelectedInvoiceUnits();
     if(selectedUnits.length === 0){
       const single = (fd.get('invoiceUnit') || '').toString();
       selectedUnits = single.split(/[;,]+/).map(s=> s.trim()).filter(Boolean);
@@ -602,10 +600,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const wdVal = (fd.get('invoiceWD') || '').toString().trim();
     const editingId = form.dataset.editing || null;
 
-    let unitsForCheck = [];
-    if(typeof fd.getAll === 'function'){
-      unitsForCheck = fd.getAll('invoiceUnit').map(s=> (s||'').toString().trim()).filter(Boolean);
-    }
+    let unitsForCheck = getSelectedInvoiceUnits();
     if(unitsForCheck.length === 0){ unitsForCheck = [ (fd.get('invoiceUnit') || '').toString().trim() ]; }
 
     // If editing a single invoice, check uniqueness against other invoices for that single unit
@@ -649,10 +644,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     // Editing every invoice in a WD group at once (see the "Edit" action in the invoice list):
     // reconcile whichever units are now selected against the group's original member invoices,
     // updating in place, adding newly-checked units, and dropping any that were unchecked.
-    let units = [];
-    if(typeof fd.getAll === 'function'){
-      units = fd.getAll('invoiceUnit').map(s=> (s||'').toString().trim()).filter(Boolean);
-    }
+    let units = getSelectedInvoiceUnits();
     if(units.length === 0){
       const single = (fd.get('invoiceUnit') || '').toString();
       units = single.split(/[;,]+/).map(s=> s.trim()).filter(Boolean);
@@ -768,13 +760,8 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     if(skippedGroup.length){ alert('Some units were skipped because a matching invoice already exists elsewhere: ' + skippedGroup.join(', ')); }
   } else if(editingId){
     // editing an existing single invoice: prefer first selected unit when available
-    let unitVal = '';
-    if(typeof fd.getAll === 'function'){
-      const alls = fd.getAll('invoiceUnit') || [];
-      unitVal = (alls.length ? alls[0] : (fd.get('invoiceUnit') || '')).toString().trim();
-    } else {
-      unitVal = (fd.get('invoiceUnit') || '').toString().trim();
-    }
+    const alls = getSelectedInvoiceUnits();
+    let unitVal = (alls.length ? alls[0] : (fd.get('invoiceUnit') || '')).toString().trim();
 
     const resolvedInfo = resolveInvoiceUnitLeaseInfo(unitVal, getSelectedInvoiceLeases());
     const editRowData = getInvoiceBreakdownRowsData()[unitVal] || {};
@@ -850,10 +837,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     }
   } else {
     // New registration: collect multiple units via FormData.getAll when available
-    let units = [];
-    if(typeof fd.getAll === 'function'){
-      units = fd.getAll('invoiceUnit').map(s => (s||'').toString().trim()).filter(Boolean);
-    }
+    let units = getSelectedInvoiceUnits();
     if(units.length === 0){
       const single = (fd.get('invoiceUnit') || '').toString();
       units = single.split(/[;,]+/).map(s=>s.trim()).filter(Boolean);
@@ -1201,10 +1185,19 @@ function renderInvoiceLeaseDetailTable(){
 // Always-visible box + search input (same format as the Registry Edit modal's unit picker),
 // with Select all/Clear kept as a convenience. No more toggle/floating-panel or "Add Units"
 // confirm step — the breakdown table below already live-updates on every checkbox change.
+// Tracks the order units were actually checked in the Invoice Registration picker — the
+// picker itself is sorted (active units first, then alphabetical), but operators need the
+// breakdown table and the saved invoice/registry to keep the order units were added in, since
+// that's the order line items appear on the physical invoice (easier to copy/paste amounts).
+let _invoiceUnitCheckOrder = [];
+
 function syncInvoiceUnitOptions(leaseVal, selectedValues){
   // selectedValues: optional array of values to pre-check
   // leaseVal: optional lease number, or an array of lease numbers (union filter)
   selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s=>String(s)) : [];
+  // Every call rebuilds the panel from scratch with only selectedValues pre-checked (nothing
+  // else survives the rebuild today), so the check-order tracker resets to match exactly.
+  _invoiceUnitCheckOrder = selectedValues.slice();
   const panel = qs('#invoiceUnitPanel');
   const leaseFilter = Array.isArray(leaseVal) ? leaseVal.filter(Boolean) : (leaseVal ? [leaseVal] : []);
   const list = leaseFilter.length === 0 ? (state.units || []).slice() : (state.units || []).filter(u => leaseFilter.indexOf(u.lease) !== -1);
@@ -1233,7 +1226,15 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
     if(selectedValues.length && selectedValues.indexOf(val) !== -1) cb.checked = true;
     const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val + (isDisabled ? ' (Disabled)' : '');
     if(isDisabled) text.style.color = '#b91c1c';
-    cb.addEventListener('change', ()=>{ refreshInvoiceBreakdownIfVisible(); });
+    cb.addEventListener('change', ()=>{
+      if(cb.checked){
+        if(_invoiceUnitCheckOrder.indexOf(val) === -1) _invoiceUnitCheckOrder.push(val);
+      } else {
+        const orderIdx = _invoiceUnitCheckOrder.indexOf(val);
+        if(orderIdx !== -1) _invoiceUnitCheckOrder.splice(orderIdx, 1);
+      }
+      refreshInvoiceBreakdownIfVisible();
+    });
     row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
   });
 
@@ -1263,7 +1264,10 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
       p.querySelectorAll('.unit-checkbox-row').forEach(row => {
         if(row.style.display !== 'none'){
           const cb = row.querySelector('input[type="checkbox"][name="invoiceUnit"]');
-          if(cb) cb.checked = true;
+          if(cb && !cb.checked){
+            cb.checked = true;
+            if(_invoiceUnitCheckOrder.indexOf(cb.value) === -1) _invoiceUnitCheckOrder.push(cb.value);
+          }
         }
       });
       refreshInvoiceBreakdownIfVisible();
@@ -1277,6 +1281,7 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
     unitClearBtn.addEventListener('click', () => {
       const p = qs('#invoiceUnitPanel'); if(!p) return;
       p.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]').forEach(cb => cb.checked = false);
+      _invoiceUnitCheckOrder = [];
       refreshInvoiceBreakdownIfVisible();
     });
   }
@@ -1284,7 +1289,13 @@ function syncInvoiceUnitOptions(leaseVal, selectedValues){
 
 function getSelectedInvoiceUnits(){
   const panel = qs('#invoiceUnitPanel'); if(!panel) return [];
-  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]:checked')).map(cb => cb.value);
+  const checked = Array.from(panel.querySelectorAll('input[type="checkbox"][name="invoiceUnit"]:checked')).map(cb => cb.value);
+  const checkedSet = new Set(checked);
+  // Return in the order units were actually checked (see _invoiceUnitCheckOrder) rather than
+  // the picker's own display order — any checked unit the tracker missed is appended at the end.
+  const ordered = _invoiceUnitCheckOrder.filter(v => checkedSet.has(v));
+  checked.forEach(v => { if(ordered.indexOf(v) === -1) ordered.push(v); });
+  return ordered;
 }
 
 // --- Excel-style "double-click a column header to fit its widest content" ---
@@ -11041,6 +11052,19 @@ function renderInvoiceTrackingTable(){
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f0f0f0';
+    tr.style.cursor = 'pointer';
+    tr.style.transition = 'background-color 0.2s ease';
+
+    tr.addEventListener('mouseenter', () => {
+      if(tr.style.backgroundColor !== 'rgb(224, 242, 254)') tr.style.backgroundColor = '#f3f6fb';
+    });
+    tr.addEventListener('mouseleave', () => {
+      if(tr.style.backgroundColor !== 'rgb(224, 242, 254)') tr.style.backgroundColor = '';
+    });
+    tr.addEventListener('click', () => {
+      tbody.querySelectorAll('tr').forEach(row => { row.style.backgroundColor = ''; });
+      tr.style.backgroundColor = '#e0f2fe';
+    });
 
     const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:6px 8px;color:#6b7280;';
     tr.appendChild(tdCounter);
