@@ -686,7 +686,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       const taxAmount = (function(){ const n = parseCurrency(rowData.tax||''); return n===null ? '' : n.toFixed(2); })();
       const otherCharges = (function(){ const n = parseCurrency(rowData.other||''); return n===null ? '' : n.toFixed(2); })();
       const targetId = existingForUnit ? existingForUnit.id : id();
-      const invoiceObj = Object.assign({}, baseInvoice, resolved, { id: targetId, unit: uVal, amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherCharges });
+      const invoiceObj = Object.assign({}, baseInvoice, resolved, { id: targetId, unit: uVal, amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherCharges, otherChargeDetails: rowData.otherChargeDetails || [] });
 
       if(existingForUnit){
         state.invoices = state.invoices.map(inv => inv.id === targetId ? Object.assign({}, inv, invoiceObj) : inv);
@@ -708,6 +708,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
         tax: taxAmount,
         other: otherCharges,
+        otherChargeDetails: rowData.otherChargeDetails || [],
         charge: chargeAmount
       });
     });
@@ -768,7 +769,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     const editCharge = (function(){ const n = parseCurrency(editRowData.charge||''); return n===null ? '' : n.toFixed(2); })();
     const editTax = (function(){ const n = parseCurrency(editRowData.tax||''); return n===null ? '' : n.toFixed(2); })();
     const editOther = (function(){ const n = parseCurrency(editRowData.other||''); return n===null ? '' : n.toFixed(2); })();
-    const invoiceObj = Object.assign({}, baseInvoice, resolvedInfo, { id: editingId, unit: unitVal, amount: editCharge, taxAmount: editTax, otherCharges: editOther });
+    const invoiceObj = Object.assign({}, baseInvoice, resolvedInfo, { id: editingId, unit: unitVal, amount: editCharge, taxAmount: editTax, otherCharges: editOther, otherChargeDetails: editRowData.otherChargeDetails || [] });
     state.invoices = state.invoices.map(inv => inv.id === editingId ? Object.assign({}, inv, invoiceObj, {id: editingId}) : inv);
     // If there is a registry for this WD/Doc pair, recompute its leases from the leases
     // now used by its member units (a registry can span multiple leases)
@@ -803,6 +804,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
           costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
           tax: editTax,
           other: editOther,
+          otherChargeDetails: editRowData.otherChargeDetails || [],
           charge: editCharge
         };
         if(detailIdx !== -1) details[detailIdx] = newDetail; else details.push(newDetail);
@@ -886,7 +888,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       const chargeAmount = (function(){ const n = parseCurrency(rowData.charge||''); return n===null ? '' : n.toFixed(2); })();
       const taxAmount = (function(){ const n = parseCurrency(rowData.tax||''); return n===null ? '' : n.toFixed(2); })();
       const otherCharges = (function(){ const n = parseCurrency(rowData.other||''); return n===null ? '' : n.toFixed(2); })();
-      const newInv = Object.assign({}, baseInvoice, resolved, { id: id(), unit: uVal, amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherCharges });
+      const newInv = Object.assign({}, baseInvoice, resolved, { id: id(), unit: uVal, amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherCharges, otherChargeDetails: rowData.otherChargeDetails || [] });
       state.invoices.push(newInv); createdIds.push(newInv.id); createdUnits.push(uVal);
       if(resolved.lease) createdLeases.push(resolved.lease);
       // Registries don't round-trip through state.invoices (invoices aren't persisted), so
@@ -902,6 +904,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
         tax: taxAmount,
         other: otherCharges,
+        otherChargeDetails: rowData.otherChargeDetails || [],
         charge: chargeAmount
       });
     });
@@ -1378,7 +1381,10 @@ function getUnitBreakdownRowsData(wrapId){
     const chargeInput = row.querySelector('.ub-charge');
     const taxInput = row.querySelector('.ub-tax');
     const otherInput = row.querySelector('.ub-other');
-    data[uid] = { charge: chargeInput ? chargeInput.value : '', tax: taxInput ? taxInput.value : '', other: otherInput ? otherInput.value : '' };
+    let otherChargeDetails = [];
+    try{ otherChargeDetails = JSON.parse(row.dataset.otherChargeDetails || '[]'); }catch(e){ otherChargeDetails = []; }
+    if(!Array.isArray(otherChargeDetails)) otherChargeDetails = [];
+    data[uid] = { charge: chargeInput ? chargeInput.value : '', tax: taxInput ? taxInput.value : '', other: otherInput ? otherInput.value : '', otherChargeDetails };
   });
   return data;
 }
@@ -1527,20 +1533,30 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
 
     const taxInput = document.createElement('input'); taxInput.type = 'text'; taxInput.className = 'ub-tax money-input'; taxInput.placeholder = 'Tax'; taxInput.inputMode = 'decimal';
     taxInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'tax', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
-    const otherInput = document.createElement('input'); otherInput.type = 'text'; otherInput.className = 'ub-other money-input'; otherInput.placeholder = 'Other'; otherInput.inputMode = 'decimal';
-    otherInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'other', 120)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
+
+    // "Other Charges" is no longer a single number typed directly — some invoices break it out
+    // into several distinct, separately-taxed line items (e.g. Freight, Gasoline), so it's now
+    // the sum of named subcharges added via the + button below. A hidden .ub-other input still
+    // carries that sum so every existing reader (sorting, totals, Divide) keeps working as-is.
+    const otherHiddenInput = document.createElement('input'); otherHiddenInput.type = 'hidden'; otherHiddenInput.className = 'ub-other';
+    const otherCell = document.createElement('div'); otherCell.style.cssText = `flex:0 0 ${getColWidth(wrap, 'other', 120)}px;display:flex;align-items:center;`;
+    const otherAddBtn = document.createElement('button'); otherAddBtn.type = 'button'; otherAddBtn.className = 'ub-other-add-btn';
+    otherAddBtn.textContent = '+ Other';
+    otherAddBtn.title = 'Add a named other charge (e.g. Freight, Gasoline) with its own Amount and Tax';
+    otherAddBtn.style.cssText = 'font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;cursor:pointer;';
+    otherCell.appendChild(otherAddBtn);
+
     const chargeInput = document.createElement('input'); chargeInput.type = 'text'; chargeInput.className = 'ub-charge money-input'; chargeInput.placeholder = 'Amount'; chargeInput.inputMode = 'decimal';
     chargeInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'charge', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
     const rowTotalEl = document.createElement('div'); rowTotalEl.className = 'ub-row-total'; rowTotalEl.style.cssText = `flex:0 0 ${getColWidth(wrap, 'rowTotal', 110)}px;font-size:12px;color:#374151;font-weight:600;`;
 
     const prior = existing[uid] || seedData[uid] || {};
     if(prior.tax !== undefined) taxInput.value = prior.tax;
-    if(prior.other !== undefined) otherInput.value = prior.other;
     if(prior.charge !== undefined) chargeInput.value = prior.charge;
+    const priorSubcharges = Array.isArray(prior.otherChargeDetails) ? prior.otherChargeDetails.slice() : [];
 
     const onAmountInput = () => { updateUnitBreakdownTotal(wrapId); updateUnitBreakdownRowTotal(row); };
     taxInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'tax', taxInput, 110); onAmountInput(); });
-    otherInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'other', otherInput, 120); onAmountInput(); });
     chargeInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'charge', chargeInput, 110); onAmountInput(); });
 
     // Highlight the row while editing it, and keep it highlighted when clicked anywhere else in it
@@ -1550,11 +1566,86 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     };
     row.addEventListener('click', selectRow);
     taxInput.addEventListener('focus', selectRow);
-    otherInput.addEventListener('focus', selectRow);
     chargeInput.addEventListener('focus', selectRow);
 
-    row.appendChild(taxInput); row.appendChild(otherInput); row.appendChild(chargeInput); row.appendChild(rowTotalEl);
+    row.appendChild(taxInput); row.appendChild(otherCell); row.appendChild(otherHiddenInput); row.appendChild(chargeInput); row.appendChild(rowTotalEl);
     rowsContainer.appendChild(row);
+
+    // Indented sub-rows (one per named subcharge) directly beneath this unit's row.
+    const subchargesWrap = document.createElement('div');
+    subchargesWrap.className = 'unit-breakdown-subcharges';
+    subchargesWrap.dataset.unitId = uid;
+    rowsContainer.appendChild(subchargesWrap);
+
+    const recomputeOtherFromSubcharges = () => {
+      let sum = 0;
+      const details = [];
+      subchargesWrap.querySelectorAll('.unit-breakdown-subcharge-row').forEach(subRow => {
+        const nameEl = subRow.querySelector('.ub-sub-name');
+        const amtEl = subRow.querySelector('.ub-sub-amount');
+        const taxEl = subRow.querySelector('.ub-sub-tax');
+        const amt = parseCurrency(amtEl ? amtEl.value : '') || 0;
+        const tx = parseCurrency(taxEl ? taxEl.value : '') || 0;
+        sum += amt + tx;
+        details.push({ name: nameEl ? nameEl.value : '', amount: amtEl ? amtEl.value : '', tax: taxEl ? taxEl.value : '' });
+      });
+      otherHiddenInput.value = sum ? sum.toFixed(2) : '';
+      row.dataset.otherChargeDetails = JSON.stringify(details);
+      onAmountInput();
+    };
+
+    const addSubchargeRow = (sub) => {
+      sub = sub || {};
+      const subRow = document.createElement('div');
+      subRow.className = 'unit-breakdown-subcharge-row';
+      subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;';
+
+      const branch = document.createElement('span'); branch.textContent = '↳'; branch.style.cssText = 'color:#9ca3af;font-size:12px;flex:0 0 16px;';
+      const nameInput = document.createElement('input'); nameInput.type = 'text'; nameInput.className = 'ub-sub-name'; nameInput.placeholder = 'Charge name (e.g. Freight)';
+      nameInput.style.cssText = 'flex:1 1 140px;min-width:100px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      const amountInput = document.createElement('input'); amountInput.type = 'text'; amountInput.className = 'ub-sub-amount money-input'; amountInput.placeholder = 'Amount'; amountInput.inputMode = 'decimal';
+      amountInput.style.cssText = 'flex:0 0 90px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      const taxInputSub = document.createElement('input'); taxInputSub.type = 'text'; taxInputSub.className = 'ub-sub-tax money-input'; taxInputSub.placeholder = 'Tax'; taxInputSub.inputMode = 'decimal';
+      taxInputSub.style.cssText = 'flex:0 0 90px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      const removeBtn = document.createElement('button'); removeBtn.type = 'button'; removeBtn.textContent = '✕'; removeBtn.title = 'Remove this charge';
+      removeBtn.style.cssText = 'flex:0 0 20px;border:none;background:none;color:#dc2626;cursor:pointer;font-size:12px;';
+
+      nameInput.value = sub.name || '';
+      amountInput.value = sub.amount || '';
+      taxInputSub.value = sub.tax || '';
+
+      nameInput.addEventListener('input', recomputeOtherFromSubcharges);
+      amountInput.addEventListener('input', recomputeOtherFromSubcharges);
+      taxInputSub.addEventListener('input', recomputeOtherFromSubcharges);
+      nameInput.addEventListener('focus', selectRow);
+      amountInput.addEventListener('focus', selectRow);
+      taxInputSub.addEventListener('focus', selectRow);
+      removeBtn.addEventListener('click', () => { subRow.remove(); recomputeOtherFromSubcharges(); });
+
+      subRow.appendChild(branch); subRow.appendChild(nameInput); subRow.appendChild(amountInput); subRow.appendChild(taxInputSub); subRow.appendChild(removeBtn);
+      subchargesWrap.appendChild(subRow);
+    };
+
+    // "Divide" (and any other code that sets a flat number directly into the hidden input and
+    // dispatches 'input') gets represented as a single unnamed subcharge, so the amount isn't
+    // silently lost the next time a subcharge is added/removed. recomputeOtherFromSubcharges
+    // itself never dispatches 'input' on otherHiddenInput, so this can't loop.
+    otherHiddenInput.addEventListener('input', () => {
+      const flatVal = otherHiddenInput.value;
+      subchargesWrap.innerHTML = '';
+      if(parseCurrency(flatVal)) addSubchargeRow({ name: '', amount: flatVal, tax: '' });
+      recomputeOtherFromSubcharges();
+    });
+
+    otherAddBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectRow();
+      addSubchargeRow({});
+      recomputeOtherFromSubcharges();
+    });
+
+    priorSubcharges.forEach(sub => addSubchargeRow(sub));
+    recomputeOtherFromSubcharges();
     updateUnitBreakdownRowTotal(row);
   });
 
@@ -2210,8 +2301,17 @@ function renderInvoices(){
         const groupTotal = list.reduce((s,i) => s + (parseCurrency(i.amount||'')||0) + (parseCurrency(i.taxAmount||'')||0) + (parseCurrency(i.otherCharges||'')||0), 0);
         amt.value = groupTotal.toFixed(2);
       }
+      // Prefer the matching registry's own stored unitDetails for otherChargeDetails — it's the
+      // durable source (state.invoices is in-session-only), so it's the one guaranteed to still
+      // have the named subcharge breakdown intact.
+      const seedRegistry = (state.registries||[]).find(r => (r.wdNumber||'').toString().trim() === (inv.wdNumber||'').toString().trim());
+      const seedRegistryDetails = seedRegistry ? getRegistryUnitDetails(seedRegistry) : [];
       const seed = {};
-      list.forEach(i => { if(i.unit) seed[i.unit] = { charge: i.amount || '', tax: i.taxAmount || '', other: i.otherCharges || '' }; });
+      list.forEach(i => {
+        if(!i.unit) return;
+        const regDetail = seedRegistryDetails.find(d => (d.unit||'').toString().trim().toLowerCase() === i.unit.toString().trim().toLowerCase());
+        seed[i.unit] = { charge: i.amount || '', tax: i.taxAmount || '', other: i.otherCharges || '', otherChargeDetails: (regDetail && regDetail.otherChargeDetails) || i.otherChargeDetails || [] };
+      });
       if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown(seed);
       const supInvDate = form.querySelector('#invoiceSupplierInvoiceDate'); if(supInvDate) supInvDate.value = inv.invoiceDate || '';
       const ps = form.querySelector('#invoicePeriodStart'); if(ps) ps.value = inv.periodStart || '';
@@ -2445,6 +2545,16 @@ function renderRegistryUnitDetailTable(container, unitDetails){
     row.appendChild(mkCell(formatCurrency(rowTotalOf(d).toFixed(2)), 110));
     rowsContainer.appendChild(row);
     grandTotal += rowTotalOf(d);
+
+    (Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails : []).forEach(sub => {
+      const subAmt = parseCurrency(sub.amount || '') || 0;
+      const subTax = parseCurrency(sub.tax || '') || 0;
+      if(!sub.name && !subAmt && !subTax) return;
+      const subRow = document.createElement('div');
+      subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;font-size:11px;color:#6b7280;';
+      subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span>${escapeHtml(sub.name || '(unnamed)')}: ${formatCurrency((subAmt + subTax).toFixed(2))}</span>`;
+      rowsContainer.appendChild(subRow);
+    });
   });
 
   const totalRow = document.createElement('div');
@@ -4095,6 +4205,37 @@ const invCancelBtn = qs('#invoiceCancelBtn'); if(invCancelBtn){ invCancelBtn.add
   if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
   if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
 }); }
+
+// Always-visible "Clear" button for the Invoice Registration form — wipes every entered
+// field (WD/Doc/Category/Amount/dates/lease & unit selections/breakdown/comment) back to a
+// blank Add-new state, whether or not an edit was in progress.
+const invoiceClearBtn = qs('#invoiceClearBtn');
+if(invoiceClearBtn){
+  invoiceClearBtn.addEventListener('click', () => {
+    const form = qs('#invoiceForm'); if(!form) return;
+    form.reset();
+    delete form.dataset.editing;
+    delete form.dataset.editingGroupIds;
+    const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice';
+    const invCancel = qs('#invoiceCancelBtn'); if(invCancel) invCancel.style.display = 'none';
+    const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+    _invoiceUnitCheckOrder = [];
+
+    const leaseSearchEl = qs('#invoiceLeaseSearch'); if(leaseSearchEl){ leaseSearchEl.value=''; leaseSearchEl.dispatchEvent(new Event('input')); }
+    const unitSearchEl = qs('#invoiceUnitSearch'); if(unitSearchEl){ unitSearchEl.value=''; unitSearchEl.dispatchEvent(new Event('input')); }
+    if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
+    if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
+
+    const commentHiddenInput = qs('#invoiceComment');
+    if(commentHiddenInput) commentHiddenInput.value = '';
+    const commentBtn = qs('#invoiceCommentBtn');
+    if(commentBtn){
+      commentBtn.textContent = 'Add Comment';
+      commentBtn.title = '';
+      try{ commentBtn.classList.remove('btn-warning'); commentBtn.classList.add('btn-primary'); }catch(e){}
+    }
+  });
+}
 
 // Shared multi-term search parsing, used by every search bar in the app.
 // Syntax: comma "," = OR (any term in the group matches), semicolon ";" = AND
@@ -8887,7 +9028,7 @@ function openRegistryEditModal(registry){
   // back to a best-effort reconstruction for older registries that predate that field)
   const seedFromDetails = {};
   getRegistryUnitDetails(registry).forEach(d => {
-    if(d && d.unit) seedFromDetails[d.unit] = { tax: d.tax || '', other: d.other || '', charge: d.charge || '' };
+    if(d && d.unit) seedFromDetails[d.unit] = { tax: d.tax || '', other: d.other || '', charge: d.charge || '', otherChargeDetails: d.otherChargeDetails || [] };
   });
   renderRegistryUnitBreakdown(seedFromDetails);
 
@@ -9014,6 +9155,7 @@ if(registryEditSaveBtn){
         costCenter: unitRec ? (unitRec.costCenter||'') : '',
         tax: taxAmount,
         other: otherAmount,
+        otherChargeDetails: rowData.otherChargeDetails || [],
         charge: chargeAmount
       });
 
@@ -9024,7 +9166,7 @@ if(registryEditSaveBtn){
         periodStart: newPeriodStart, periodEnd: newPeriodEnd, submittedDate: newSubmittedDate,
         lease: resolved.lease || '', company: resolved.company || '', supplier: resolved.supplier || '',
         arrangement: resolved.arrangement || '', invoicing: resolved.invoicing || '',
-        amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherAmount
+        amount: chargeAmount, taxAmount: taxAmount, otherCharges: otherAmount, otherChargeDetails: rowData.otherChargeDetails || []
       };
       if(existingInv){
         Object.assign(existingInv, invFields);
@@ -10841,6 +10983,7 @@ function renderInvoiceTrackingUnitBreakdown(){
     row.dataset.tax = d.tax || '';
     row.dataset.other = d.other || '';
     row.dataset.charge = d.charge || '';
+    row.dataset.otherChargeDetails = JSON.stringify(d.otherChargeDetails || []);
 
     const isDisabled = unitRec && (unitRec.status || '').toLowerCase() === 'disabled';
     const isAlreadyDisputed = alreadyDisputedUnits.has(uid.toString().trim().toLowerCase());
@@ -10908,6 +11051,19 @@ function renderInvoiceTrackingUnitBreakdown(){
     }
 
     rowsContainer.appendChild(row);
+
+    // Read-only breakdown of this unit's named "Other" subcharges (Freight, Gasoline, etc.),
+    // if any were entered when the invoice was registered — mirrors the editable version's
+    // indented sub-line style so operators can see exactly what makes up the Other total.
+    (Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails : []).forEach(sub => {
+      const subAmt = parseCurrency(sub.amount || '') || 0;
+      const subTax = parseCurrency(sub.tax || '') || 0;
+      if(!sub.name && !subAmt && !subTax) return;
+      const subRow = document.createElement('div');
+      subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;font-size:11px;color:#6b7280;';
+      subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span style="flex:1 1 auto;">${escapeHtml(sub.name || '(unnamed)')}</span><span>${formatCurrency((subAmt + subTax).toFixed(2))}</span>`;
+      rowsContainer.appendChild(subRow);
+    });
   });
 
   wrap.style.display = 'block';
@@ -11169,10 +11325,13 @@ if(invoiceTrackingForm){
       status: ((qs('#itStatus') || {}).value || '').trim(),
       unitAmountDetails: checkedUnits.map(uid => {
         const row = rowForUnit(uid);
+        let otherChargeDetails = [];
+        try{ otherChargeDetails = row ? JSON.parse(row.dataset.otherChargeDetails || '[]') : []; }catch(e){ otherChargeDetails = []; }
         return {
           unit: uid,
           tax: row ? row.dataset.tax : '',
           other: row ? row.dataset.other : '',
+          otherChargeDetails,
           charge: row ? row.dataset.charge : ''
         };
       })
@@ -11504,13 +11663,19 @@ function renderInvoiceTrackingDetailModal(record){
     } else {
       const rowsHtml = details.map(d => {
         const total = (parseCurrency(d.tax || '') || 0) + (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0);
+        const subcharges = Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails.filter(s => s && (s.name || parseCurrency(s.amount||'') || parseCurrency(s.tax||''))) : [];
+        const subchargesHtml = subcharges.length ? `<tr><td colspan="5" style="padding:0 8px 4px 24px;">` +
+          subcharges.map(s => {
+            const subTotal = (parseCurrency(s.amount || '') || 0) + (parseCurrency(s.tax || '') || 0);
+            return `<div style="font-size:11px;color:#6b7280;">↳ ${escapeHtml(s.name || '(unnamed)')}: ${formatCurrency(subTotal.toFixed(2))}</div>`;
+          }).join('') + `</td></tr>` : '';
         return `<tr style="border-bottom:1px solid #f0f0f0;">
           <td style="padding:4px 8px;">${escapeHtml(d.unit || '')}</td>
           <td style="padding:4px 8px;">${d.tax ? formatCurrency(d.tax) : ''}</td>
           <td style="padding:4px 8px;">${d.other ? formatCurrency(d.other) : ''}</td>
           <td style="padding:4px 8px;">${d.charge ? formatCurrency(d.charge) : ''}</td>
           <td style="padding:4px 8px;font-weight:600;">${total ? formatCurrency(total.toFixed(2)) : ''}</td>
-        </tr>`;
+        </tr>${subchargesHtml}`;
       }).join('');
       unitTableEl.innerHTML = `
         <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">Units in Dispute</div>
@@ -11762,7 +11927,7 @@ function refreshInvoiceTrackingRecordFromSource(record){
   const sourceDetails = getRegistryUnitDetails(reg);
   record.unitAmountDetails = (record.unitsInDispute || []).map(uid => {
     const d = sourceDetails.find(x => (x.unit || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
-    return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', charge: d ? d.charge : '' };
+    return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails: d ? (d.otherChargeDetails || []) : [], charge: d ? d.charge : '' };
   });
 
   // Amount in Dispute is normally the sum of Tax/Other/Amount across the disputed units at
