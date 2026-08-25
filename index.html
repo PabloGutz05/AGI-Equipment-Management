@@ -274,6 +274,11 @@
               </div>
             </div>
 
+            <!-- Per-unit Tax / Other Charges / Amount breakdown — same table used by Invoice
+                 Registration (Tax + Other Charges + Amount = Total Charge per unit). Invoice
+                 Amount below is the read-only sum of every unit's Total Charge. -->
+            <div id="itUnitAmountBreakdown" class="invoice-unit-breakdown" style="display:none"></div>
+
             <div class="invoice-form-row">
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Supplier Invoice Doc</span>
@@ -281,7 +286,7 @@
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Invoice Amount</span>
-                <input id="itInvoiceAmount" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
+                <input id="itInvoiceAmount" type="text" class="money-input" inputmode="decimal" placeholder="0.00" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Amount in Dispute</span>
@@ -289,7 +294,7 @@
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Amount Due</span>
-                <input id="itAmountDue" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
+                <input id="itAmountDue" type="text" class="money-input" inputmode="decimal" placeholder="0.00" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
             </div>
 

@@ -4244,6 +4244,7 @@ async function loadStateFromDB(){
     try{ populateInvoiceTrackingDropdowns(); }catch(e){}
     try{ syncInvoiceTrackingLeaseOptions(); }catch(e){}
     try{ syncInvoiceTrackingUnitOptions(); }catch(e){}
+    try{ renderInvoiceTrackingUnitBreakdown(); }catch(e){}
     // Start auto-refresh if not already running
     startAutoRefresh();
   } catch(e) {
@@ -10771,6 +10772,7 @@ function onInvoiceTrackingLeaseSelectionChange(){
   });
   syncInvoiceTrackingUnitOptions(selectedLeases, stillValidUnits);
   updateInvoiceTrackingDerivedFields();
+  try{ renderInvoiceTrackingUnitBreakdown(); }catch(e){}
 }
 
 // Always-visible checkbox box + search (same format/behavior as the invoice form's unit
@@ -10809,7 +10811,7 @@ function syncInvoiceTrackingUnitOptions(leaseVals, selectedValues){
     if(selectedValues.indexOf(val) !== -1) cb.checked = true;
     const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val + (isDisabled ? ' (Disabled)' : '');
     if(isDisabled) text.style.color = '#b91c1c';
-    cb.addEventListener('change', () => { try{ updateInvoiceTrackingDerivedFields(); }catch(e){} });
+    cb.addEventListener('change', () => { try{ updateInvoiceTrackingDerivedFields(); renderInvoiceTrackingUnitBreakdown(); }catch(e){} });
     row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
   });
 
@@ -10837,6 +10839,7 @@ function syncInvoiceTrackingUnitOptions(leaseVals, selectedValues){
         }
       });
       updateInvoiceTrackingDerivedFields();
+      renderInvoiceTrackingUnitBreakdown();
     });
   }
 
@@ -10846,6 +10849,7 @@ function syncInvoiceTrackingUnitOptions(leaseVals, selectedValues){
     clearBtn.addEventListener('click', () => {
       panel.querySelectorAll('input[type="checkbox"][name="itUnit"]').forEach(cb => cb.checked = false);
       updateInvoiceTrackingDerivedFields();
+      renderInvoiceTrackingUnitBreakdown();
     });
   }
 
@@ -10884,6 +10888,241 @@ function updateInvoiceTrackingDerivedFields(){
   }
 }
 
+// ---- Per-unit Tax / Other Charges / Amount breakdown ----
+// A separate, purpose-built table rather than reusing renderUnitBreakdownTable directly:
+// that shared function is deeply relied on by Invoice Registration and the Registry Edit
+// modal, so changing anything about it would risk both. This reuses the same lower-level,
+// already-generic primitives (getColWidth, wireColumnAutoFit, autoGrowAmountColumn) and the
+// same CSS classes, so it looks and behaves identically — sortable/resizable columns, capped
+// scrollable rows with expand toggle, row hover/selection — without touching those tables.
+//
+// Tax/Other Charges/Amount are the actual per-unit invoice detail (same fields as Invoice
+// Registration); Total Charge is their computed sum. Invoice Amount above is the read-only
+// total across every unit's Total Charge. Amount in Dispute is a separate, independently
+// typed field (not derived from this table) — usually it just reflects a total the operator
+// already worked out from this same detail, so it's entered directly rather than reconciled
+// unit-by-unit. Amount Due = Invoice Amount − Amount in Dispute.
+function getInvoiceTrackingBreakdownRowsData(){
+  const data = {};
+  const wrap = qs('#itUnitAmountBreakdown'); if(!wrap) return data;
+  wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+    const uid = row.dataset.unitId; if(!uid) return;
+    const taxInput = row.querySelector('.itb-tax');
+    const otherInput = row.querySelector('.itb-other');
+    const chargeInput = row.querySelector('.itb-charge');
+    data[uid] = {
+      tax: taxInput ? taxInput.value : '',
+      other: otherInput ? otherInput.value : '',
+      charge: chargeInput ? chargeInput.value : ''
+    };
+  });
+  return data;
+}
+
+// Per-row Total Charge = Tax + Other Charges + Amount for that one unit.
+function updateInvoiceTrackingBreakdownRowTotal(row){
+  const totalEl = row.querySelector('.itb-rowTotal'); if(!totalEl) return;
+  const taxInput = row.querySelector('.itb-tax');
+  const otherInput = row.querySelector('.itb-other');
+  const chargeInput = row.querySelector('.itb-charge');
+  const sum = (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0) + (parseCurrency(chargeInput ? chargeInput.value : '') || 0);
+  totalEl.textContent = formatCurrency(sum.toFixed(2));
+}
+
+// Invoice Amount (locked) = sum of every unit's Total Charge. Amount Due recomputes off of
+// that plus whatever Amount in Dispute currently holds (typed independently, see below).
+function updateInvoiceTrackingBreakdownTotal(){
+  const wrap = qs('#itUnitAmountBreakdown');
+  let invoiceSum = 0;
+  if(wrap){
+    wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+      const taxInput = row.querySelector('.itb-tax');
+      const otherInput = row.querySelector('.itb-other');
+      const chargeInput = row.querySelector('.itb-charge');
+      invoiceSum += (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0) + (parseCurrency(chargeInput ? chargeInput.value : '') || 0);
+    });
+  }
+  const invoiceField = qs('#itInvoiceAmount');
+  if(invoiceField) invoiceField.value = invoiceSum ? invoiceSum.toFixed(2) : '';
+  updateInvoiceTrackingAmountDue();
+}
+
+// Amount Due = Invoice Amount − Amount in Dispute (Amount in Dispute is typed directly, not
+// derived from the breakdown table).
+function updateInvoiceTrackingAmountDue(){
+  const dueField = qs('#itAmountDue'); if(!dueField) return;
+  const invoiceAmount = parseCurrency((qs('#itInvoiceAmount') || {}).value || '') || 0;
+  const amountInDispute = parseCurrency((qs('#itAmountInDispute') || {}).value || '') || 0;
+  const due = invoiceAmount - amountInDispute;
+  dueField.value = due ? due.toFixed(2) : '';
+}
+const itAmountInDisputeEl = qs('#itAmountInDispute');
+if(itAmountInDisputeEl) itAmountInDisputeEl.addEventListener('input', updateInvoiceTrackingAmountDue);
+
+// Tax/Other/Amount are editable inputs; rowTotal is a read-only computed display — same
+// three-editable-plus-one-computed shape as Invoice Registration's own breakdown table.
+const INVOICE_TRACKING_AMOUNT_COLS = [['tax','Tax',110],['other','Other Charges',120],['charge','Amount',110],['rowTotal','Total Charge',110]];
+
+function renderInvoiceTrackingUnitBreakdown(seed){
+  const wrap = qs('#itUnitAmountBreakdown'); if(!wrap) return;
+  const unitIds = getSelectedInvoiceTrackingUnits();
+
+  if(unitIds.length === 0){
+    wrap.style.display = 'none';
+    wrap.innerHTML = '';
+    updateInvoiceTrackingBreakdownTotal();
+    return;
+  }
+
+  const existing = getInvoiceTrackingBreakdownRowsData();
+  const seedData = seed || {};
+
+  let rows = unitIds.map(uid => ({
+    uid,
+    unitRec: (state.units || []).find(u => (u.unitId || u.id || '').toString().trim() === uid.toString().trim())
+  }));
+
+  const sortCol = wrap.dataset.sortCol || '';
+  const sortDir = wrap.dataset.sortDir || 'asc';
+  const amountSortKeys = INVOICE_TRACKING_AMOUNT_COLS.map(c => c[0]);
+  if(sortCol){
+    const col = UNIT_BREAKDOWN_COLUMNS.find(c => c.key === sortCol);
+    if(col){
+      rows.sort((a, b) => {
+        const av = col.get(a.unitRec, a.uid).toString().toLowerCase();
+        const bv = col.get(b.unitRec, b.uid).toString().toLowerCase();
+        if(av < bv) return sortDir === 'asc' ? -1 : 1;
+        if(av > bv) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+      });
+    } else if(amountSortKeys.indexOf(sortCol) !== -1){
+      const getVal = (uid) => {
+        const prior = existing[uid] || seedData[uid] || {};
+        if(sortCol === 'rowTotal') return (parseCurrency(prior.tax || '') || 0) + (parseCurrency(prior.other || '') || 0) + (parseCurrency(prior.charge || '') || 0);
+        return parseCurrency(prior[sortCol] || '') || 0;
+      };
+      rows.sort((a, b) => {
+        const av = getVal(a.uid), bv = getVal(b.uid);
+        return sortDir === 'asc' ? av - bv : bv - av;
+      });
+    }
+  }
+
+  wrap.innerHTML = '';
+  const header = document.createElement('div');
+  header.className = 'unit-breakdown-header';
+  header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;background:#fff;';
+  UNIT_BREAKDOWN_COLUMNS.forEach(col => {
+    const d = document.createElement('div');
+    d.textContent = col.label + (sortCol === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+    d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;cursor:pointer;user-select:none;`;
+    d.title = 'Click to sort';
+    d.addEventListener('click', () => {
+      const newDir = (wrap.dataset.sortCol === col.key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
+      wrap.dataset.sortCol = col.key; wrap.dataset.sortDir = newDir;
+      renderInvoiceTrackingUnitBreakdown();
+    });
+    wireColumnAutoFit(d, wrap, col.key, col.label, () => rows.map(({uid, unitRec}) => col.get(unitRec, uid)), () => renderInvoiceTrackingUnitBreakdown());
+    header.appendChild(d);
+  });
+  INVOICE_TRACKING_AMOUNT_COLS.forEach(([key, label, w]) => {
+    const d = document.createElement('div');
+    d.textContent = label + (sortCol === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+    d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;cursor:pointer;user-select:none;`;
+    d.title = 'Click to sort';
+    d.dataset.colKey = key;
+    d.addEventListener('click', () => {
+      const newDir = (wrap.dataset.sortCol === key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
+      wrap.dataset.sortCol = key; wrap.dataset.sortDir = newDir;
+      renderInvoiceTrackingUnitBreakdown();
+    });
+    if(key !== 'rowTotal'){
+      wireColumnAutoFit(d, wrap, key, label, () => Array.from(wrap.querySelectorAll('.itb-' + key)).map(inp => inp.value), () => renderInvoiceTrackingUnitBreakdown());
+    }
+    header.appendChild(d);
+  });
+
+  const rowsContainer = document.createElement('div');
+  rowsContainer.className = 'unit-breakdown-rows';
+  wrap.appendChild(rowsContainer);
+  rowsContainer.appendChild(header);
+
+  rows.forEach(({uid, unitRec}) => {
+    const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
+
+    const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
+    UNIT_BREAKDOWN_COLUMNS.forEach(col => {
+      const cell = mkCell(col.get(unitRec, uid), getColWidth(wrap, col.key, col.width));
+      if(col.key === 'unitId' && uid){
+        cell.style.color = '#0b74de';
+        cell.style.cursor = 'pointer';
+        cell.title = 'View coverage history';
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          try{ openUnitWdNumbersModal(uid, new Date().getFullYear(), new Date().getMonth(), unitIds); }catch(err){}
+        });
+      }
+      row.appendChild(cell);
+    });
+
+    const taxInput = document.createElement('input'); taxInput.type = 'text'; taxInput.className = 'itb-tax money-input'; taxInput.placeholder = 'Tax'; taxInput.inputMode = 'decimal';
+    taxInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'tax', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
+    const otherInput = document.createElement('input'); otherInput.type = 'text'; otherInput.className = 'itb-other money-input'; otherInput.placeholder = 'Other'; otherInput.inputMode = 'decimal';
+    otherInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'other', 120)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
+    const chargeInput = document.createElement('input'); chargeInput.type = 'text'; chargeInput.className = 'itb-charge money-input'; chargeInput.placeholder = 'Amount'; chargeInput.inputMode = 'decimal';
+    chargeInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'charge', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
+    const rowTotalEl = document.createElement('div'); rowTotalEl.className = 'itb-rowTotal'; rowTotalEl.style.cssText = `flex:0 0 ${getColWidth(wrap, 'rowTotal', 110)}px;font-size:12px;color:#374151;font-weight:600;`;
+
+    const prior = existing[uid] || seedData[uid] || {};
+    if(prior.tax !== undefined) taxInput.value = prior.tax;
+    if(prior.other !== undefined) otherInput.value = prior.other;
+    if(prior.charge !== undefined) chargeInput.value = prior.charge;
+
+    const onAmountInput = () => { updateInvoiceTrackingBreakdownTotal(); updateInvoiceTrackingBreakdownRowTotal(row); };
+    taxInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'tax', taxInput, 110); onAmountInput(); });
+    otherInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'other', otherInput, 120); onAmountInput(); });
+    chargeInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'charge', chargeInput, 110); onAmountInput(); });
+
+    const selectRow = () => {
+      rowsContainer.querySelectorAll('.unit-breakdown-row').forEach(rr => rr.classList.remove('selected'));
+      row.classList.add('selected');
+    };
+    row.addEventListener('click', selectRow);
+    taxInput.addEventListener('focus', selectRow);
+    otherInput.addEventListener('focus', selectRow);
+    chargeInput.addEventListener('focus', selectRow);
+
+    row.appendChild(taxInput); row.appendChild(otherInput); row.appendChild(chargeInput); row.appendChild(rowTotalEl);
+    rowsContainer.appendChild(row);
+    updateInvoiceTrackingBreakdownRowTotal(row);
+  });
+
+  if(rows.length > 0){
+    const expandWrap = document.createElement('div');
+    expandWrap.style.cssText = 'display:flex;justify-content:center;margin-top:-1px;position:relative;z-index:1;';
+    const expandBtn = document.createElement('button');
+    expandBtn.type = 'button';
+    expandBtn.className = 'unit-breakdown-expand-btn';
+    const isExpanded = wrap.dataset.expanded === 'true';
+    rowsContainer.classList.toggle('expanded', isExpanded);
+    expandBtn.textContent = isExpanded ? '▲' : '▼';
+    expandBtn.title = isExpanded ? 'Show fewer rows' : 'Show all rows';
+    expandBtn.addEventListener('click', () => {
+      const nowExpanded = wrap.dataset.expanded !== 'true';
+      wrap.dataset.expanded = nowExpanded ? 'true' : 'false';
+      rowsContainer.classList.toggle('expanded', nowExpanded);
+      expandBtn.textContent = nowExpanded ? '▲' : '▼';
+      expandBtn.title = nowExpanded ? 'Show fewer rows' : 'Show all rows';
+    });
+    expandWrap.appendChild(expandBtn);
+    wrap.appendChild(expandWrap);
+  }
+
+  wrap.style.display = 'block';
+  updateInvoiceTrackingBreakdownTotal();
+}
+
 // Looks the typed WD number up against the invoice registries: if a match exists, pulls its
 // coverage dates (and, once that Sheets column exists, its Invoice Date) into this form; if
 // not, marks the invoice as not yet submitted rather than leaving the date field ambiguous.
@@ -10908,6 +11147,19 @@ function lookupInvoiceTrackingWd(){
     if(wdDateField) wdDateField.value = reg.invoiceDate || '';
     if(fromField && reg.periodStart) fromField.value = reg.periodStart;
     if(toField && reg.periodEnd) toField.value = reg.periodEnd;
+
+    // Seed each currently-selected unit's Tax/Other Charges/Amount from this registry's own
+    // per-unit detail into the breakdown table below — the same actual invoice figures Invoice
+    // Registration captured, not re-typed here.
+    try{
+      const details = getRegistryUnitDetails(reg);
+      const seed = {};
+      details.forEach(d => {
+        if(!d || !d.unit) return;
+        seed[d.unit] = { tax: d.tax || '', other: d.other || '', charge: d.charge || '' };
+      });
+      if(typeof renderInvoiceTrackingUnitBreakdown === 'function') renderInvoiceTrackingUnitBreakdown(seed);
+    }catch(e){}
   } else {
     if(wdDateField) wdDateField.value = 'Not Submitted';
   }
@@ -11051,7 +11303,17 @@ if(invoiceTrackingForm){
       costCenter: (qs('#itCostCenter') || {}).value || '',
       descriptionOfIssue: ((qs('#itDescriptionOfIssue') || {}).value || '').trim(),
       request: ((qs('#itRequest') || {}).value || '').trim(),
-      status: ((qs('#itStatus') || {}).value || '').trim()
+      status: ((qs('#itStatus') || {}).value || '').trim(),
+      unitAmountDetails: (function(){
+        const breakdown = getInvoiceTrackingBreakdownRowsData();
+        return getSelectedInvoiceTrackingUnits().map(uid => {
+          const row = breakdown[uid] || {};
+          const tax = (parseCurrency(row.tax || '') || 0).toFixed(2);
+          const other = (parseCurrency(row.other || '') || 0).toFixed(2);
+          const charge = (parseCurrency(row.charge || '') || 0).toFixed(2);
+          return { unit: uid, tax, other, charge };
+        });
+      })()
     };
 
     state.invoiceTracking = state.invoiceTracking || [];
@@ -11065,6 +11327,7 @@ if(invoiceTrackingForm){
     syncInvoiceTrackingLeaseOptions([]);
     syncInvoiceTrackingUnitOptions([], []);
     updateInvoiceTrackingDerivedFields();
+    renderInvoiceTrackingUnitBreakdown();
     const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
     const leaseSearchEl = qs('#itLeaseSearch'); if(leaseSearchEl){ leaseSearchEl.value = ''; leaseSearchEl.dispatchEvent(new Event('input')); }
     const searchEl = qs('#itUnitSearch'); if(searchEl){ searchEl.value = ''; searchEl.dispatchEvent(new Event('input')); }

@@ -22,15 +22,22 @@ const INVOICE_TRACKING_FIELD_MAP = {
   costCenter: 'Cost Center',
   descriptionOfIssue: 'Description of Issue',
   request: 'Request',
-  status: 'Status'
+  status: 'Status',
+  // New column — auto-created in Sheets on first save (ensureHeaders adds any missing header
+  // automatically, same as how "leases"/"unitDetails" were added to the invoices sheet). Holds
+  // the per-unit Amount in Dispute/Amount Due breakdown; Invoice Amount/Amount in Dispute/
+  // Amount Due on the record itself are just the totals rolled up from this array.
+  unitAmountDetails: 'Unit Amount Details'
 };
+
+const INVOICE_TRACKING_JSON_FIELDS = ['unitsInDispute', 'lease', 'unitAmountDetails'];
 
 function _invoiceTrackingToSheetRow(record){
   const out = { id: record.id || '' };
   Object.keys(INVOICE_TRACKING_FIELD_MAP).forEach(key => {
     const header = INVOICE_TRACKING_FIELD_MAP[key];
     let v = record[key];
-    if(key === 'unitsInDispute' || key === 'lease') v = Array.isArray(v) ? JSON.stringify(v) : (v || '[]');
+    if(INVOICE_TRACKING_JSON_FIELDS.indexOf(key) !== -1) v = Array.isArray(v) ? JSON.stringify(v) : (v || '[]');
     out[header] = v !== undefined && v !== null ? v : '';
   });
   return out;
@@ -41,7 +48,7 @@ function _invoiceTrackingFromSheetRow(row){
   Object.keys(INVOICE_TRACKING_FIELD_MAP).forEach(key => {
     const header = INVOICE_TRACKING_FIELD_MAP[key];
     let v = row[header];
-    if(key === 'unitsInDispute' || key === 'lease'){ const parsed = DB.parseField(v); rec[key] = Array.isArray(parsed) ? parsed : []; }
+    if(INVOICE_TRACKING_JSON_FIELDS.indexOf(key) !== -1){ const parsed = DB.parseField(v); rec[key] = Array.isArray(parsed) ? parsed : []; }
     else rec[key] = v !== undefined && v !== null ? String(v) : '';
   });
   return rec;
