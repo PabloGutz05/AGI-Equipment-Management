@@ -11173,14 +11173,29 @@ if(invoiceTrackingForm){
     renderInvoiceTrackingTable();
     if(typeof renderRegistries === 'function') renderRegistries();
 
-    invoiceTrackingForm.reset();
-    delete invoiceTrackingForm.dataset.editingId;
-    const submitBtn = invoiceTrackingForm.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Entry';
-    _itMatchedRegistry = null;
-    renderInvoiceTrackingUnitBreakdown();
-    const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
-    const leaseField = qs('#itLeaseSummary'); if(leaseField) leaseField.value = '';
-    const noteEl = qs('#itWdLookupNote'); if(noteEl) noteEl.textContent = '';
+    resetInvoiceTrackingFormToAddMode();
+  });
+}
+
+// Clears the Add/Edit form back to its default "Add Entry" state — used both after a
+// successful save and when an in-progress edit is cancelled via the Cancel button.
+function resetInvoiceTrackingFormToAddMode(){
+  const form = qs('#invoiceTrackingForm'); if(!form) return;
+  form.reset();
+  delete form.dataset.editingId;
+  const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Entry';
+  const cancelBtn = qs('#itCancelEditBtn'); if(cancelBtn) cancelBtn.style.display = 'none';
+  _itMatchedRegistry = null;
+  renderInvoiceTrackingUnitBreakdown();
+  const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
+  const leaseField = qs('#itLeaseSummary'); if(leaseField) leaseField.value = '';
+  const noteEl = qs('#itWdLookupNote'); if(noteEl) noteEl.textContent = '';
+}
+
+const itCancelEditBtn = qs('#itCancelEditBtn');
+if(itCancelEditBtn){
+  itCancelEditBtn.addEventListener('click', () => {
+    resetInvoiceTrackingFormToAddMode();
   });
 }
 
@@ -11681,6 +11696,7 @@ function startEditingInvoiceTrackingRecord(record){
 
   form.dataset.editingId = record.id;
   const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Save Changes';
+  const cancelBtn = qs('#itCancelEditBtn'); if(cancelBtn) cancelBtn.style.display = '';
   try{ form.scrollIntoView({ behavior: 'smooth', block: 'start' }); }catch(e){}
 }
 
