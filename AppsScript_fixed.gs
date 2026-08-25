@@ -70,7 +70,15 @@ function handleRequest(e) {
 
 function getSheet(name) {
   const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = ss.getSheetByName(name);
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    // Fall back to a case-insensitive, whitespace-trimmed match — protects against a tab
+    // name that differs only by stray spacing or casing from what the app requests (this is
+    // exactly the class of bug that made the whole app fail to load over one mismatched
+    // sheet name).
+    const target = name.toString().trim().toLowerCase();
+    sheet = ss.getSheets().find(s => s.getName().trim().toLowerCase() === target);
+  }
   if (!sheet) throw new Error('Sheet not found: ' + name);
   return sheet;
 }

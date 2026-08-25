@@ -1,5 +1,5 @@
 // db.js — Google Sheets Database Layer for AGI Vehicle Lease Management
-const DB_URL = 'https://script.google.com/macros/s/AKfycbwpEY_5_GYygJzfwlyZDcz-MLxhk8eRwahRupYEcNDMhGljCNgLJfqeWlRss9eDV8QeWA/exec';
+const DB_URL = 'https://script.google.com/macros/s/AKfycbxCETj689oe4msZ4e60q0Q345Nnj7qp_EPn5ZLwZpqjSlm5V7OmQznqfF_WCoTrAD7sxw/exec';
 const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
 // The Invoice Tracking sheet's header row uses the exact human-readable labels shown in the
@@ -98,7 +98,13 @@ const DB = {
         DB.get({ action: 'getAll', sheet: 'leases' }),
         DB.get({ action: 'getAll', sheet: 'users' }),
         DB.get({ action: 'getAll', sheet: 'ccControl' }),
-        DB.get({ action: 'getAll', sheet: 'Invoice Tracking' }),
+        // Guarded separately: this sheet is new, and if its tab name doesn't match exactly
+        // (case/spacing) the Apps Script throws "Sheet not found" — that used to fail the
+        // whole Promise.all and block the entire app from loading over one optional sheet.
+        DB.get({ action: 'getAll', sheet: 'Invoice Tracking' }).catch(e => {
+          console.warn('Invoice Tracking sheet failed to load (falling back to empty) — verify the tab is named exactly "Invoice Tracking":', e.message);
+          return [];
+        }),
         DB.get({ action: 'getMeta' })
       ]);
 

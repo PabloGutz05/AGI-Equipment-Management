@@ -15,6 +15,33 @@ const defaultData = {
 
 let state = JSON.parse(JSON.stringify(defaultData));
 
+// Invoice Tracking column config — declared up here (not next to the render function further
+// down) because renderAll() runs once synchronously at script init (before any DB data loads)
+// to paint the initial empty shell, and it calls renderInvoiceTrackingTable(); a const declared
+// only near that function's own definition further down the file would still be in its temporal
+// dead zone at that point and throw "Cannot access before initialization".
+let _invoiceTrackingSort = { column: 'wdInvoiceNum', ascending: true };
+
+const INVOICE_TRACKING_COLUMNS = [
+  { key: 'supplier', label: 'Supplier' },
+  { key: 'lease', label: 'Lease' },
+  { key: 'unitsInDispute', label: 'Units in Dispute', get: r => (Array.isArray(r.unitsInDispute) ? r.unitsInDispute.join(', ') : '') },
+  { key: 'supplierInvoiceDoc', label: 'Supplier Invoice Doc' },
+  { key: 'invoiceAmount', label: 'Invoice Amount', numeric: true },
+  { key: 'amountInDispute', label: 'Amount in Dispute', numeric: true },
+  { key: 'amountDue', label: 'Amount Due', numeric: true },
+  { key: 'wdInvoiceNum', label: 'WD Invoice Num' },
+  { key: 'wdInvoiceDate', label: 'WD Invoice Date' },
+  { key: 'invoiceStatus', label: 'Invoice Status' },
+  { key: 'paymentStatus', label: 'Payment Status' },
+  { key: 'fromDate', label: 'From Date' },
+  { key: 'toDate', label: 'To Date' },
+  { key: 'costCenter', label: 'Cost Center' },
+  { key: 'descriptionOfIssue', label: 'Description of Issue' },
+  { key: 'request', label: 'Request' },
+  { key: 'status', label: 'Status' }
+];
+
 // --- Password hashing (PBKDF2-SHA256 via Web Crypto) ---
 // Stored format: "pbkdf2$<iterations>$<saltHex>$<hashHex>". Legacy plain-text passwords (no
 // "pbkdf2$" prefix) are still accepted on login for backward compatibility with existing
@@ -10794,29 +10821,6 @@ function lookupInvoiceTrackingWd(){
 }
 const itWdInvoiceNumEl = qs('#itWdInvoiceNum');
 if(itWdInvoiceNumEl) itWdInvoiceNumEl.addEventListener('input', lookupInvoiceTrackingWd);
-
-// Click-to-sort state for the Invoice Tracking list (not persisted).
-let _invoiceTrackingSort = { column: 'wdInvoiceNum', ascending: true };
-
-const INVOICE_TRACKING_COLUMNS = [
-  { key: 'supplier', label: 'Supplier' },
-  { key: 'lease', label: 'Lease' },
-  { key: 'unitsInDispute', label: 'Units in Dispute', get: r => (Array.isArray(r.unitsInDispute) ? r.unitsInDispute.join(', ') : '') },
-  { key: 'supplierInvoiceDoc', label: 'Supplier Invoice Doc' },
-  { key: 'invoiceAmount', label: 'Invoice Amount', numeric: true },
-  { key: 'amountInDispute', label: 'Amount in Dispute', numeric: true },
-  { key: 'amountDue', label: 'Amount Due', numeric: true },
-  { key: 'wdInvoiceNum', label: 'WD Invoice Num' },
-  { key: 'wdInvoiceDate', label: 'WD Invoice Date' },
-  { key: 'invoiceStatus', label: 'Invoice Status' },
-  { key: 'paymentStatus', label: 'Payment Status' },
-  { key: 'fromDate', label: 'From Date' },
-  { key: 'toDate', label: 'To Date' },
-  { key: 'costCenter', label: 'Cost Center' },
-  { key: 'descriptionOfIssue', label: 'Description of Issue' },
-  { key: 'request', label: 'Request' },
-  { key: 'status', label: 'Status' }
-];
 
 function renderInvoiceTrackingTable(){
   const headerRow = qs('#invoiceTrackingHeaderRow');
