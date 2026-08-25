@@ -10861,24 +10861,13 @@ function getSelectedInvoiceTrackingUnits(){
   return Array.from(panel.querySelectorAll('input[type="checkbox"][name="itUnit"]:checked')).map(cb => cb.value);
 }
 
-// Cost Center mirrors whichever unit(s) are checked in Units in Dispute (joining every
-// distinct value). Supplier mirrors whichever lease(s) are checked above it — a single-select
-// dropdown, so it takes the first selected lease's own supplier (still editable afterward
-// if it needs correcting).
+// Supplier mirrors whichever lease(s) are checked above it — a single-select dropdown, so it
+// takes the first selected lease's own supplier (still editable afterward if it needs
+// correcting). Cost Center is no longer a separate field here — the per-unit breakdown table
+// below already shows each selected unit's own Cost Center (see UNIT_BREAKDOWN_COLUMNS), so a
+// single aggregated value up here was redundant.
 function updateInvoiceTrackingDerivedFields(){
-  const ccField = qs('#itCostCenter');
   const supplierSel = qs('#itSupplier');
-
-  const selectedUnits = getSelectedInvoiceTrackingUnits();
-  if(ccField){
-    const ccSet = new Set();
-    selectedUnits.forEach(uid => {
-      const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
-      if(u && u.costCenter) ccSet.add(u.costCenter);
-    });
-    ccField.value = Array.from(ccSet).join(', ');
-  }
-
   const selectedLeases = getSelectedInvoiceTrackingLeases();
   if(supplierSel){
     const firstLeaseRec = selectedLeases.length
@@ -10886,6 +10875,18 @@ function updateInvoiceTrackingDerivedFields(){
       : null;
     supplierSel.value = (firstLeaseRec && firstLeaseRec.supplier) || '';
   }
+}
+
+// Cost Center for the saved record (list-view summary) is derived directly from whichever
+// units are in dispute at submit time — joining every distinct value — since there's no
+// longer a dedicated form field for it.
+function getInvoiceTrackingCostCenterSummary(){
+  const ccSet = new Set();
+  getSelectedInvoiceTrackingUnits().forEach(uid => {
+    const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
+    if(u && u.costCenter) ccSet.add(u.costCenter);
+  });
+  return Array.from(ccSet).join(', ');
 }
 
 // ---- Per-unit Tax / Other Charges / Amount breakdown ----
@@ -11300,7 +11301,7 @@ if(invoiceTrackingForm){
       paymentStatus: (qs('#itPaymentStatus') || {}).value || '',
       fromDate: (qs('#itFromDate') || {}).value || '',
       toDate: (qs('#itToDate') || {}).value || '',
-      costCenter: (qs('#itCostCenter') || {}).value || '',
+      costCenter: getInvoiceTrackingCostCenterSummary(),
       descriptionOfIssue: ((qs('#itDescriptionOfIssue') || {}).value || '').trim(),
       request: ((qs('#itRequest') || {}).value || '').trim(),
       status: ((qs('#itStatus') || {}).value || '').trim(),
