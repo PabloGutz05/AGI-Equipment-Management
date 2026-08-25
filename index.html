@@ -155,11 +155,25 @@
               <select id="invoiceCategory" name="invoiceCategory"><option value="">(select category)</option></select>
               <!-- hidden comment input used by modal editor -->
               <input type="hidden" id="invoiceComment" name="invoiceComment" value="">
-              <!-- Period: From / To -->
-              <input id="invoicePeriodStart" name="invoicePeriodStart" type="date" placeholder="From">
-              <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date" placeholder="To">
+            </div>
+            <div class="invoice-form-row">
+              <label style="display:flex;flex-direction:column;gap:2px;">
+                <span style="font-size:11px;font-weight:600;color:#6b7280;">Supplier Inv. Date</span>
+                <input id="invoiceSupplierInvoiceDate" name="invoiceSupplierInvoiceDate" type="date">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:2px;">
+                <span style="font-size:11px;font-weight:600;color:#6b7280;">From</span>
+                <input id="invoicePeriodStart" name="invoicePeriodStart" type="date">
+              </label>
+              <label style="display:flex;flex-direction:column;gap:2px;">
+                <span style="font-size:11px;font-weight:600;color:#6b7280;">To</span>
+                <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date">
+              </label>
               <!-- Submitted date: pre-filled to today's date (editable) -->
-              <input id="invoiceSubmitted" name="invoiceSubmitted" type="date">
+              <label style="display:flex;flex-direction:column;gap:2px;">
+                <span style="font-size:11px;font-weight:600;color:#6b7280;">Submitted</span>
+                <input id="invoiceSubmitted" name="invoiceSubmitted" type="date">
+              </label>
             </div>
             <!-- Lease and Unit pickers: same box + search-on-top format as the Registry Edit modal -->
             <div class="invoice-form-row invoice-picker-row">
@@ -890,6 +904,11 @@
         <div id="registryUnitBreakdown" class="invoice-unit-breakdown" style="display:none"></div>
 
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+            <span style="font-weight:600;font-size:13px;">Supplier Inv. Date</span>
+            <input id="editRegistrySupplierInvoiceDate" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />
+          </label>
+
           <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
             <span style="font-weight:600;font-size:13px;">Period Start</span>
             <input id="editRegistryPeriodStart" type="date" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;width:100%;box-sizing:border-box;" />

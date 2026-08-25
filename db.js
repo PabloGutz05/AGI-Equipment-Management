@@ -125,6 +125,10 @@ const DB = {
         totalAmount: String(r.totalAmount || ''),
         lease: String(r.lease || ''),
         leases: (()=>{ const v = DB.parseField(r.leases); return Array.isArray(v) ? v : []; })(),
+        // This one column on the invoices sheet uses a spaced/title-case header ("Invoice
+        // Date") rather than the camelCase convention every other column here follows — read
+        // from that exact header; saveRegistry/updateRegistry mirror it back out the same way.
+        invoiceDate: String(r['Invoice Date'] || r.invoiceDate || ''),
         periodStart: String(r.periodStart || ''),
         periodEnd: String(r.periodEnd || ''),
         submittedDate: String(r.submittedDate || ''),
@@ -248,6 +252,10 @@ const DB = {
       unitDetails: Array.isArray(record.unitDetails) ? JSON.stringify(record.unitDetails) : (record.unitDetails || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
+    // "Invoice Date" is the one column on this sheet with a spaced/title-case header instead
+    // of camelCase — write to that exact header, not a new "invoiceDate" column.
+    delete data.invoiceDate;
+    data['Invoice Date'] = record.invoiceDate || '';
     return DB.post({ action: 'save', sheet: 'invoices', data });
   },
 
@@ -259,6 +267,8 @@ const DB = {
       unitDetails: Array.isArray(record.unitDetails) ? JSON.stringify(record.unitDetails) : (record.unitDetails || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
+    delete data.invoiceDate;
+    data['Invoice Date'] = record.invoiceDate || '';
     return DB.post({ action: 'update', sheet: 'invoices', id: record.id, data });
   },
 

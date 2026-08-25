@@ -632,6 +632,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     wdNumber: (fd.get('invoiceWD') || '').toString().trim(),
     docNumber: fd.get('invoiceDoc') || '',
     amount: (function(){ const v = fd.get('invoiceAmount')||''; const n = parseCurrency(v); return n===null ? '' : n.toFixed(2); })(),
+    invoiceDate: fd.get('invoiceSupplierInvoiceDate') || '',
     periodStart: fd.get('invoicePeriodStart') || '',
     periodEnd: fd.get('invoicePeriodEnd') || '',
     submittedDate: fd.get('invoiceSubmitted') || '',
@@ -738,6 +739,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         state.registries[regIdx].lease = uniqueLeases.join(', ');
         state.registries[regIdx].unitDetails = finalUnitDetails.slice();
         state.registries[regIdx].totalAmount = baseInvoice.amount || state.registries[regIdx].totalAmount;
+        state.registries[regIdx].invoiceDate = baseInvoice.invoiceDate || '';
         DB.updateRegistry(state.registries[regIdx]).catch(e => console.error('Registry sync error:', e));
       }
     }catch(e){}
@@ -798,6 +800,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         const leasesArr = Array.from(leasesSet);
         state.registries[regIdx].leases = leasesArr;
         state.registries[regIdx].lease = leasesArr.join(', ');
+        state.registries[regIdx].invoiceDate = baseInvoice.invoiceDate || state.registries[regIdx].invoiceDate || '';
 
         // Keep the registry's stored per-unit detail (its durable record) in sync with this edit
         const details = Array.isArray(state.registries[regIdx].unitDetails) ? state.registries[regIdx].unitDetails.slice() : [];
@@ -961,6 +964,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         totalAmount: baseInvoice.amount || '',
         unitCount: createdIds.length,
         units: createdUnits.slice(),
+        invoiceDate: baseInvoice.invoiceDate || '',
         periodStart: baseInvoice.periodStart || '',
         periodEnd: baseInvoice.periodEnd || '',
         submittedDate: baseInvoice.submittedDate || (new Date().toISOString().slice(0,10)),
@@ -2198,6 +2202,7 @@ function renderInvoices(){
       const seed = {};
       list.forEach(i => { if(i.unit) seed[i.unit] = { charge: i.amount || '', tax: i.taxAmount || '', other: i.otherCharges || '' }; });
       if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown(seed);
+      const supInvDate = form.querySelector('#invoiceSupplierInvoiceDate'); if(supInvDate) supInvDate.value = inv.invoiceDate || '';
       const ps = form.querySelector('#invoicePeriodStart'); if(ps) ps.value = inv.periodStart || '';
       const pe = form.querySelector('#invoicePeriodEnd'); if(pe) pe.value = inv.periodEnd || '';
       const sub = form.querySelector('#invoiceSubmitted'); if(sub) sub.value = inv.submittedDate || new Date().toISOString().slice(0,10);
@@ -4329,6 +4334,7 @@ function startAutoRefresh(){
         lease: String(r.lease || ''),
         leases: (()=>{ const v = DB.parseField(r.leases); return Array.isArray(v) ? v : []; })(),
         unitDetails: (()=>{ const v = DB.parseField(r.unitDetails); return Array.isArray(v) ? v : []; })(),
+        invoiceDate: String(r['Invoice Date'] || r.invoiceDate || ''),
         periodStart: String(r.periodStart || '').slice(0,10),
         periodEnd: String(r.periodEnd || '').slice(0,10),
         submittedDate: String(r.submittedDate || '').slice(0,10),
@@ -8864,6 +8870,7 @@ function openRegistryEditModal(registry){
 
   syncRegistryUnitOptions(registryLeases, Array.isArray(registry.units) ? registry.units : []);
 
+  const editSupInvDate = qs('#editRegistrySupplierInvoiceDate'); if(editSupInvDate) editSupInvDate.value = registry.invoiceDate || '';
   qs('#editRegistryPeriodStart').value = registry.periodStart || '';
   qs('#editRegistryPeriodEnd').value = registry.periodEnd || '';
   qs('#editRegistrySubmitted').value = registry.submittedDate || '';
@@ -8949,6 +8956,7 @@ if(registryEditSaveBtn){
     const newDoc = qs('#editRegistryDoc').value.trim();
     const newTotalAmount = qs('#editRegistryAmount').value.trim();
     const newCategory = qs('#editRegistryCategory').value.trim();
+    const newInvoiceDate = (qs('#editRegistrySupplierInvoiceDate') || {}).value || '';
     const newPeriodStart = qs('#editRegistryPeriodStart').value.trim();
     const newPeriodEnd = qs('#editRegistryPeriodEnd').value.trim();
     const newSubmittedDate = qs('#editRegistrySubmitted').value.trim();
@@ -9033,6 +9041,7 @@ if(registryEditSaveBtn){
     registry.docNumber = newDoc;
     registry.totalAmount = newTotalAmount;
     registry.category = newCategory;
+    registry.invoiceDate = newInvoiceDate;
     registry.periodStart = newPeriodStart;
     registry.periodEnd = newPeriodEnd;
     registry.submittedDate = newSubmittedDate;
@@ -11172,9 +11181,7 @@ function lookupInvoiceTrackingWd(){
 
   const reg = (state.registries || []).find(r => (r.wdNumber || '').toString().trim().toLowerCase() === wdVal.toLowerCase());
   if(reg){
-    // "Invoice Date" isn't captured anywhere upstream yet (new Sheets column on the invoices
-    // sheet, still to be wired into the invoice registration form) — populate it once that
-    // exists; for now leave it blank rather than fabricate a value.
+    // Supplier Invoice Date, captured on Invoice Registration/Registry Edit.
     if(wdDateField) wdDateField.value = reg.invoiceDate || '';
     if(fromField && reg.periodStart) fromField.value = reg.periodStart;
     if(toField && reg.periodEnd) toField.value = reg.periodEnd;
