@@ -770,16 +770,15 @@
     <div class="modal-backdrop"></div>
     <div class="modal-dialog" role="document" style="max-width:900px;width:95%;max-height:88vh;overflow:auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;">
-        <div style="display:flex;align-items:center;gap:8px;">
-          <button type="button" id="itDetailPrevBtn" title="Previous" style="min-width:32px;">◀</button>
-          <h3 style="margin:0;">Invoice Dispute Detail</h3>
-          <button type="button" id="itDetailNextBtn" title="Next" style="min-width:32px;">▶</button>
-          <span id="itDetailNavLabel" class="small-muted"></span>
-        </div>
+        <h3 style="margin:0;">Invoice Dispute Detail</h3>
         <div style="display:flex;align-items:center;gap:8px;position:relative;">
+          <span id="itDetailNavLabel" style="font-size:12px;color:#6b7280;white-space:nowrap;"></span>
+          <button type="button" id="itDetailPrevBtn" title="Previous" style="background:#f3f4f6;border:1px solid #ddd;color:#374151;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;">‹</button>
+          <button type="button" id="itDetailNextBtn" title="Next" style="background:#f3f4f6;border:1px solid #ddd;color:#374151;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;">›</button>
           <button type="button" id="itDetailMenuBtn" class="registry-menu-btn" title="Actions" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:16px;font-weight:bold;color:#000;min-width:36px;">⋯</button>
-          <div id="itDetailMenuPanel" style="display:none;position:absolute;right:0;top:32px;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 4px 8px rgba(0,0,0,0.08);padding:6px;z-index:20;min-width:120px;">
+          <div id="itDetailMenuPanel" style="display:none;position:absolute;right:0;top:32px;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 4px 8px rgba(0,0,0,0.08);padding:6px;z-index:20;min-width:140px;">
             <button type="button" id="itDetailEditBtn" style="display:block;width:100%;margin-bottom:6px;">Edit</button>
+            <button type="button" id="itDetailRefreshBtn" style="display:block;width:100%;margin-bottom:6px;">Refresh Data</button>
             <button type="button" id="itDetailDeleteBtn" style="display:block;width:100%;color:#dc2626;">Delete</button>
           </div>
           <button type="button" id="itDetailCloseBtn" title="Close" style="font-size:18px;font-weight:700;">&times;</button>
@@ -817,6 +816,11 @@
           <button type="button" id="itDetailLogAddBtn" class="btn-primary">Add Entry</button>
         </div>
         <div id="itDetailLogList"></div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid #e6e9ee;">
+        <button type="button" id="itDetailCancelBtn" disabled style="background:#6b7280;color:#fff;opacity:0.5;cursor:not-allowed;">Cancel</button>
+        <button type="button" id="itDetailSaveBtn" class="btn-primary" disabled style="opacity:0.5;cursor:not-allowed;">Save</button>
       </div>
     </div>
   </div>

@@ -27,10 +27,13 @@ const INVOICE_TRACKING_FIELD_MAP = {
   // automatically, same as how "leases"/"unitDetails" were added to the invoices sheet). Holds
   // the per-unit Amount in Dispute/Amount Due breakdown; Invoice Amount/Amount in Dispute/
   // Amount Due on the record itself are just the totals rolled up from this array.
-  unitAmountDetails: 'Unit Amount Details'
+  unitAmountDetails: 'Unit Amount Details',
+  // The binnacle — without this the log only ever lives in the in-memory session and is lost
+  // on reload.
+  log: 'Log'
 };
 
-const INVOICE_TRACKING_JSON_FIELDS = ['unitsInDispute', 'lease', 'unitAmountDetails'];
+const INVOICE_TRACKING_JSON_FIELDS = ['unitsInDispute', 'lease', 'unitAmountDetails', 'log'];
 
 function _invoiceTrackingToSheetRow(record){
   const out = { id: record.id || '' };

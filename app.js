@@ -3003,7 +3003,7 @@ function renderRegistries(keepOpenRegistryId){
         const rowsHtml = [
           ['Units in Dispute', Array.isArray(dt.unitsInDispute) ? dt.unitsInDispute.join(', ') : ''],
           ['Amount in Dispute', dt.amountInDispute ? formatCurrency(dt.amountInDispute) : ''],
-          ['Amount Due', dt.amountDue ? formatCurrency(dt.amountDue) : ''],
+          ['Amount Due', formatCurrency(dt.amountDue || 0)],
           ['Invoice Status', dt.invoiceStatus || ''],
           ['Payment Status', dt.paymentStatus || ''],
           ['Description of Issue', dt.descriptionOfIssue || ''],
@@ -10716,13 +10716,17 @@ function getInvoiceTrackingCheckedUnits(){
 }
 
 // Cost Center for the saved record is derived from whichever units end up checked as disputed.
-function getInvoiceTrackingCostCenterSummary(){
+function computeCostCenterSummaryForUnits(unitIds){
   const ccSet = new Set();
-  getInvoiceTrackingCheckedUnits().forEach(uid => {
+  (unitIds || []).forEach(uid => {
     const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
     if(u && u.costCenter) ccSet.add(u.costCenter);
   });
   return Array.from(ccSet).join(', ');
+}
+
+function getInvoiceTrackingCostCenterSummary(){
+  return computeCostCenterSummaryForUnits(getInvoiceTrackingCheckedUnits());
 }
 
 // Checking/unchecking a row's dispute box re-sums every currently-checked row's Total Charge
@@ -10778,8 +10782,13 @@ function renderInvoiceTrackingUnitBreakdown(){
   }
 
   const wdVal = (registry.wdNumber || '').toString().trim().toLowerCase();
+  // Excludes whichever entry is currently being edited (if any) — otherwise re-opening an
+  // existing dispute for editing would see its own already-checked units as "duplicates" and
+  // lock the operator out of saving it again with the same selection.
+  const editingId = (qs('#invoiceTrackingForm') || {}).dataset ? qs('#invoiceTrackingForm').dataset.editingId : null;
   const alreadyDisputedUnits = new Set();
   (state.invoiceTracking || []).forEach(t => {
+    if(editingId && t.id === editingId) return;
     if((t.wdInvoiceNum || '').toString().trim().toLowerCase() !== wdVal) return;
     (Array.isArray(t.unitsInDispute) ? t.unitsInDispute : []).forEach(u => alreadyDisputedUnits.add(u.toString().trim().toLowerCase()));
   });
@@ -10827,13 +10836,20 @@ function renderInvoiceTrackingUnitBreakdown(){
     if(isAlreadyDisputed || isDisabled){
       row.style.background = '#fee2e2';
       row.title = [
-        isAlreadyDisputed ? 'This unit is already tracked as in dispute for this WD invoice' : '',
+        // Same unit, same WD invoice = blocked (a duplicate of an existing dispute). The
+        // same unit under a DIFFERENT WD invoice (e.g. the same issue recurring next month)
+        // is a legitimate, separate dispute and stays fully selectable.
+        isAlreadyDisputed ? 'This unit is already tracked as in dispute for this exact WD invoice — cannot be disputed again for the same invoice' : '',
         isDisabled ? 'This unit is Disabled' : ''
       ].filter(Boolean).join(' — ');
     }
 
     const cbCell = document.createElement('div'); cbCell.style.cssText = 'flex:0 0 60px;display:flex;align-items:center;';
     const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'itb-dispute-checkbox'; cb.style.cursor = 'pointer';
+    if(isAlreadyDisputed){
+      cb.disabled = true;
+      cb.style.cursor = 'not-allowed';
+    }
     cb.addEventListener('change', () => {
       row.classList.toggle('selected', cb.checked);
       updateInvoiceTrackingDisputeAmountFromChecked();
@@ -11026,8 +11042,10 @@ function renderInvoiceTrackingTable(){
       const td = document.createElement('td');
       td.style.cssText = 'padding:6px 8px;white-space:nowrap;';
       let val = col.get ? col.get(r) : (r[col.key] || '');
-      if(col.key === 'invoiceAmount' || col.key === 'amountInDispute' || col.key === 'amountDue'){
+      if(col.key === 'invoiceAmount' || col.key === 'amountInDispute'){
         val = val ? formatCurrency(val) : '';
+      } else if(col.key === 'amountDue'){
+        val = formatCurrency(val || 0);
       } else if(col.key === 'fromDate' || col.key === 'toDate'){
         val = fmtShortDate(val);
       } else if(col.key === 'descriptionOfIssue' || col.key === 'request'){
@@ -11070,6 +11088,22 @@ if(invoiceTrackingForm){
     const checkedUnits = getInvoiceTrackingCheckedUnits();
     if(checkedUnits.length === 0){
       alert('Check at least one unit above to mark it as disputed.');
+      return;
+    }
+
+    // Defense-in-depth: the same unit can't be disputed twice against the exact same WD
+    // invoice (checkboxes for that are disabled already), but the same unit recurring under a
+    // DIFFERENT WD invoice each month is expected and allowed.
+    const submitEditingId = invoiceTrackingForm.dataset.editingId || null;
+    const wdVal = ((qs('#itWdInvoiceNum') || {}).value || '').trim().toLowerCase();
+    const duplicateUnits = checkedUnits.filter(uid => (state.invoiceTracking || []).some(t =>
+      (!submitEditingId || t.id !== submitEditingId) &&
+      (t.wdInvoiceNum || '').toString().trim().toLowerCase() === wdVal &&
+      Array.isArray(t.unitsInDispute) &&
+      t.unitsInDispute.some(u => u.toString().trim().toLowerCase() === uid.toString().trim().toLowerCase())
+    ));
+    if(duplicateUnits.length > 0){
+      alert('Already tracked as in dispute for this exact WD invoice: ' + duplicateUnits.join(', ') + '. Uncheck to continue.');
       return;
     }
 
@@ -11141,6 +11175,31 @@ if(invoiceTrackingForm){
 // ========== Invoice Tracking detail popup (view / binnacle / edit / delete) ==========
 let _itDetailList = [];
 let _itDetailIndex = 0;
+// Description/Request/Status edits are staged here and only committed (persisted + logged)
+// when Save is clicked — Cancel discards them and reverts the fields to the record's values.
+let _itDetailDirty = false;
+let _itDetailPendingCompletionNote = null;
+
+function markItDetailDirty(){
+  _itDetailDirty = true;
+  updateItDetailSaveCancelUI();
+}
+
+function updateItDetailSaveCancelUI(){
+  const saveBtn = qs('#itDetailSaveBtn');
+  const cancelBtn = qs('#itDetailCancelBtn');
+  [saveBtn, cancelBtn].forEach(btn => {
+    if(!btn) return;
+    btn.disabled = !_itDetailDirty;
+    btn.style.opacity = _itDetailDirty ? '1' : '0.5';
+    btn.style.cursor = _itDetailDirty ? 'pointer' : 'not-allowed';
+  });
+}
+
+function confirmDiscardIfDirty(){
+  if(!_itDetailDirty) return true;
+  return confirm('You have unsaved changes to this entry. Discard them?');
+}
 
 function getCurrentUserDisplayName(){
   const session = currentSession();
@@ -11152,6 +11211,20 @@ function getCurrentUserDisplayName(){
     return name || u.username || 'Unknown User';
   }
   return session.user || 'Unknown User';
+}
+
+function getCurrentUserRole(){
+  const session = currentSession();
+  if(!session) return null;
+  if(session.user === 'Master') return 'Master';
+  const u = (state.users || []).find(x => x.username === session.user);
+  return u ? (u.role || null) : null;
+}
+
+// Binnacle edit/delete is restricted to these two account levels only.
+function isFullAccessRole(){
+  const role = getCurrentUserRole();
+  return role === 'Master' || role === 'Developer';
 }
 
 // Escapes text for safe HTML insertion, then turns any http(s) URL into a link that opens in a
@@ -11191,31 +11264,71 @@ function openInvoiceTrackingDetailModal(record, list){
 }
 
 function closeInvoiceTrackingDetailModal(){
+  if(!confirmDiscardIfDirty()) return false;
   const modal = qs('#invoiceTrackingDetailModal');
   if(modal) modal.style.display = 'none';
   const menuPanel = qs('#itDetailMenuPanel');
   if(menuPanel) menuPanel.style.display = 'none';
+  _itDetailDirty = false;
+  _itDetailPendingCompletionNote = null;
+  return true;
 }
 
 function renderInvoiceTrackingLogList(record){
   const listEl = qs('#itDetailLogList'); if(!listEl) return;
-  const log = Array.isArray(record.log) ? record.log.slice().reverse() : [];
-  if(log.length === 0){
+  const canManage = isFullAccessRole();
+  const indexed = (Array.isArray(record.log) ? record.log : []).map((entry, idx) => ({ entry, idx })).reverse();
+  if(indexed.length === 0){
     listEl.innerHTML = '<div class="small-muted">No entries yet.</div>';
     return;
   }
-  listEl.innerHTML = log.map(entry => {
+  listEl.innerHTML = indexed.map(({ entry, idx }) => {
     const when = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '';
     const badge = entry.type === 'completion'
       ? '<span style="font-size:10px;font-weight:700;background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:10px;margin-left:6px;">COMPLETION</span>'
       : (entry.type && entry.type.indexOf('auto') === 0 ? '<span style="font-size:10px;font-weight:700;background:#e0e7ff;color:#4338ca;padding:2px 8px;border-radius:10px;margin-left:6px;">AUTO</span>' : '');
+    const editedNote = entry.editedAt ? ' <span style="font-style:italic;">(edited)</span>' : '';
+    const actionsHtml = canManage ? `
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <button type="button" class="it-log-edit-btn" data-log-idx="${idx}" style="font-size:11px;padding:2px 8px;">Edit</button>
+          <button type="button" class="it-log-delete-btn" data-log-idx="${idx}" style="font-size:11px;padding:2px 8px;color:#dc2626;">Delete</button>
+        </div>` : '';
     return `
       <div style="background:#f9fafb;border:1px solid #eef0f3;border-radius:6px;padding:8px 10px;margin-bottom:6px;">
-        <div style="font-size:11px;color:#6b7280;margin-bottom:4px;">${escapeHtml(entry.user || '')} · ${escapeHtml(when)}${badge}</div>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:4px;">${escapeHtml(entry.user || '')} · ${escapeHtml(when)}${editedNote}${badge}</div>
         <div style="font-size:13px;white-space:pre-wrap;word-break:break-word;">${linkifyText(entry.text || '')}</div>
+        ${actionsHtml}
       </div>
     `;
   }).join('');
+
+  if(!canManage) return;
+  listEl.querySelectorAll('.it-log-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.logIdx, 10);
+      const rec = _itDetailList[_itDetailIndex]; if(!rec || !Array.isArray(rec.log)) return;
+      const entry = rec.log[idx]; if(!entry) return;
+      const newText = window.prompt('Edit binnacle entry:', entry.text || '');
+      if(newText === null) return;
+      const trimmed = newText.trim();
+      if(!trimmed || trimmed === entry.text) return;
+      entry.text = trimmed;
+      entry.editedBy = getCurrentUserDisplayName();
+      entry.editedAt = new Date().toISOString();
+      saveInvoiceTrackingRecord(rec);
+      renderInvoiceTrackingLogList(rec);
+    });
+  });
+  listEl.querySelectorAll('.it-log-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.logIdx, 10);
+      const rec = _itDetailList[_itDetailIndex]; if(!rec || !Array.isArray(rec.log)) return;
+      if(!confirm('Delete this binnacle entry? This cannot be undone.')) return;
+      rec.log.splice(idx, 1);
+      saveInvoiceTrackingRecord(rec);
+      renderInvoiceTrackingLogList(rec);
+    });
+  });
 }
 
 function renderInvoiceTrackingDetailModal(record){
@@ -11238,7 +11351,7 @@ function renderInvoiceTrackingDetailModal(record){
       ['Supplier Invoice Doc', record.supplierInvoiceDoc || '—'],
       ['Invoice Amount', record.invoiceAmount ? formatCurrency(record.invoiceAmount) : '—'],
       ['Amount in Dispute', record.amountInDispute ? formatCurrency(record.amountInDispute) : '—'],
-      ['Amount Due', record.amountDue ? formatCurrency(record.amountDue) : '—'],
+      ['Amount Due', formatCurrency(record.amountDue || 0)],
       ['Invoice Status', record.invoiceStatus || '—'],
       ['Payment Status', record.paymentStatus || '—'],
       ['From Date', formatDate(record.fromDate) || '—'],
@@ -11287,36 +11400,34 @@ function renderInvoiceTrackingDetailModal(record){
 
   const descField = qs('#itDetailDescriptionOfIssue'); if(descField) descField.value = record.descriptionOfIssue || '';
   const reqField = qs('#itDetailRequest'); if(reqField) reqField.value = record.request || '';
-  const statusField = qs('#itDetailStatus'); if(statusField) statusField.value = record.status || '';
+  const statusField = qs('#itDetailStatus');
+  if(statusField){
+    statusField.value = record.status || '';
+    statusField.dataset.lastValue = record.status || '';
+  }
+
+  _itDetailDirty = false;
+  _itDetailPendingCompletionNote = null;
+  updateItDetailSaveCancelUI();
 
   renderInvoiceTrackingLogList(record);
 }
 
 const itDetailDescriptionOfIssueEl = qs('#itDetailDescriptionOfIssue');
 if(itDetailDescriptionOfIssueEl){
-  itDetailDescriptionOfIssueEl.addEventListener('blur', () => {
+  itDetailDescriptionOfIssueEl.addEventListener('input', () => {
     const record = _itDetailList[_itDetailIndex]; if(!record) return;
-    const newVal = itDetailDescriptionOfIssueEl.value.trim();
-    const oldVal = record.descriptionOfIssue || '';
-    if(newVal === oldVal) return;
-    record.descriptionOfIssue = newVal;
-    addInvoiceTrackingLogEntry(record, 'Description of Issue updated' + (oldVal ? ' (was: "' + oldVal + '")' : '') + ' → "' + (newVal || '(cleared)') + '"', 'auto-description');
-    saveInvoiceTrackingRecord(record);
-    renderInvoiceTrackingLogList(record);
+    if(itDetailDescriptionOfIssueEl.value === (record.descriptionOfIssue || '')) return;
+    markItDetailDirty();
   });
 }
 
 const itDetailRequestEl = qs('#itDetailRequest');
 if(itDetailRequestEl){
-  itDetailRequestEl.addEventListener('blur', () => {
+  itDetailRequestEl.addEventListener('input', () => {
     const record = _itDetailList[_itDetailIndex]; if(!record) return;
-    const newVal = itDetailRequestEl.value.trim();
-    const oldVal = record.request || '';
-    if(newVal === oldVal) return;
-    record.request = newVal;
-    addInvoiceTrackingLogEntry(record, 'Request updated' + (oldVal ? ' (was: "' + oldVal + '")' : '') + ' → "' + (newVal || '(cleared)') + '"', 'auto-request');
-    saveInvoiceTrackingRecord(record);
-    renderInvoiceTrackingLogList(record);
+    if(itDetailRequestEl.value === (record.request || '')) return;
+    markItDetailDirty();
   });
 }
 
@@ -11324,24 +11435,67 @@ const itDetailStatusEl = qs('#itDetailStatus');
 if(itDetailStatusEl){
   itDetailStatusEl.addEventListener('change', () => {
     const record = _itDetailList[_itDetailIndex]; if(!record) return;
-    const oldVal = record.status || '';
     const newVal = itDetailStatusEl.value;
-    if(newVal === oldVal) return;
-    if(newVal === 'Completed'){
+    const displayedBefore = itDetailStatusEl.dataset.lastValue || record.status || '';
+    if(newVal === displayedBefore) return;
+    if(newVal === 'Completed' && record.status !== 'Completed'){
       // Marking a dispute Completed is only allowed alongside a note explaining why —
-      // cancelling or leaving it blank reverts the dropdown instead of silently saving.
+      // cancelling or leaving it blank reverts the dropdown instead of staging the change.
       const note = window.prompt('Add a completion note (required to mark this entry as Completed):');
       if(!note || !note.trim()){
-        itDetailStatusEl.value = oldVal;
+        itDetailStatusEl.value = displayedBefore;
         return;
       }
-      record.status = newVal;
-      addInvoiceTrackingLogEntry(record, note.trim(), 'completion');
-    } else {
-      record.status = newVal;
+      _itDetailPendingCompletionNote = note.trim();
+    } else if(newVal !== 'Completed'){
+      _itDetailPendingCompletionNote = null;
     }
+    itDetailStatusEl.dataset.lastValue = newVal;
+    markItDetailDirty();
+  });
+}
+
+const itDetailSaveBtn = qs('#itDetailSaveBtn');
+if(itDetailSaveBtn){
+  itDetailSaveBtn.addEventListener('click', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    if(itDetailDescriptionOfIssueEl){
+      const newVal = itDetailDescriptionOfIssueEl.value.trim();
+      const oldVal = record.descriptionOfIssue || '';
+      if(newVal !== oldVal){
+        record.descriptionOfIssue = newVal;
+        addInvoiceTrackingLogEntry(record, 'Description of Issue updated' + (oldVal ? ' (was: "' + oldVal + '")' : '') + ' → "' + (newVal || '(cleared)') + '"', 'auto-description');
+      }
+    }
+    if(itDetailRequestEl){
+      const newVal = itDetailRequestEl.value.trim();
+      const oldVal = record.request || '';
+      if(newVal !== oldVal){
+        record.request = newVal;
+        addInvoiceTrackingLogEntry(record, 'Request updated' + (oldVal ? ' (was: "' + oldVal + '")' : '') + ' → "' + (newVal || '(cleared)') + '"', 'auto-request');
+      }
+    }
+    if(itDetailStatusEl){
+      const newVal = itDetailStatusEl.value;
+      if(newVal !== (record.status || '')){
+        record.status = newVal;
+        if(newVal === 'Completed' && _itDetailPendingCompletionNote){
+          addInvoiceTrackingLogEntry(record, _itDetailPendingCompletionNote, 'completion');
+        }
+      }
+    }
+    _itDetailPendingCompletionNote = null;
     saveInvoiceTrackingRecord(record);
-    renderInvoiceTrackingLogList(record);
+    renderInvoiceTrackingDetailModal(record);
+  });
+}
+
+const itDetailCancelBtn = qs('#itDetailCancelBtn');
+if(itDetailCancelBtn){
+  itDetailCancelBtn.addEventListener('click', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    _itDetailPendingCompletionNote = null;
+    renderInvoiceTrackingDetailModal(record);
   });
 }
 
@@ -11362,13 +11516,13 @@ if(itDetailLogAddBtn){
 const itDetailPrevBtn = qs('#itDetailPrevBtn');
 if(itDetailPrevBtn){
   itDetailPrevBtn.addEventListener('click', () => {
-    if(_itDetailIndex > 0){ _itDetailIndex--; renderInvoiceTrackingDetailModal(_itDetailList[_itDetailIndex]); }
+    if(_itDetailIndex > 0 && confirmDiscardIfDirty()){ _itDetailIndex--; renderInvoiceTrackingDetailModal(_itDetailList[_itDetailIndex]); }
   });
 }
 const itDetailNextBtn = qs('#itDetailNextBtn');
 if(itDetailNextBtn){
   itDetailNextBtn.addEventListener('click', () => {
-    if(_itDetailIndex < _itDetailList.length - 1){ _itDetailIndex++; renderInvoiceTrackingDetailModal(_itDetailList[_itDetailIndex]); }
+    if(_itDetailIndex < _itDetailList.length - 1 && confirmDiscardIfDirty()){ _itDetailIndex++; renderInvoiceTrackingDetailModal(_itDetailList[_itDetailIndex]); }
   });
 }
 
@@ -11444,8 +11598,54 @@ if(itDetailEditBtn){
   itDetailEditBtn.addEventListener('click', () => {
     const record = _itDetailList[_itDetailIndex]; if(!record) return;
     if(itDetailMenuPanel) itDetailMenuPanel.style.display = 'none';
-    closeInvoiceTrackingDetailModal();
+    if(!closeInvoiceTrackingDetailModal()) return;
     startEditingInvoiceTrackingRecord(record);
+  });
+}
+
+// Re-pulls Supplier, dates, amounts, and per-unit Tax/Other/Amount detail from the matching
+// registry/unit records — for when that source data changes after the dispute entry was
+// created (e.g. a unit's Cost Center was corrected, or an invoice amount was fixed).
+// Description of Issue, Request, Status, and the binnacle are untouched.
+function refreshInvoiceTrackingRecordFromSource(record){
+  const reg = (state.registries || []).find(r => (r.wdNumber || '').toString().trim().toLowerCase() === (record.wdInvoiceNum || '').toString().trim().toLowerCase());
+  if(!reg){
+    alert('No posted registry found for WD Invoice Num "' + (record.wdInvoiceNum || '') + '" — cannot refresh.');
+    return;
+  }
+
+  const registryLeases = Array.isArray(reg.leases) && reg.leases.length
+    ? reg.leases
+    : ((reg.lease || '').toString().split(',').map(s => s.trim()).filter(Boolean));
+  const firstLeaseRec = registryLeases.length ? (state.leases || []).find(l => (l.leaseNumber || l.id || '').toString() === registryLeases[0]) : null;
+
+  record.wdInvoiceDate = reg.invoiceDate || record.wdInvoiceDate;
+  record.fromDate = reg.periodStart || record.fromDate;
+  record.toDate = reg.periodEnd || record.toDate;
+  record.supplierInvoiceDoc = reg.docNumber || record.supplierInvoiceDoc;
+  record.invoiceAmount = reg.totalAmount || record.invoiceAmount;
+  record.lease = registryLeases;
+  record.supplier = (firstLeaseRec && firstLeaseRec.supplier) || record.supplier;
+  record.costCenter = computeCostCenterSummaryForUnits(record.unitsInDispute);
+
+  const sourceDetails = getRegistryUnitDetails(reg);
+  record.unitAmountDetails = (record.unitsInDispute || []).map(uid => {
+    const d = sourceDetails.find(x => (x.unit || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
+    return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', charge: d ? d.charge : '' };
+  });
+
+  addInvoiceTrackingLogEntry(record, 'Data refreshed from source registry/unit records (supplier, dates, amounts, and unit cost center detail re-synced).', 'auto-refresh');
+  saveInvoiceTrackingRecord(record);
+  renderInvoiceTrackingDetailModal(record);
+}
+
+const itDetailRefreshBtn = qs('#itDetailRefreshBtn');
+if(itDetailRefreshBtn){
+  itDetailRefreshBtn.addEventListener('click', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    if(itDetailMenuPanel) itDetailMenuPanel.style.display = 'none';
+    if(!confirmDiscardIfDirty()) return;
+    refreshInvoiceTrackingRecordFromSource(record);
   });
 }
 
