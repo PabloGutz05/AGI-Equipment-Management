@@ -10822,9 +10822,14 @@ function renderInvoiceTrackingUnitBreakdown(){
     row.dataset.other = d.other || '';
     row.dataset.charge = d.charge || '';
 
-    if(alreadyDisputedUnits.has(uid.toString().trim().toLowerCase())){
+    const isDisabled = unitRec && (unitRec.status || '').toLowerCase() === 'disabled';
+    const isAlreadyDisputed = alreadyDisputedUnits.has(uid.toString().trim().toLowerCase());
+    if(isAlreadyDisputed || isDisabled){
       row.style.background = '#fee2e2';
-      row.title = 'This unit is already tracked as in dispute for this WD invoice';
+      row.title = [
+        isAlreadyDisputed ? 'This unit is already tracked as in dispute for this WD invoice' : '',
+        isDisabled ? 'This unit is Disabled' : ''
+      ].filter(Boolean).join(' — ');
     }
 
     const cbCell = document.createElement('div'); cbCell.style.cssText = 'flex:0 0 60px;display:flex;align-items:center;';
@@ -10840,7 +10845,13 @@ function renderInvoiceTrackingUnitBreakdown(){
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
       const cell = mkCell(col.get(unitRec, uid), getColWidth(wrap, col.key, col.width));
       if(col.key === 'unitId' && uid){
-        cell.style.color = '#0b74de';
+        if(isDisabled){
+          cell.textContent = uid + ' (Disabled)';
+          cell.style.color = '#b91c1c';
+          cell.style.fontWeight = '600';
+        } else {
+          cell.style.color = '#0b74de';
+        }
         cell.style.cursor = 'pointer';
         cell.title = 'View coverage history';
         cell.addEventListener('click', (e) => {
