@@ -766,6 +766,61 @@
 
   <!-- Comment modal (in-page modal editor used by the Add Comment button) -->
   <!-- Divide Amounts modal: for invoices that don't break the amount out per unit -->
+  <div id="invoiceTrackingDetailModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document" style="max-width:900px;width:95%;max-height:88vh;overflow:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button type="button" id="itDetailPrevBtn" title="Previous" style="min-width:32px;">◀</button>
+          <h3 style="margin:0;">Invoice Dispute Detail</h3>
+          <button type="button" id="itDetailNextBtn" title="Next" style="min-width:32px;">▶</button>
+          <span id="itDetailNavLabel" class="small-muted"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;position:relative;">
+          <button type="button" id="itDetailMenuBtn" class="registry-menu-btn" title="Actions" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:16px;font-weight:bold;color:#000;min-width:36px;">⋯</button>
+          <div id="itDetailMenuPanel" style="display:none;position:absolute;right:0;top:32px;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 4px 8px rgba(0,0,0,0.08);padding:6px;z-index:20;min-width:120px;">
+            <button type="button" id="itDetailEditBtn" style="display:block;width:100%;margin-bottom:6px;">Edit</button>
+            <button type="button" id="itDetailDeleteBtn" style="display:block;width:100%;color:#dc2626;">Delete</button>
+          </div>
+          <button type="button" id="itDetailCloseBtn" title="Close" style="font-size:18px;font-weight:700;">&times;</button>
+        </div>
+      </div>
+
+      <div id="itDetailInfoGrid" style="display:flex;flex-wrap:wrap;gap:6px 24px;margin-bottom:12px;font-size:13px;"></div>
+
+      <div id="itDetailUnitTable" style="margin-bottom:12px;"></div>
+
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
+          <span style="font-weight:600;font-size:13px;">Description of Issue</span>
+          <textarea id="itDetailDescriptionOfIssue" rows="2" style="padding:8px;border:1px solid #e6e9ee;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 220px;">
+          <span style="font-weight:600;font-size:13px;">Request</span>
+          <textarea id="itDetailRequest" rows="2" style="padding:8px;border:1px solid #e6e9ee;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
+          <span style="font-weight:600;font-size:13px;">Status</span>
+          <select id="itDetailStatus">
+            <option value="">Select</option>
+            <option value="Pending">Pending</option>
+            <option value="Notified">Notified</option>
+            <option value="Completed">Completed</option>
+          </select>
+        </label>
+      </div>
+
+      <div style="border-top:1px solid #e6e9ee;padding-top:10px;">
+        <h4 style="margin:0 0 8px;font-size:14px;">Binnacle</h4>
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:flex-start;">
+          <textarea id="itDetailLogInput" rows="2" placeholder="Post an update... (links stay clickable)" style="flex:1;padding:8px;border:1px solid #e6e9ee;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;"></textarea>
+          <button type="button" id="itDetailLogAddBtn" class="btn-primary">Add Entry</button>
+        </div>
+        <div id="itDetailLogList"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="divideAmountsModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
     <div class="modal-backdrop"></div>
     <div class="modal-dialog" role="document" style="max-width:380px;">

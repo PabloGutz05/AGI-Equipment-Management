@@ -11040,19 +11040,16 @@ function renderInvoiceTrackingTable(){
 
     const tdActions = document.createElement('td');
     tdActions.style.cssText = 'padding:6px 8px;';
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.className = 'small-link';
-    delBtn.textContent = 'Delete';
-    delBtn.style.color = '#dc2626';
-    delBtn.addEventListener('click', async () => {
-      if(!confirm('Delete this tracked invoice entry?')) return;
-      try{ if(r.id) await DB.deleteInvoiceTracking(r.id); }catch(e){ console.error('Invoice Tracking delete error:', e); }
-      state.invoiceTracking = (state.invoiceTracking || []).filter(x => x !== r);
-      renderInvoiceTrackingTable();
-      if(typeof renderRegistries === 'function') renderRegistries();
+    const viewBtn = document.createElement('button');
+    viewBtn.type = 'button';
+    viewBtn.className = 'small-link';
+    viewBtn.textContent = '🔍';
+    viewBtn.title = 'View full detail';
+    viewBtn.style.fontSize = '15px';
+    viewBtn.addEventListener('click', () => {
+      try{ openInvoiceTrackingDetailModal(r, rows); }catch(e){ console.error('Invoice Tracking detail open error:', e); }
     });
-    tdActions.appendChild(delBtn);
+    tdActions.appendChild(viewBtn);
     tr.appendChild(tdActions);
 
     tbody.appendChild(tr);
@@ -11084,8 +11081,10 @@ if(invoiceTrackingForm){
     const wrap = qs('#itUnitAmountBreakdown');
     const rowForUnit = (uid) => wrap ? Array.from(wrap.querySelectorAll('.unit-breakdown-row')).find(r => r.dataset.unitId === uid) : null;
 
-    const record = {
-      id: id(),
+    const editingId = invoiceTrackingForm.dataset.editingId || null;
+    const existingRecord = editingId ? (state.invoiceTracking || []).find(r => r.id === editingId) : null;
+
+    const fields = {
       supplier: (qs('#itSupplier') || {}).value || '',
       lease: registryLeases,
       unitsInDispute: checkedUnits,
@@ -11115,18 +11114,338 @@ if(invoiceTrackingForm){
     };
 
     state.invoiceTracking = state.invoiceTracking || [];
-    state.invoiceTracking.push(record);
-    DB.saveInvoiceTracking(record).catch(e => console.error('Invoice Tracking save error:', e));
+    if(existingRecord){
+      // Editing: keep the same id and its existing binnacle log, just update the fields.
+      Object.assign(existingRecord, fields);
+      DB.updateInvoiceTracking(existingRecord).catch(e => console.error('Invoice Tracking update error:', e));
+    } else {
+      const record = Object.assign({ id: id() }, fields);
+      state.invoiceTracking.push(record);
+      DB.saveInvoiceTracking(record).catch(e => console.error('Invoice Tracking save error:', e));
+    }
 
     renderInvoiceTrackingTable();
     if(typeof renderRegistries === 'function') renderRegistries();
 
     invoiceTrackingForm.reset();
+    delete invoiceTrackingForm.dataset.editingId;
+    const submitBtn = invoiceTrackingForm.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Entry';
     _itMatchedRegistry = null;
     renderInvoiceTrackingUnitBreakdown();
     const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
     const leaseField = qs('#itLeaseSummary'); if(leaseField) leaseField.value = '';
     const noteEl = qs('#itWdLookupNote'); if(noteEl) noteEl.textContent = '';
+  });
+}
+
+// ========== Invoice Tracking detail popup (view / binnacle / edit / delete) ==========
+let _itDetailList = [];
+let _itDetailIndex = 0;
+
+function getCurrentUserDisplayName(){
+  const session = currentSession();
+  if(!session) return 'Unknown User';
+  if(session.user === 'Master') return 'Master';
+  const u = (state.users || []).find(x => x.username === session.user);
+  if(u){
+    const name = ((u.firstName || '') + ' ' + (u.lastName || '')).trim();
+    return name || u.username || 'Unknown User';
+  }
+  return session.user || 'Unknown User';
+}
+
+// Escapes text for safe HTML insertion, then turns any http(s) URL into a link that opens in a
+// new tab — so a pasted link in a binnacle entry stays clickable rather than just sitting as
+// plain, unusable text.
+function linkifyText(text){
+  const escaped = escapeHtml(text || '');
+  return escaped.replace(/(https?:\/\/[^\s<]+)/g, (m) => {
+    const trailing = m.match(/[.,;:!?)\]]+$/);
+    const core = trailing ? m.slice(0, -trailing[0].length) : m;
+    const suffix = trailing ? trailing[0] : '';
+    return `<a href="${core}" target="_blank" rel="noopener noreferrer">${core}</a>${suffix}`;
+  });
+}
+
+function addInvoiceTrackingLogEntry(record, text, type){
+  record.log = Array.isArray(record.log) ? record.log : [];
+  record.log.push({ text, user: getCurrentUserDisplayName(), timestamp: new Date().toISOString(), type: type || 'manual' });
+}
+
+function saveInvoiceTrackingRecord(record){
+  DB.updateInvoiceTracking(record).catch(e => console.error('Invoice Tracking update error:', e));
+  renderInvoiceTrackingTable();
+  if(typeof renderRegistries === 'function') renderRegistries();
+}
+
+// `list` is whatever's currently rendered in the table (already reflecting sort/search) so
+// Prev/Next only ever moves within that same visible set — once filters exist, this keeps
+// working unchanged since it just walks whatever list was passed in.
+function openInvoiceTrackingDetailModal(record, list){
+  _itDetailList = Array.isArray(list) ? list.slice() : (state.invoiceTracking || []).slice();
+  _itDetailIndex = _itDetailList.indexOf(record);
+  if(_itDetailIndex === -1) _itDetailIndex = 0;
+  renderInvoiceTrackingDetailModal(_itDetailList[_itDetailIndex] || record);
+  const modal = qs('#invoiceTrackingDetailModal');
+  if(modal) modal.style.display = 'flex';
+}
+
+function closeInvoiceTrackingDetailModal(){
+  const modal = qs('#invoiceTrackingDetailModal');
+  if(modal) modal.style.display = 'none';
+  const menuPanel = qs('#itDetailMenuPanel');
+  if(menuPanel) menuPanel.style.display = 'none';
+}
+
+function renderInvoiceTrackingLogList(record){
+  const listEl = qs('#itDetailLogList'); if(!listEl) return;
+  const log = Array.isArray(record.log) ? record.log.slice().reverse() : [];
+  if(log.length === 0){
+    listEl.innerHTML = '<div class="small-muted">No entries yet.</div>';
+    return;
+  }
+  listEl.innerHTML = log.map(entry => {
+    const when = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '';
+    const badge = entry.type === 'completion'
+      ? '<span style="font-size:10px;font-weight:700;background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:10px;margin-left:6px;">COMPLETION</span>'
+      : (entry.type && entry.type.indexOf('auto') === 0 ? '<span style="font-size:10px;font-weight:700;background:#e0e7ff;color:#4338ca;padding:2px 8px;border-radius:10px;margin-left:6px;">AUTO</span>' : '');
+    return `
+      <div style="background:#f9fafb;border:1px solid #eef0f3;border-radius:6px;padding:8px 10px;margin-bottom:6px;">
+        <div style="font-size:11px;color:#6b7280;margin-bottom:4px;">${escapeHtml(entry.user || '')} · ${escapeHtml(when)}${badge}</div>
+        <div style="font-size:13px;white-space:pre-wrap;word-break:break-word;">${linkifyText(entry.text || '')}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderInvoiceTrackingDetailModal(record){
+  if(!record) return;
+
+  const navLabel = qs('#itDetailNavLabel');
+  if(navLabel) navLabel.textContent = `${_itDetailIndex + 1} / ${_itDetailList.length}`;
+  const prevBtn = qs('#itDetailPrevBtn');
+  const nextBtn = qs('#itDetailNextBtn');
+  if(prevBtn) prevBtn.style.opacity = _itDetailIndex === 0 ? '0.3' : '1';
+  if(nextBtn) nextBtn.style.opacity = _itDetailIndex === _itDetailList.length - 1 ? '0.3' : '1';
+
+  const infoGrid = qs('#itDetailInfoGrid');
+  if(infoGrid){
+    const fields = [
+      ['Supplier', record.supplier || '—'],
+      ['Lease(s)', Array.isArray(record.lease) ? record.lease.join(', ') : (record.lease || '—')],
+      ['WD Invoice Num', record.wdInvoiceNum || '—'],
+      ['WD Invoice Date', formatDate(record.wdInvoiceDate) || '—'],
+      ['Supplier Invoice Doc', record.supplierInvoiceDoc || '—'],
+      ['Invoice Amount', record.invoiceAmount ? formatCurrency(record.invoiceAmount) : '—'],
+      ['Amount in Dispute', record.amountInDispute ? formatCurrency(record.amountInDispute) : '—'],
+      ['Amount Due', record.amountDue ? formatCurrency(record.amountDue) : '—'],
+      ['Invoice Status', record.invoiceStatus || '—'],
+      ['Payment Status', record.paymentStatus || '—'],
+      ['From Date', formatDate(record.fromDate) || '—'],
+      ['To Date', formatDate(record.toDate) || '—'],
+      ['Cost Center', record.costCenter || '—']
+    ];
+    infoGrid.innerHTML = fields.map(([label, val]) => `
+      <div style="flex:1 1 160px;min-width:140px;">
+        <div style="font-size:10px;font-weight:700;color:#6b7280;letter-spacing:0.5px;text-transform:uppercase;">${escapeHtml(label)}</div>
+        <div style="font-size:13px;font-weight:600;color:#111827;">${escapeHtml(val)}</div>
+      </div>
+    `).join('');
+  }
+
+  const unitTableEl = qs('#itDetailUnitTable');
+  if(unitTableEl){
+    const details = Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : [];
+    if(details.length === 0){
+      unitTableEl.innerHTML = '<div class="small-muted">No unit detail recorded.</div>';
+    } else {
+      const rowsHtml = details.map(d => {
+        const total = (parseCurrency(d.tax || '') || 0) + (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0);
+        return `<tr style="border-bottom:1px solid #f0f0f0;">
+          <td style="padding:4px 8px;">${escapeHtml(d.unit || '')}</td>
+          <td style="padding:4px 8px;">${d.tax ? formatCurrency(d.tax) : ''}</td>
+          <td style="padding:4px 8px;">${d.other ? formatCurrency(d.other) : ''}</td>
+          <td style="padding:4px 8px;">${d.charge ? formatCurrency(d.charge) : ''}</td>
+          <td style="padding:4px 8px;font-weight:600;">${total ? formatCurrency(total.toFixed(2)) : ''}</td>
+        </tr>`;
+      }).join('');
+      unitTableEl.innerHTML = `
+        <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">Units in Dispute</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="border-bottom:2px solid #e6e9ee;">
+            <th style="text-align:left;padding:4px 8px;">UnitId</th>
+            <th style="text-align:left;padding:4px 8px;">Tax</th>
+            <th style="text-align:left;padding:4px 8px;">Other Charges</th>
+            <th style="text-align:left;padding:4px 8px;">Amount</th>
+            <th style="text-align:left;padding:4px 8px;">Total Charge</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      `;
+    }
+  }
+
+  const descField = qs('#itDetailDescriptionOfIssue'); if(descField) descField.value = record.descriptionOfIssue || '';
+  const reqField = qs('#itDetailRequest'); if(reqField) reqField.value = record.request || '';
+  const statusField = qs('#itDetailStatus'); if(statusField) statusField.value = record.status || '';
+
+  renderInvoiceTrackingLogList(record);
+}
+
+const itDetailDescriptionOfIssueEl = qs('#itDetailDescriptionOfIssue');
+if(itDetailDescriptionOfIssueEl){
+  itDetailDescriptionOfIssueEl.addEventListener('blur', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    const newVal = itDetailDescriptionOfIssueEl.value.trim();
+    const oldVal = record.descriptionOfIssue || '';
+    if(newVal === oldVal) return;
+    record.descriptionOfIssue = newVal;
+    addInvoiceTrackingLogEntry(record, 'Description of Issue updated' + (oldVal ? ' (was: "' + oldVal + '")' : '') + ' → "' + (newVal || '(cleared)') + '"', 'auto-description');
+    saveInvoiceTrackingRecord(record);
+    renderInvoiceTrackingLogList(record);
+  });
+}
+
+const itDetailRequestEl = qs('#itDetailRequest');
+if(itDetailRequestEl){
+  itDetailRequestEl.addEventListener('blur', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    const newVal = itDetailRequestEl.value.trim();
+    const oldVal = record.request || '';
+    if(newVal === oldVal) return;
+    record.request = newVal;
+    addInvoiceTrackingLogEntry(record, 'Request updated' + (oldVal ? ' (was: "' + oldVal + '")' : '') + ' → "' + (newVal || '(cleared)') + '"', 'auto-request');
+    saveInvoiceTrackingRecord(record);
+    renderInvoiceTrackingLogList(record);
+  });
+}
+
+const itDetailStatusEl = qs('#itDetailStatus');
+if(itDetailStatusEl){
+  itDetailStatusEl.addEventListener('change', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    const oldVal = record.status || '';
+    const newVal = itDetailStatusEl.value;
+    if(newVal === oldVal) return;
+    if(newVal === 'Completed'){
+      // Marking a dispute Completed is only allowed alongside a note explaining why —
+      // cancelling or leaving it blank reverts the dropdown instead of silently saving.
+      const note = window.prompt('Add a completion note (required to mark this entry as Completed):');
+      if(!note || !note.trim()){
+        itDetailStatusEl.value = oldVal;
+        return;
+      }
+      record.status = newVal;
+      addInvoiceTrackingLogEntry(record, note.trim(), 'completion');
+    } else {
+      record.status = newVal;
+    }
+    saveInvoiceTrackingRecord(record);
+    renderInvoiceTrackingLogList(record);
+  });
+}
+
+const itDetailLogAddBtn = qs('#itDetailLogAddBtn');
+if(itDetailLogAddBtn){
+  itDetailLogAddBtn.addEventListener('click', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    const input = qs('#itDetailLogInput'); if(!input) return;
+    const text = input.value.trim();
+    if(!text) return;
+    addInvoiceTrackingLogEntry(record, text, 'manual');
+    input.value = '';
+    saveInvoiceTrackingRecord(record);
+    renderInvoiceTrackingLogList(record);
+  });
+}
+
+const itDetailPrevBtn = qs('#itDetailPrevBtn');
+if(itDetailPrevBtn){
+  itDetailPrevBtn.addEventListener('click', () => {
+    if(_itDetailIndex > 0){ _itDetailIndex--; renderInvoiceTrackingDetailModal(_itDetailList[_itDetailIndex]); }
+  });
+}
+const itDetailNextBtn = qs('#itDetailNextBtn');
+if(itDetailNextBtn){
+  itDetailNextBtn.addEventListener('click', () => {
+    if(_itDetailIndex < _itDetailList.length - 1){ _itDetailIndex++; renderInvoiceTrackingDetailModal(_itDetailList[_itDetailIndex]); }
+  });
+}
+
+const itDetailCloseBtn = qs('#itDetailCloseBtn');
+if(itDetailCloseBtn) itDetailCloseBtn.addEventListener('click', closeInvoiceTrackingDetailModal);
+
+const itDetailModalEl = qs('#invoiceTrackingDetailModal');
+if(itDetailModalEl){
+  const itDetailBackdrop = itDetailModalEl.querySelector('.modal-backdrop');
+  if(itDetailBackdrop) itDetailBackdrop.addEventListener('click', closeInvoiceTrackingDetailModal);
+}
+
+const itDetailMenuBtn = qs('#itDetailMenuBtn');
+const itDetailMenuPanel = qs('#itDetailMenuPanel');
+if(itDetailMenuBtn && itDetailMenuPanel){
+  itDetailMenuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    itDetailMenuPanel.style.display = itDetailMenuPanel.style.display === 'none' ? 'block' : 'none';
+  });
+  document.addEventListener('click', (e) => {
+    if(e.target.closest('#itDetailMenuPanel') || e.target.closest('#itDetailMenuBtn')) return;
+    itDetailMenuPanel.style.display = 'none';
+  });
+}
+
+const itDetailDeleteBtn = qs('#itDetailDeleteBtn');
+if(itDetailDeleteBtn){
+  itDetailDeleteBtn.addEventListener('click', async () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    if(itDetailMenuPanel) itDetailMenuPanel.style.display = 'none';
+    if(!confirm('Delete this tracked invoice entry?')) return;
+    try{ if(record.id) await DB.deleteInvoiceTracking(record.id); }catch(e){ console.error('Invoice Tracking delete error:', e); }
+    state.invoiceTracking = (state.invoiceTracking || []).filter(x => x !== record);
+    closeInvoiceTrackingDetailModal();
+    renderInvoiceTrackingTable();
+    if(typeof renderRegistries === 'function') renderRegistries();
+  });
+}
+
+// Populates the Add/Edit form above from an existing record (via the same WD lookup that
+// drives normal entry) so the operator can adjust which units are disputed, the narrative
+// fields, or the amounts, then save back onto this same record instead of creating a new one.
+function startEditingInvoiceTrackingRecord(record){
+  const form = qs('#invoiceTrackingForm'); if(!form) return;
+  const wdInput = qs('#itWdInvoiceNum'); if(!wdInput) return;
+
+  wdInput.value = record.wdInvoiceNum || '';
+  wdInput.dispatchEvent(new Event('input'));
+
+  const wrap = qs('#itUnitAmountBreakdown');
+  if(wrap){
+    const disputedSet = new Set((record.unitsInDispute || []).map(u => u.toString().trim().toLowerCase()));
+    wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+      const cb = row.querySelector('.itb-dispute-checkbox');
+      if(cb) cb.checked = disputedSet.has((row.dataset.unitId || '').toString().trim().toLowerCase());
+    });
+  }
+  const disputeField = qs('#itAmountInDispute'); if(disputeField) disputeField.value = record.amountInDispute || '';
+  updateInvoiceTrackingAmountDue();
+  const invStatus = qs('#itInvoiceStatus'); if(invStatus) invStatus.value = record.invoiceStatus || '';
+  const payStatus = qs('#itPaymentStatus'); if(payStatus) payStatus.value = record.paymentStatus || '';
+  const descField = qs('#itDescriptionOfIssue'); if(descField) descField.value = record.descriptionOfIssue || '';
+  const reqField = qs('#itRequest'); if(reqField) reqField.value = record.request || '';
+  const statusField = qs('#itStatus'); if(statusField) statusField.value = record.status || '';
+
+  form.dataset.editingId = record.id;
+  const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Save Changes';
+  try{ form.scrollIntoView({ behavior: 'smooth', block: 'start' }); }catch(e){}
+}
+
+const itDetailEditBtn = qs('#itDetailEditBtn');
+if(itDetailEditBtn){
+  itDetailEditBtn.addEventListener('click', () => {
+    const record = _itDetailList[_itDetailIndex]; if(!record) return;
+    if(itDetailMenuPanel) itDetailMenuPanel.style.display = 'none';
+    closeInvoiceTrackingDetailModal();
+    startEditingInvoiceTrackingRecord(record);
   });
 }
 
