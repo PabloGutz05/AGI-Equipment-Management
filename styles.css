@@ -97,6 +97,15 @@ button[title]{background:#f97316}
 .unit-breakdown-row:hover .ub-tax, .unit-breakdown-row:hover .ub-other, .unit-breakdown-row:hover .ub-charge{background:#eef4fb}
 .unit-breakdown-row.selected, .registry-unit-detail-row.selected{background:#dbeafe}
 .unit-breakdown-row.selected .ub-tax, .unit-breakdown-row.selected .ub-other, .unit-breakdown-row.selected .ub-charge{background:#dbeafe}
+/* Zebra striping (alternating light gray / white) so a row stays easy to track across all its
+   columns while entering data — applied via a plain single class so it's naturally overridden
+   by the (higher-specificity) hover/selected rules above. */
+.unit-breakdown-row-even{background:#ffffff}
+.unit-breakdown-row-odd{background:#f9fafb}
+/* "+ Other" only needs to be visible while an operator is actively working that row — stays
+   out of the way otherwise, appearing on hover. */
+.unit-breakdown-row .ub-other-add-btn{opacity:0;transition:opacity 0.15s ease}
+.unit-breakdown-row:hover .ub-other-add-btn{opacity:1}
 .registry-unit-detail-table{overflow-x:auto;margin-top:2px}
 /* Fixed-height scroll regions for the row lists. The header now lives INSIDE this same
    scrollable box (as its first child, pinned via position:sticky below) instead of as a

@@ -1526,9 +1526,12 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
   wrap.appendChild(rowsContainer);
   rowsContainer.appendChild(header);
 
-  rows.forEach(({uid, unitRec}) => {
+  rows.forEach(({uid, unitRec}, rowIdx) => {
     const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
+    // Zebra striping so a row stays easy to track across all its columns while entering data —
+    // via a CSS class (not inline style) so hover/selected highlighting still overrides it.
+    row.classList.add(rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd');
 
     const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
@@ -1585,9 +1588,10 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     row.appendChild(taxInput); row.appendChild(otherCell); row.appendChild(otherHiddenInput); row.appendChild(chargeInput); row.appendChild(rowTotalEl);
     rowsContainer.appendChild(row);
 
-    // Indented sub-rows (one per named subcharge) directly beneath this unit's row.
+    // Indented sub-rows (one per named subcharge) directly beneath this unit's row — striped
+    // to match their parent row so the whole group reads as one visual band.
     const subchargesWrap = document.createElement('div');
-    subchargesWrap.className = 'unit-breakdown-subcharges';
+    subchargesWrap.className = 'unit-breakdown-subcharges ' + (rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd');
     subchargesWrap.dataset.unitId = uid;
     rowsContainer.appendChild(subchargesWrap);
 
@@ -2540,8 +2544,9 @@ function renderRegistryUnitDetailTable(container, unitDetails){
   container.appendChild(rowsContainer);
 
   let grandTotal = 0;
-  rows.forEach(d => {
+  rows.forEach((d, rowIdx) => {
     const row = document.createElement('div');
+    row.className = rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd';
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
     const mkCell = (text, w) => { const c = document.createElement('div'); c.textContent = text; c.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return c; };
     row.appendChild(mkCell(d.company||'', 130));
@@ -2571,6 +2576,7 @@ function renderRegistryUnitDetailTable(container, unitDetails){
       const subTax = parseCurrency(sub.tax || '') || 0;
       if(!sub.name && !subAmt && !subTax) return;
       const subRow = document.createElement('div');
+      subRow.className = rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd';
       subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;font-size:11px;color:#6b7280;';
       const descNote = sub.description ? ` <span style="font-style:italic;">— ${escapeHtml(sub.description)}</span>` : '';
       subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span>${escapeHtml(sub.name || '(unnamed)')}: ${formatCurrency((subAmt + subTax).toFixed(2))}${descNote}</span>`;
@@ -2681,17 +2687,19 @@ function renderRegistries(keepOpenRegistryId){
   }
 
   // show newest-first
+  let displayIdx = 0;
   for(let i = regs.length - 1; i >= 0; i--){
     const r = regs[i];
-    const row = document.createElement('div'); 
-    row.className = 'registry-row'; 
-    row.style.border = '1px solid #eef2f7'; 
-    row.style.padding = '8px'; 
-    row.style.borderRadius = '6px'; 
+    const row = document.createElement('div');
+    row.className = 'registry-row ' + (displayIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd');
+    displayIdx++;
+    row.style.border = '1px solid #eef2f7';
+    row.style.padding = '8px';
+    row.style.borderRadius = '6px';
     row.style.marginBottom = '8px';
     row.style.transition = 'background-color 0.2s ease';
     row.dataset.registryId = r.id;
-    
+
     // Add hover effect
     row.addEventListener('mouseenter', () => {
       row.style.backgroundColor = '#f3f6fb';
@@ -2699,9 +2707,9 @@ function renderRegistries(keepOpenRegistryId){
     row.addEventListener('mouseleave', () => {
       row.style.backgroundColor = '';
     });
-    
+
     const title = document.createElement('div'); title.style.display = 'flex'; title.style.justifyContent = 'space-between'; title.style.alignItems = 'center';
-    
+
     // Get lease number from registry.lease or from registry's first unit
     let leaseNumber = r.lease || '';
     if(!leaseNumber){
@@ -2711,11 +2719,30 @@ function renderRegistries(keepOpenRegistryId){
         if(firstUnit) leaseNumber = firstUnit.lease || '';
       }
     }
-    
+
+    // Dedicated expand/collapse button (before the counter number) — a line ("—") when closed,
+    // a slash ("/") when open. Clicking the title text itself no longer toggles, so operators
+    // can select/copy the WD/Doc/Lease text without accidentally collapsing the row.
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'registry-toggle-btn';
+    toggleBtn.textContent = '—';
+    toggleBtn.title = 'Expand/collapse';
+    toggleBtn.style.cssText = 'flex:0 0 24px;height:22px;border:1px solid #d1d5db;border-radius:4px;background:#fff;cursor:pointer;font-size:13px;font-weight:700;color:#374151;display:flex;align-items:center;justify-content:center;margin-right:6px;padding:0;';
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const nowOpen = details.style.display === 'none';
+      details.style.display = nowOpen ? 'block' : 'none';
+      toggleBtn.textContent = nowOpen ? '/' : '—';
+    });
+
+    const infoText = document.createElement('span');
+    infoText.innerHTML = `<strong>${r.seq}.</strong> WD: ${escapeHtml(r.wdNumber||'(no WD)')} — Doc: ${escapeHtml(r.docNumber||'')}${leaseNumber ? ' — Lease: ' + escapeHtml(leaseNumber) : ''}`;
+
     const leftInfo = document.createElement('div');
-    leftInfo.innerHTML = `<strong>${r.seq}.</strong> WD: ${escapeHtml(r.wdNumber||'(no WD)')} — Doc: ${escapeHtml(r.docNumber||'')}${leaseNumber ? ' — Lease: ' + escapeHtml(leaseNumber) : ''}`;
-    leftInfo.style.cursor = 'pointer';
-    leftInfo.addEventListener('click', ()=>{ details.style.display = details.style.display === 'none' ? 'block' : 'none'; });
+    leftInfo.style.cssText = 'display:flex;align-items:center;';
+    leftInfo.appendChild(toggleBtn);
+    leftInfo.appendChild(infoText);
     
     const rightInfo = document.createElement('div');
     rightInfo.style.display = 'flex';
@@ -3169,6 +3196,7 @@ function renderRegistries(keepOpenRegistryId){
     // Restore open state if this registry was open before
     if(openRegistries.has(r.id)){
       details.style.display = 'block';
+      toggleBtn.textContent = '/';
     }
 
     wrap.appendChild(row);
@@ -11077,10 +11105,12 @@ function renderInvoiceTrackingUnitBreakdown(){
 
   const allUnitIds = details.map(d => d.unit);
 
-  details.forEach(d => {
+  details.forEach((d, rowIdx) => {
     const uid = d.unit;
     const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim() === uid.toString().trim());
-    const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
+    const row = document.createElement('div');
+    row.className = 'unit-breakdown-row ' + (rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd');
+    row.dataset.unitId = uid;
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
     row.dataset.tax = d.tax || '';
     row.dataset.other = d.other || '';
@@ -11162,6 +11192,7 @@ function renderInvoiceTrackingUnitBreakdown(){
       const subTax = parseCurrency(sub.tax || '') || 0;
       if(!sub.name && !subAmt && !subTax) return;
       const subRow = document.createElement('div');
+      subRow.className = rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd';
       subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;font-size:11px;color:#6b7280;';
       const descNote = sub.description ? ` <span style="font-style:italic;">— ${escapeHtml(sub.description)}</span>` : '';
       subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span style="flex:1 1 auto;">${escapeHtml(sub.name || '(unnamed)')}${descNote}</span><span>${formatCurrency((subAmt + subTax).toFixed(2))}</span>`;
