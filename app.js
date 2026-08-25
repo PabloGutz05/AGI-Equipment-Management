@@ -1598,10 +1598,11 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
         const nameEl = subRow.querySelector('.ub-sub-name');
         const amtEl = subRow.querySelector('.ub-sub-amount');
         const taxEl = subRow.querySelector('.ub-sub-tax');
+        const descEl = subRow.querySelector('.ub-sub-description');
         const amt = parseCurrency(amtEl ? amtEl.value : '') || 0;
         const tx = parseCurrency(taxEl ? taxEl.value : '') || 0;
         sum += amt + tx;
-        details.push({ name: nameEl ? nameEl.value : '', amount: amtEl ? amtEl.value : '', tax: taxEl ? taxEl.value : '' });
+        details.push({ name: nameEl ? nameEl.value : '', amount: amtEl ? amtEl.value : '', tax: taxEl ? taxEl.value : '', description: descEl ? descEl.value : '' });
       });
       otherHiddenInput.value = sum ? sum.toFixed(2) : '';
       row.dataset.otherChargeDetails = JSON.stringify(details);
@@ -1616,27 +1617,32 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
 
       const branch = document.createElement('span'); branch.textContent = '↳'; branch.style.cssText = 'color:#9ca3af;font-size:12px;flex:0 0 16px;';
       const nameSelect = document.createElement('select'); nameSelect.className = 'ub-sub-name';
-      nameSelect.style.cssText = 'flex:1 1 140px;min-width:120px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      nameSelect.style.cssText = 'flex:0 0 140px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
       populateOtherChargeSelect(nameSelect, sub.name || '');
       const amountInput = document.createElement('input'); amountInput.type = 'text'; amountInput.className = 'ub-sub-amount money-input'; amountInput.placeholder = 'Amount'; amountInput.inputMode = 'decimal';
       amountInput.style.cssText = 'flex:0 0 90px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
       const taxInputSub = document.createElement('input'); taxInputSub.type = 'text'; taxInputSub.className = 'ub-sub-tax money-input'; taxInputSub.placeholder = 'Tax'; taxInputSub.inputMode = 'decimal';
       taxInputSub.style.cssText = 'flex:0 0 90px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      const descInput = document.createElement('input'); descInput.type = 'text'; descInput.className = 'ub-sub-description'; descInput.placeholder = 'Description (optional) — e.g. what was repaired';
+      descInput.style.cssText = 'flex:1 1 160px;min-width:120px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
       const removeBtn = document.createElement('button'); removeBtn.type = 'button'; removeBtn.textContent = '✕'; removeBtn.title = 'Remove this charge';
       removeBtn.style.cssText = 'flex:0 0 20px;border:none;background:none;color:#dc2626;cursor:pointer;font-size:12px;';
 
       amountInput.value = sub.amount || '';
       taxInputSub.value = sub.tax || '';
+      descInput.value = sub.description || '';
 
       nameSelect.addEventListener('change', recomputeOtherFromSubcharges);
       amountInput.addEventListener('input', recomputeOtherFromSubcharges);
       taxInputSub.addEventListener('input', recomputeOtherFromSubcharges);
+      descInput.addEventListener('input', recomputeOtherFromSubcharges);
       nameSelect.addEventListener('focus', selectRow);
       amountInput.addEventListener('focus', selectRow);
       taxInputSub.addEventListener('focus', selectRow);
+      descInput.addEventListener('focus', selectRow);
       removeBtn.addEventListener('click', () => { subRow.remove(); recomputeOtherFromSubcharges(); });
 
-      subRow.appendChild(branch); subRow.appendChild(nameSelect); subRow.appendChild(amountInput); subRow.appendChild(taxInputSub); subRow.appendChild(removeBtn);
+      subRow.appendChild(branch); subRow.appendChild(nameSelect); subRow.appendChild(amountInput); subRow.appendChild(taxInputSub); subRow.appendChild(descInput); subRow.appendChild(removeBtn);
       subchargesWrap.appendChild(subRow);
     };
 
@@ -2566,7 +2572,8 @@ function renderRegistryUnitDetailTable(container, unitDetails){
       if(!sub.name && !subAmt && !subTax) return;
       const subRow = document.createElement('div');
       subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;font-size:11px;color:#6b7280;';
-      subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span>${escapeHtml(sub.name || '(unnamed)')}: ${formatCurrency((subAmt + subTax).toFixed(2))}</span>`;
+      const descNote = sub.description ? ` <span style="font-style:italic;">— ${escapeHtml(sub.description)}</span>` : '';
+      subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span>${escapeHtml(sub.name || '(unnamed)')}: ${formatCurrency((subAmt + subTax).toFixed(2))}${descNote}</span>`;
       rowsContainer.appendChild(subRow);
     });
   });
@@ -11156,7 +11163,8 @@ function renderInvoiceTrackingUnitBreakdown(){
       if(!sub.name && !subAmt && !subTax) return;
       const subRow = document.createElement('div');
       subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;font-size:11px;color:#6b7280;';
-      subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span style="flex:1 1 auto;">${escapeHtml(sub.name || '(unnamed)')}</span><span>${formatCurrency((subAmt + subTax).toFixed(2))}</span>`;
+      const descNote = sub.description ? ` <span style="font-style:italic;">— ${escapeHtml(sub.description)}</span>` : '';
+      subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span style="flex:1 1 auto;">${escapeHtml(sub.name || '(unnamed)')}${descNote}</span><span>${formatCurrency((subAmt + subTax).toFixed(2))}</span>`;
       rowsContainer.appendChild(subRow);
     });
   });
@@ -11762,7 +11770,8 @@ function renderInvoiceTrackingDetailModal(record){
         const subchargesHtml = subcharges.length ? `<tr><td colspan="5" style="padding:0 8px 4px 24px;">` +
           subcharges.map(s => {
             const subTotal = (parseCurrency(s.amount || '') || 0) + (parseCurrency(s.tax || '') || 0);
-            return `<div style="font-size:11px;color:#6b7280;">↳ ${escapeHtml(s.name || '(unnamed)')}: ${formatCurrency(subTotal.toFixed(2))}</div>`;
+            const descNote = s.description ? ` <span style="font-style:italic;">— ${escapeHtml(s.description)}</span>` : '';
+            return `<div style="font-size:11px;color:#6b7280;">↳ ${escapeHtml(s.name || '(unnamed)')}: ${formatCurrency(subTotal.toFixed(2))}${descNote}</div>`;
           }).join('') + `</td></tr>` : '';
         return `<tr style="border-bottom:1px solid #f0f0f0;">
           <td style="padding:4px 8px;">${escapeHtml(d.unit || '')}</td>
