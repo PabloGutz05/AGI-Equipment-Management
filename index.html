@@ -247,6 +247,9 @@
           <h3 class="invoice-registration-block-title">Add Invoice Tracking Entry</h3>
           <form id="invoiceTrackingForm" class="inline-form" style="flex-direction:column;">
 
+            <!-- An invoice must already be posted (a registry) before it can be tracked as a
+                 dispute — WD Invoice Num is looked up here and everything below is pulled
+                 read-only from that registry rather than entered by hand. -->
             <div class="invoice-form-row">
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">WD Invoice Num</span>
@@ -254,11 +257,11 @@
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Supplier Invoice Doc</span>
-                <input id="itSupplierInvoiceDoc" type="text" placeholder="Supplier Invoice Doc">
+                <input id="itSupplierInvoiceDoc" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Invoice Amount</span>
-                <input id="itInvoiceAmount" type="text" class="money-input" inputmode="decimal" placeholder="0.00">
+                <input id="itInvoiceAmount" type="text" class="money-input" inputmode="decimal" placeholder="0.00" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">WD Invoice Date</span>
@@ -266,59 +269,29 @@
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">From Date</span>
-                <input id="itFromDate" type="date">
+                <input id="itFromDate" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">To Date</span>
-                <input id="itToDate" type="date">
+                <input id="itToDate" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
             </div>
-            <div id="itAmountMatchNote" class="small-muted" style="margin:-4px 0 4px;"></div>
+            <div id="itWdLookupNote" class="small-muted" style="margin:-4px 0 4px;"></div>
 
             <div class="invoice-form-row">
               <label style="display:flex;flex-direction:column;gap:4px;flex:1 1 160px;">
                 <span style="font-weight:600;font-size:13px;">Supplier</span>
-                <select id="itSupplier" disabled style="background:#f3f4f6;color:#6b7280;"><option value="">Select lease(s) below</option></select>
+                <select id="itSupplier" disabled style="background:#f3f4f6;color:#6b7280;"><option value="">Look up a WD Invoice Num above</option></select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:4px;flex:2 1 220px;">
+                <span style="font-weight:600;font-size:13px;">Lease(s)</span>
+                <input id="itLeaseSummary" type="text" placeholder="—" readonly style="background:#f3f4f6;color:#6b7280;">
               </label>
             </div>
 
-            <div class="invoice-picker-row">
-              <div class="invoice-picker-col" style="flex:1 1 100%;">
-                <div class="invoice-picker-label-row">
-                  <div class="invoice-picker-label">Lease(s)</div>
-                  <div>
-                    <button type="button" id="itLeaseSelectAllBtn" class="small-link">Select all</button>
-                    <button type="button" id="itLeaseClearBtn" class="small-link">Clear</button>
-                  </div>
-                </div>
-                <div class="picker-search-wrap">
-                  <input type="text" id="itLeaseSearch" class="picker-search" placeholder="Search leases...">
-                  <button type="button" id="itLeaseSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
-                </div>
-                <div id="itLeasePanel" class="picker-box"></div>
-              </div>
-            </div>
-
-            <div class="invoice-picker-row">
-              <div class="invoice-picker-col" style="flex:1 1 100%;">
-                <div class="invoice-picker-label-row">
-                  <div class="invoice-picker-label">Units in Dispute</div>
-                  <div>
-                    <button type="button" id="itUnitSelectAllBtn" class="small-link">Select all</button>
-                    <button type="button" id="itUnitClearBtn" class="small-link">Clear</button>
-                  </div>
-                </div>
-                <div class="picker-search-wrap">
-                  <input type="text" id="itUnitSearch" class="picker-search" placeholder="Search units...">
-                  <button type="button" id="itUnitSearchClear" class="picker-search-clear" title="Clear search">&times;</button>
-                </div>
-                <div id="itUnitPanel" class="picker-box"></div>
-              </div>
-            </div>
-
-            <!-- Per-unit Tax / Other Charges / Amount breakdown — same table used by Invoice
-                 Registration (Tax + Other Charges + Amount = Total Charge per unit). Invoice
-                 Amount below is the read-only sum of every unit's Total Charge. -->
+            <!-- Every unit billed on the matched invoice, with its actual (locked) Tax/Other
+                 Charges/Amount detail. Check a unit's row to add it to the dispute — its Total
+                 Charge is added into Amount in Dispute below (still manually adjustable after). -->
             <div id="itUnitAmountBreakdown" class="invoice-unit-breakdown" style="display:none"></div>
 
             <div class="invoice-form-row">

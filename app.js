@@ -1790,7 +1790,7 @@ qs('#unitForm').addEventListener('submit', e=>{
   saveState();
   renderUnits();
   if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions();
-  try{ if(typeof syncInvoiceTrackingUnitOptions === 'function') syncInvoiceTrackingUnitOptions(getSelectedInvoiceTrackingLeases(), getSelectedInvoiceTrackingUnits()); }catch(e){}
+  try{ if(_itMatchedRegistry && typeof renderInvoiceTrackingUnitBreakdown === 'function') renderInvoiceTrackingUnitBreakdown(); }catch(e){}
   form.reset();
   delete form.dataset.editing;
   const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'New';
@@ -1890,7 +1890,7 @@ qs('#leaseForm').addEventListener('submit', e=>{
   renderLeases();
   if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions();
   try{ if(typeof populateInvoiceTrackingDropdowns === 'function') populateInvoiceTrackingDropdowns(); }catch(e){}
-  try{ if(typeof syncInvoiceTrackingLeaseOptions === 'function') syncInvoiceTrackingLeaseOptions(getSelectedInvoiceTrackingLeases()); }catch(e){}
+  try{ if(_itMatchedRegistry && typeof lookupInvoiceTrackingWd === 'function') lookupInvoiceTrackingWd(); }catch(e){}
   form.reset();
   delete form.dataset.editing;
   const submitBtn = form.querySelector('button[type="submit"]');
@@ -4247,9 +4247,6 @@ async function loadStateFromDB(){
     try{ renderArrangementList(); }catch(e){}
     try{ renderPaymentList(); }catch(e){}
     try{ populateInvoiceTrackingDropdowns(); }catch(e){}
-    try{ syncInvoiceTrackingLeaseOptions(); }catch(e){}
-    try{ syncInvoiceTrackingUnitOptions(); }catch(e){}
-    try{ renderInvoiceTrackingUnitBreakdown(); }catch(e){}
     // Start auto-refresh if not already running
     startAutoRefresh();
   } catch(e) {
@@ -10687,11 +10684,18 @@ function renderAccrualsMissingPeriods(forceRecompute){
 }
 
 // ========== Invoice Tracking tab ==========
+// An entry can only ever be created for a WD Invoice Number that's already posted in the
+// system (a registry) — internal procedure now requires every invoice, disputed or not, to
+// be posted first. So everything about the invoice itself (supplier, lease, units, dates,
+// amount, per-unit detail) is looked up from that registry and locked here rather than typed;
+// the only things the operator actually picks are which units are in dispute (checkboxes on
+// the breakdown table below) and the narrative fields (Amount in Dispute, statuses,
+// description/request).
 function populateInvoiceTrackingDropdowns(){
   const supplierSel = qs('#itSupplier');
   if(supplierSel){
     const cur = supplierSel.value;
-    supplierSel.innerHTML = '<option value="">Select lease(s) below</option>';
+    supplierSel.innerHTML = '<option value="">Look up a WD Invoice Num above</option>';
     (state.meta.devSuppliers || []).forEach(s => {
       const opt = document.createElement('option'); opt.value = s; opt.textContent = s; supplierSel.appendChild(opt);
     });
@@ -10699,294 +10703,48 @@ function populateInvoiceTrackingDropdowns(){
   }
 }
 
-// Always-visible checkbox box + search for selecting one or more leases (same format as the
-// invoice form's lease picker). Selecting lease(s) here restricts which units show up below.
-function syncInvoiceTrackingLeaseOptions(selectedValues){
-  selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s => String(s)) : (selectedValues ? [String(selectedValues)] : getSelectedInvoiceTrackingLeases());
-  const panel = qs('#itLeasePanel');
-  if(!panel) return;
+// The registry currently matched by the WD Invoice Num lookup — the single source of truth
+// for every locked field and for the breakdown table's rows. Null until a match is found.
+let _itMatchedRegistry = null;
 
-  const leases = (state.leases || []).filter(l => (l.status || 'Enabled').toString().toLowerCase() !== 'disabled');
-
-  panel.innerHTML = '';
-  if(leases.length === 0){
-    const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no leases available)'; panel.appendChild(none);
-    return;
-  }
-
-  leases.forEach(l => {
-    const val = (l.leaseNumber || l.id || '').toString();
-    const row = document.createElement('label');
-    row.className = 'lease-checkbox-row';
-    row.setAttribute('data-lease-id', val.toLowerCase());
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;';
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'itLease'; cb.value = val; cb.style.cursor = 'pointer';
-    if(selectedValues.indexOf(val) !== -1) cb.checked = true;
-    const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val;
-    cb.addEventListener('change', () => { try{ onInvoiceTrackingLeaseSelectionChange(); }catch(e){} });
-    row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
-  });
-
-  const searchBox = qs('#itLeaseSearch');
-  if(searchBox && !searchBox.dataset.wired){
-    searchBox.dataset.wired = 'true';
-    searchBox.addEventListener('input', () => {
-      const groups = parseSearchGroups(searchBox.value);
-      panel.querySelectorAll('.lease-checkbox-row').forEach(row => {
-        const lid = row.getAttribute('data-lease-id') || '';
-        row.style.display = matchesSearchGroups(groups, [lid]) ? 'flex' : 'none';
-      });
-    });
-  }
-  if(searchBox && searchBox.value) searchBox.dispatchEvent(new Event('input'));
-
-  const selectAllBtn = qs('#itLeaseSelectAllBtn');
-  if(selectAllBtn && !selectAllBtn.dataset.wired){
-    selectAllBtn.dataset.wired = 'true';
-    selectAllBtn.addEventListener('click', () => {
-      panel.querySelectorAll('.lease-checkbox-row').forEach(row => {
-        if(row.style.display !== 'none'){
-          const cb = row.querySelector('input[type="checkbox"]');
-          if(cb) cb.checked = true;
-        }
-      });
-      onInvoiceTrackingLeaseSelectionChange();
-    });
-  }
-
-  const clearBtn = qs('#itLeaseClearBtn');
-  if(clearBtn && !clearBtn.dataset.wired){
-    clearBtn.dataset.wired = 'true';
-    clearBtn.addEventListener('click', () => {
-      panel.querySelectorAll('input[type="checkbox"][name="itLease"]').forEach(cb => cb.checked = false);
-      onInvoiceTrackingLeaseSelectionChange();
-    });
-  }
-
-  wireSearchClearButton('itLeaseSearch', 'itLeaseSearchClear');
+function getInvoiceTrackingCheckedUnits(){
+  const wrap = qs('#itUnitAmountBreakdown'); if(!wrap) return [];
+  return Array.from(wrap.querySelectorAll('.unit-breakdown-row')).filter(row => {
+    const cb = row.querySelector('.itb-dispute-checkbox');
+    return cb && cb.checked;
+  }).map(row => row.dataset.unitId);
 }
 
-function getSelectedInvoiceTrackingLeases(){
-  const panel = qs('#itLeasePanel'); if(!panel) return [];
-  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="itLease"]:checked')).map(cb => cb.value);
-}
-
-// Re-filter the unit list to the newly-selected lease(s), dropping any previously-checked
-// unit that no longer belongs to one of them, then refresh Supplier/Cost Center.
-function onInvoiceTrackingLeaseSelectionChange(){
-  const selectedLeases = getSelectedInvoiceTrackingLeases();
-  const stillValidUnits = getSelectedInvoiceTrackingUnits().filter(uid => {
-    const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
-    return u && (selectedLeases.length === 0 || selectedLeases.indexOf(u.lease) !== -1);
-  });
-  syncInvoiceTrackingUnitOptions(selectedLeases, stillValidUnits);
-  updateInvoiceTrackingDerivedFields();
-  try{ renderInvoiceTrackingUnitBreakdown(); }catch(e){}
-}
-
-// Always-visible checkbox box + search (same format/behavior as the invoice form's unit
-// picker), scoped to this form only. Restricted to whichever lease(s) are currently selected
-// above (all units when none are selected yet, matching the invoice form's own convention).
-function syncInvoiceTrackingUnitOptions(leaseVals, selectedValues){
-  selectedValues = Array.isArray(selectedValues) ? selectedValues.map(s => String(s)) : [];
-  const panel = qs('#itUnitPanel');
-  if(!panel) return;
-
-  const leaseFilter = Array.isArray(leaseVals) ? leaseVals.filter(Boolean) : (leaseVals ? [leaseVals] : []);
-  const filtered = leaseFilter.length === 0 ? (state.units || []).slice() : (state.units || []).filter(u => leaseFilter.indexOf(u.lease) !== -1);
-
-  const units = filtered.sort((a, b) => {
-    const aDisabled = (a.status || '').toLowerCase() === 'disabled';
-    const bDisabled = (b.status || '').toLowerCase() === 'disabled';
-    if(aDisabled === bDisabled) return 0;
-    return aDisabled ? 1 : -1;
-  });
-
-  panel.innerHTML = '';
-  if(units.length === 0){
-    const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = '(no units available)'; panel.appendChild(none);
-    return;
-  }
-
-  units.forEach(u => {
-    const val = (u.unitId || u.id || '').toString();
-    const isDisabled = (u.status || '').toLowerCase() === 'disabled';
-    const row = document.createElement('label');
-    row.className = 'unit-checkbox-row';
-    row.setAttribute('data-unit-id', val.toLowerCase());
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-radius:4px;';
-    if(isDisabled) row.style.background = '#fee2e2';
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'itUnit'; cb.value = val; cb.style.cursor = 'pointer';
-    if(selectedValues.indexOf(val) !== -1) cb.checked = true;
-    const text = document.createElement('span'); text.style.fontSize = '13px'; text.textContent = val + (isDisabled ? ' (Disabled)' : '');
-    if(isDisabled) text.style.color = '#b91c1c';
-    cb.addEventListener('change', () => { try{ updateInvoiceTrackingDerivedFields(); renderInvoiceTrackingUnitBreakdown(); }catch(e){} });
-    row.appendChild(cb); row.appendChild(text); panel.appendChild(row);
-  });
-
-  const searchBox = qs('#itUnitSearch');
-  if(searchBox && !searchBox.dataset.wired){
-    searchBox.dataset.wired = 'true';
-    searchBox.addEventListener('input', () => {
-      const groups = parseSearchGroups(searchBox.value);
-      panel.querySelectorAll('.unit-checkbox-row').forEach(row => {
-        const uid = row.getAttribute('data-unit-id') || '';
-        row.style.display = matchesSearchGroups(groups, [uid]) ? 'flex' : 'none';
-      });
-    });
-  }
-  if(searchBox && searchBox.value) searchBox.dispatchEvent(new Event('input'));
-
-  const selectAllBtn = qs('#itUnitSelectAllBtn');
-  if(selectAllBtn && !selectAllBtn.dataset.wired){
-    selectAllBtn.dataset.wired = 'true';
-    selectAllBtn.addEventListener('click', () => {
-      panel.querySelectorAll('.unit-checkbox-row').forEach(row => {
-        if(row.style.display !== 'none'){
-          const cb = row.querySelector('input[type="checkbox"]');
-          if(cb) cb.checked = true;
-        }
-      });
-      updateInvoiceTrackingDerivedFields();
-      renderInvoiceTrackingUnitBreakdown();
-    });
-  }
-
-  const clearBtn = qs('#itUnitClearBtn');
-  if(clearBtn && !clearBtn.dataset.wired){
-    clearBtn.dataset.wired = 'true';
-    clearBtn.addEventListener('click', () => {
-      panel.querySelectorAll('input[type="checkbox"][name="itUnit"]').forEach(cb => cb.checked = false);
-      updateInvoiceTrackingDerivedFields();
-      renderInvoiceTrackingUnitBreakdown();
-    });
-  }
-
-  wireSearchClearButton('itUnitSearch', 'itUnitSearchClear');
-}
-
-function getSelectedInvoiceTrackingUnits(){
-  const panel = qs('#itUnitPanel'); if(!panel) return [];
-  return Array.from(panel.querySelectorAll('input[type="checkbox"][name="itUnit"]:checked')).map(cb => cb.value);
-}
-
-// Supplier mirrors whichever lease(s) are checked above it — a single-select dropdown, so it
-// takes the first selected lease's own supplier (still editable afterward if it needs
-// correcting). Cost Center is no longer a separate field here — the per-unit breakdown table
-// below already shows each selected unit's own Cost Center (see UNIT_BREAKDOWN_COLUMNS), so a
-// single aggregated value up here was redundant.
-function updateInvoiceTrackingDerivedFields(){
-  const supplierSel = qs('#itSupplier');
-  const selectedLeases = getSelectedInvoiceTrackingLeases();
-  if(supplierSel){
-    const firstLeaseRec = selectedLeases.length
-      ? (state.leases || []).find(l => (l.leaseNumber || l.id || '').toString() === selectedLeases[0])
-      : null;
-    supplierSel.value = (firstLeaseRec && firstLeaseRec.supplier) || '';
-  }
-}
-
-// Cost Center for the saved record (list-view summary) is derived directly from whichever
-// units are in dispute at submit time — joining every distinct value — since there's no
-// longer a dedicated form field for it.
+// Cost Center for the saved record is derived from whichever units end up checked as disputed.
 function getInvoiceTrackingCostCenterSummary(){
   const ccSet = new Set();
-  getSelectedInvoiceTrackingUnits().forEach(uid => {
+  getInvoiceTrackingCheckedUnits().forEach(uid => {
     const u = (state.units || []).find(x => (x.unitId || x.id || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
     if(u && u.costCenter) ccSet.add(u.costCenter);
   });
   return Array.from(ccSet).join(', ');
 }
 
-// ---- Per-unit Tax / Other Charges / Amount breakdown ----
-// A separate, purpose-built table rather than reusing renderUnitBreakdownTable directly:
-// that shared function is deeply relied on by Invoice Registration and the Registry Edit
-// modal, so changing anything about it would risk both. This reuses the same lower-level,
-// already-generic primitives (getColWidth, wireColumnAutoFit, autoGrowAmountColumn) and the
-// same CSS classes, so it looks and behaves identically — sortable/resizable columns, capped
-// scrollable rows with expand toggle, row hover/selection — without touching those tables.
-//
-// Tax/Other Charges/Amount are the actual per-unit invoice detail (same fields as Invoice
-// Registration); Total Charge is their computed sum. Invoice Amount above is the read-only
-// total across every unit's Total Charge. Amount in Dispute is a separate, independently
-// typed field (not derived from this table) — usually it just reflects a total the operator
-// already worked out from this same detail, so it's entered directly rather than reconciled
-// unit-by-unit. Amount Due = Invoice Amount − Amount in Dispute.
-function getInvoiceTrackingBreakdownRowsData(){
-  const data = {};
-  const wrap = qs('#itUnitAmountBreakdown'); if(!wrap) return data;
-  wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
-    const uid = row.dataset.unitId; if(!uid) return;
-    const taxInput = row.querySelector('.itb-tax');
-    const otherInput = row.querySelector('.itb-other');
-    const chargeInput = row.querySelector('.itb-charge');
-    data[uid] = {
-      tax: taxInput ? taxInput.value : '',
-      other: otherInput ? otherInput.value : '',
-      charge: chargeInput ? chargeInput.value : ''
-    };
-  });
-  return data;
-}
-
-// Per-row Total Charge = Tax + Other Charges + Amount for that one unit.
-function updateInvoiceTrackingBreakdownRowTotal(row){
-  const totalEl = row.querySelector('.itb-rowTotal'); if(!totalEl) return;
-  const taxInput = row.querySelector('.itb-tax');
-  const otherInput = row.querySelector('.itb-other');
-  const chargeInput = row.querySelector('.itb-charge');
-  const sum = (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0) + (parseCurrency(chargeInput ? chargeInput.value : '') || 0);
-  totalEl.textContent = formatCurrency(sum.toFixed(2));
-}
-
-// Invoice Amount is typed directly (the total from the actual supplier invoice) rather than
-// computed — same as Invoice Registration's declared Amount — and must match the per-unit
-// Tax + Other Charges + Amount breakdown below; a mismatch is flagged here live and blocks
-// submission (see the double-check in the form's submit handler), exactly like that form.
-function updateInvoiceTrackingAmountMatch(){
+// Checking/unchecking a row's dispute box re-sums every currently-checked row's Total Charge
+// into Amount in Dispute — a convenience starting point, still freely editable by hand
+// afterward (checking further boxes will re-sum again, overwriting a manual edit).
+function updateInvoiceTrackingDisputeAmountFromChecked(){
   const wrap = qs('#itUnitAmountBreakdown');
-  const noteEl = qs('#itAmountMatchNote');
-  let breakdownSum = 0;
-  let hasRows = false;
+  let sum = 0;
   if(wrap){
-    const rows = wrap.querySelectorAll('.unit-breakdown-row');
-    hasRows = rows.length > 0;
-    rows.forEach(row => {
-      const taxInput = row.querySelector('.itb-tax');
-      const otherInput = row.querySelector('.itb-other');
-      const chargeInput = row.querySelector('.itb-charge');
-      breakdownSum += (parseCurrency(taxInput ? taxInput.value : '') || 0) + (parseCurrency(otherInput ? otherInput.value : '') || 0) + (parseCurrency(chargeInput ? chargeInput.value : '') || 0);
+    wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+      const cb = row.querySelector('.itb-dispute-checkbox');
+      if(cb && cb.checked){
+        sum += (parseCurrency(row.dataset.tax || '') || 0) + (parseCurrency(row.dataset.other || '') || 0) + (parseCurrency(row.dataset.charge || '') || 0);
+      }
     });
   }
-  const invoiceField = qs('#itInvoiceAmount');
-  const declared = parseCurrency(invoiceField ? invoiceField.value : '');
-  const matches = hasRows && declared !== null && Math.round(breakdownSum * 100) === Math.round(declared * 100);
-  if(wrap) wrap.dataset.matches = matches ? 'true' : 'false';
-  if(noteEl){
-    if(!hasRows){
-      noteEl.textContent = '';
-    } else {
-      noteEl.textContent = 'Unit breakdown total (Tax + Other Charges + Amount): ' + formatCurrency(breakdownSum.toFixed(2)) +
-        (declared !== null ? ' / Invoice Amount: ' + formatCurrency(declared.toFixed(2)) : ' — enter Invoice Amount above to validate');
-      noteEl.style.color = matches ? '#15803d' : '#dc2626';
-      noteEl.style.fontWeight = '600';
-    }
-  }
-  return { breakdownSum, hasRows, matches };
-}
-
-function invoiceTrackingAmountMatches(){
-  return updateInvoiceTrackingAmountMatch().matches;
-}
-
-// Called whenever a per-unit Tax/Other/Amount changes.
-function updateInvoiceTrackingBreakdownTotal(){
-  updateInvoiceTrackingAmountMatch();
+  const disputeField = qs('#itAmountInDispute');
+  if(disputeField) disputeField.value = sum ? sum.toFixed(2) : '';
   updateInvoiceTrackingAmountDue();
 }
 
-// Amount Due = Invoice Amount − Amount in Dispute (Amount in Dispute is typed directly, not
-// derived from the breakdown table).
+// Amount Due = Invoice Amount − Amount in Dispute.
 function updateInvoiceTrackingAmountDue(){
   const dueField = qs('#itAmountDue'); if(!dueField) return;
   const invoiceAmount = parseCurrency((qs('#itInvoiceAmount') || {}).value || '') || 0;
@@ -10996,89 +10754,55 @@ function updateInvoiceTrackingAmountDue(){
 }
 const itAmountInDisputeEl = qs('#itAmountInDispute');
 if(itAmountInDisputeEl) itAmountInDisputeEl.addEventListener('input', updateInvoiceTrackingAmountDue);
-const itInvoiceAmountEl = qs('#itInvoiceAmount');
-if(itInvoiceAmountEl) itInvoiceAmountEl.addEventListener('input', () => { updateInvoiceTrackingAmountMatch(); updateInvoiceTrackingAmountDue(); });
 
-// Tax/Other/Amount are editable inputs; rowTotal is a read-only computed display — same
-// three-editable-plus-one-computed shape as Invoice Registration's own breakdown table.
-const INVOICE_TRACKING_AMOUNT_COLS = [['tax','Tax',110],['other','Other Charges',120],['charge','Amount',110],['rowTotal','Total Charge',110]];
-
-function renderInvoiceTrackingUnitBreakdown(seed){
+// Renders one read-only row per unit on the matched registry — Company/UnitId/Lease/Cost
+// Center (the same shared column set as Invoice Registration) plus that unit's actual, locked
+// Tax/Other Charges/Amount/Total Charge — with a leading checkbox to mark it disputed. A row
+// is highlighted red if that same unit is already tracked as in dispute against this same WD
+// number in an existing entry, so nothing gets disputed twice by mistake.
+function renderInvoiceTrackingUnitBreakdown(){
   const wrap = qs('#itUnitAmountBreakdown'); if(!wrap) return;
-  const unitIds = getSelectedInvoiceTrackingUnits();
+  const registry = _itMatchedRegistry;
 
-  if(unitIds.length === 0){
+  if(!registry){
     wrap.style.display = 'none';
     wrap.innerHTML = '';
-    updateInvoiceTrackingBreakdownTotal();
     return;
   }
 
-  const existing = getInvoiceTrackingBreakdownRowsData();
-  const seedData = seed || {};
-
-  let rows = unitIds.map(uid => ({
-    uid,
-    unitRec: (state.units || []).find(u => (u.unitId || u.id || '').toString().trim() === uid.toString().trim())
-  }));
-
-  const sortCol = wrap.dataset.sortCol || '';
-  const sortDir = wrap.dataset.sortDir || 'asc';
-  const amountSortKeys = INVOICE_TRACKING_AMOUNT_COLS.map(c => c[0]);
-  if(sortCol){
-    const col = UNIT_BREAKDOWN_COLUMNS.find(c => c.key === sortCol);
-    if(col){
-      rows.sort((a, b) => {
-        const av = col.get(a.unitRec, a.uid).toString().toLowerCase();
-        const bv = col.get(b.unitRec, b.uid).toString().toLowerCase();
-        if(av < bv) return sortDir === 'asc' ? -1 : 1;
-        if(av > bv) return sortDir === 'asc' ? 1 : -1;
-        return 0;
-      });
-    } else if(amountSortKeys.indexOf(sortCol) !== -1){
-      const getVal = (uid) => {
-        const prior = existing[uid] || seedData[uid] || {};
-        if(sortCol === 'rowTotal') return (parseCurrency(prior.tax || '') || 0) + (parseCurrency(prior.other || '') || 0) + (parseCurrency(prior.charge || '') || 0);
-        return parseCurrency(prior[sortCol] || '') || 0;
-      };
-      rows.sort((a, b) => {
-        const av = getVal(a.uid), bv = getVal(b.uid);
-        return sortDir === 'asc' ? av - bv : bv - av;
-      });
-    }
+  const details = getRegistryUnitDetails(registry);
+  wrap.innerHTML = '';
+  if(details.length === 0){
+    wrap.style.display = 'none';
+    return;
   }
 
-  wrap.innerHTML = '';
+  const wdVal = (registry.wdNumber || '').toString().trim().toLowerCase();
+  const alreadyDisputedUnits = new Set();
+  (state.invoiceTracking || []).forEach(t => {
+    if((t.wdInvoiceNum || '').toString().trim().toLowerCase() !== wdVal) return;
+    (Array.isArray(t.unitsInDispute) ? t.unitsInDispute : []).forEach(u => alreadyDisputedUnits.add(u.toString().trim().toLowerCase()));
+  });
+
+  const AMOUNT_COLS = [['tax', 'Tax', 110], ['other', 'Other Charges', 120], ['charge', 'Amount', 110], ['rowTotal', 'Total Charge', 110]];
+
   const header = document.createElement('div');
   header.className = 'unit-breakdown-header';
   header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;background:#fff;';
+  const checkboxHeaderCell = document.createElement('div');
+  checkboxHeaderCell.textContent = 'Dispute?';
+  checkboxHeaderCell.style.cssText = 'flex:0 0 60px;';
+  header.appendChild(checkboxHeaderCell);
   UNIT_BREAKDOWN_COLUMNS.forEach(col => {
     const d = document.createElement('div');
-    d.textContent = col.label + (sortCol === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
-    d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;cursor:pointer;user-select:none;`;
-    d.title = 'Click to sort';
-    d.addEventListener('click', () => {
-      const newDir = (wrap.dataset.sortCol === col.key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
-      wrap.dataset.sortCol = col.key; wrap.dataset.sortDir = newDir;
-      renderInvoiceTrackingUnitBreakdown();
-    });
-    wireColumnAutoFit(d, wrap, col.key, col.label, () => rows.map(({uid, unitRec}) => col.get(unitRec, uid)), () => renderInvoiceTrackingUnitBreakdown());
+    d.textContent = col.label;
+    d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;`;
     header.appendChild(d);
   });
-  INVOICE_TRACKING_AMOUNT_COLS.forEach(([key, label, w]) => {
+  AMOUNT_COLS.forEach(([key, label, w]) => {
     const d = document.createElement('div');
-    d.textContent = label + (sortCol === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
-    d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;cursor:pointer;user-select:none;`;
-    d.title = 'Click to sort';
-    d.dataset.colKey = key;
-    d.addEventListener('click', () => {
-      const newDir = (wrap.dataset.sortCol === key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
-      wrap.dataset.sortCol = key; wrap.dataset.sortDir = newDir;
-      renderInvoiceTrackingUnitBreakdown();
-    });
-    if(key !== 'rowTotal'){
-      wireColumnAutoFit(d, wrap, key, label, () => Array.from(wrap.querySelectorAll('.itb-' + key)).map(inp => inp.value), () => renderInvoiceTrackingUnitBreakdown());
-    }
+    d.textContent = label;
+    d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;`;
     header.appendChild(d);
   });
 
@@ -11087,11 +10811,32 @@ function renderInvoiceTrackingUnitBreakdown(seed){
   wrap.appendChild(rowsContainer);
   rowsContainer.appendChild(header);
 
-  rows.forEach(({uid, unitRec}) => {
+  const allUnitIds = details.map(d => d.unit);
+
+  details.forEach(d => {
+    const uid = d.unit;
+    const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim() === uid.toString().trim());
     const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
+    row.dataset.tax = d.tax || '';
+    row.dataset.other = d.other || '';
+    row.dataset.charge = d.charge || '';
 
-    const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
+    if(alreadyDisputedUnits.has(uid.toString().trim().toLowerCase())){
+      row.style.background = '#fee2e2';
+      row.title = 'This unit is already tracked as in dispute for this WD invoice';
+    }
+
+    const cbCell = document.createElement('div'); cbCell.style.cssText = 'flex:0 0 60px;display:flex;align-items:center;';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'itb-dispute-checkbox'; cb.style.cursor = 'pointer';
+    cb.addEventListener('change', () => {
+      row.classList.toggle('selected', cb.checked);
+      updateInvoiceTrackingDisputeAmountFromChecked();
+    });
+    cbCell.appendChild(cb);
+    row.appendChild(cbCell);
+
+    const mkCell = (text, w) => { const c = document.createElement('div'); c.textContent = text; c.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return c; };
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
       const cell = mkCell(col.get(unitRec, uid), getColWidth(wrap, col.key, col.width));
       if(col.key === 'unitId' && uid){
@@ -11100,110 +10845,97 @@ function renderInvoiceTrackingUnitBreakdown(seed){
         cell.title = 'View coverage history';
         cell.addEventListener('click', (e) => {
           e.stopPropagation();
-          try{ openUnitWdNumbersModal(uid, new Date().getFullYear(), new Date().getMonth(), unitIds); }catch(err){}
+          try{ openUnitWdNumbersModal(uid, new Date().getFullYear(), new Date().getMonth(), allUnitIds); }catch(err){}
         });
       }
       row.appendChild(cell);
     });
 
-    const taxInput = document.createElement('input'); taxInput.type = 'text'; taxInput.className = 'itb-tax money-input'; taxInput.placeholder = 'Tax'; taxInput.inputMode = 'decimal';
-    taxInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'tax', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
-    const otherInput = document.createElement('input'); otherInput.type = 'text'; otherInput.className = 'itb-other money-input'; otherInput.placeholder = 'Other'; otherInput.inputMode = 'decimal';
-    otherInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'other', 120)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
-    const chargeInput = document.createElement('input'); chargeInput.type = 'text'; chargeInput.className = 'itb-charge money-input'; chargeInput.placeholder = 'Amount'; chargeInput.inputMode = 'decimal';
-    chargeInput.style.cssText = `flex:0 0 ${getColWidth(wrap, 'charge', 110)}px;padding:4px 6px;border:1px solid #e6e9ee;border-radius:4px;`;
-    const rowTotalEl = document.createElement('div'); rowTotalEl.className = 'itb-rowTotal'; rowTotalEl.style.cssText = `flex:0 0 ${getColWidth(wrap, 'rowTotal', 110)}px;font-size:12px;color:#374151;font-weight:600;`;
+    const taxVal = parseCurrency(d.tax || '') || 0;
+    const otherVal = parseCurrency(d.other || '') || 0;
+    const chargeVal = parseCurrency(d.charge || '') || 0;
+    const totalVal = taxVal + otherVal + chargeVal;
+    [['tax', taxVal, 110], ['other', otherVal, 120], ['charge', chargeVal, 110], ['rowTotal', totalVal, 110]].forEach(([key, val, w]) => {
+      const c = document.createElement('div');
+      c.textContent = val ? formatCurrency(val.toFixed(2)) : '';
+      c.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;font-size:12px;color:#374151;` + (key === 'rowTotal' ? 'font-weight:600;' : '');
+      row.appendChild(c);
+    });
 
-    const prior = existing[uid] || seedData[uid] || {};
-    if(prior.tax !== undefined) taxInput.value = prior.tax;
-    if(prior.other !== undefined) otherInput.value = prior.other;
-    if(prior.charge !== undefined) chargeInput.value = prior.charge;
-
-    const onAmountInput = () => { updateInvoiceTrackingBreakdownTotal(); updateInvoiceTrackingBreakdownRowTotal(row); };
-    taxInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'tax', taxInput, 110); onAmountInput(); });
-    otherInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'other', otherInput, 120); onAmountInput(); });
-    chargeInput.addEventListener('input', () => { autoGrowAmountColumn(wrap, 'charge', chargeInput, 110); onAmountInput(); });
-
-    const selectRow = () => {
-      rowsContainer.querySelectorAll('.unit-breakdown-row').forEach(rr => rr.classList.remove('selected'));
-      row.classList.add('selected');
-    };
-    row.addEventListener('click', selectRow);
-    taxInput.addEventListener('focus', selectRow);
-    otherInput.addEventListener('focus', selectRow);
-    chargeInput.addEventListener('focus', selectRow);
-
-    row.appendChild(taxInput); row.appendChild(otherInput); row.appendChild(chargeInput); row.appendChild(rowTotalEl);
     rowsContainer.appendChild(row);
-    updateInvoiceTrackingBreakdownRowTotal(row);
   });
 
-  if(rows.length > 0){
-    const expandWrap = document.createElement('div');
-    expandWrap.style.cssText = 'display:flex;justify-content:center;margin-top:-1px;position:relative;z-index:1;';
-    const expandBtn = document.createElement('button');
-    expandBtn.type = 'button';
-    expandBtn.className = 'unit-breakdown-expand-btn';
-    const isExpanded = wrap.dataset.expanded === 'true';
-    rowsContainer.classList.toggle('expanded', isExpanded);
-    expandBtn.textContent = isExpanded ? '▲' : '▼';
-    expandBtn.title = isExpanded ? 'Show fewer rows' : 'Show all rows';
-    expandBtn.addEventListener('click', () => {
-      const nowExpanded = wrap.dataset.expanded !== 'true';
-      wrap.dataset.expanded = nowExpanded ? 'true' : 'false';
-      rowsContainer.classList.toggle('expanded', nowExpanded);
-      expandBtn.textContent = nowExpanded ? '▲' : '▼';
-      expandBtn.title = nowExpanded ? 'Show fewer rows' : 'Show all rows';
-    });
-    expandWrap.appendChild(expandBtn);
-    wrap.appendChild(expandWrap);
-  }
-
   wrap.style.display = 'block';
-  updateInvoiceTrackingBreakdownTotal();
 }
 
-// Looks the typed WD number up against the invoice registries: if a match exists, pulls its
-// coverage dates (and, once that Sheets column exists, its Invoice Date) into this form; if
-// not, marks the invoice as not yet submitted rather than leaving the date field ambiguous.
+// Looks the typed WD number up against the invoice registries: an invoice must already be
+// posted before it can be tracked as a dispute, so a non-match clears and locks everything
+// below rather than letting the operator fill it in by hand.
 function lookupInvoiceTrackingWd(){
   const wdInput = qs('#itWdInvoiceNum');
   const wdDateField = qs('#itWdInvoiceDate');
   const fromField = qs('#itFromDate');
   const toField = qs('#itToDate');
+  const docField = qs('#itSupplierInvoiceDoc');
+  const amountField = qs('#itInvoiceAmount');
+  const supplierSel = qs('#itSupplier');
+  const leaseField = qs('#itLeaseSummary');
+  const noteEl = qs('#itWdLookupNote');
   if(!wdInput) return;
+
+  const clearAll = () => {
+    if(fromField) fromField.value = '';
+    if(toField) toField.value = '';
+    if(docField) docField.value = '';
+    if(amountField) amountField.value = '';
+    if(supplierSel) supplierSel.value = '';
+    if(leaseField) leaseField.value = '';
+    _itMatchedRegistry = null;
+    renderInvoiceTrackingUnitBreakdown();
+    updateInvoiceTrackingAmountDue();
+  };
 
   const wdVal = wdInput.value.trim();
   if(!wdVal){
+    clearAll();
     if(wdDateField) wdDateField.value = '';
+    if(noteEl) noteEl.textContent = '';
     return;
   }
 
   const reg = (state.registries || []).find(r => (r.wdNumber || '').toString().trim().toLowerCase() === wdVal.toLowerCase());
-  if(reg){
-    // Supplier Invoice Date, captured on Invoice Registration/Registry Edit.
-    if(wdDateField) wdDateField.value = reg.invoiceDate || '';
-    if(fromField && reg.periodStart) fromField.value = reg.periodStart;
-    if(toField && reg.periodEnd) toField.value = reg.periodEnd;
-
-    // Seed each currently-selected unit's Tax/Other Charges/Amount from this registry's own
-    // per-unit detail into the breakdown table below — the same actual invoice figures Invoice
-    // Registration captured, not re-typed here.
-    try{
-      const details = getRegistryUnitDetails(reg);
-      const seed = {};
-      details.forEach(d => {
-        if(!d || !d.unit) return;
-        seed[d.unit] = { tax: d.tax || '', other: d.other || '', charge: d.charge || '' };
-      });
-      if(typeof renderInvoiceTrackingUnitBreakdown === 'function') renderInvoiceTrackingUnitBreakdown(seed);
-    }catch(e){}
-  } else {
+  if(!reg){
+    clearAll();
     if(wdDateField) wdDateField.value = 'Not Submitted';
+    if(noteEl){
+      noteEl.textContent = 'No posted invoice found for this WD Invoice Num — it must already be registered (Invoices tab) before it can be tracked here.';
+      noteEl.style.color = '#dc2626';
+      noteEl.style.fontWeight = '600';
+    }
+    return;
   }
+
+  _itMatchedRegistry = reg;
+  if(noteEl){ noteEl.textContent = ''; }
+  if(wdDateField) wdDateField.value = reg.invoiceDate || '';
+  if(fromField) fromField.value = reg.periodStart || '';
+  if(toField) toField.value = reg.periodEnd || '';
+  if(docField) docField.value = reg.docNumber || '';
+  if(amountField) amountField.value = reg.totalAmount || '';
+
+  const registryLeases = Array.isArray(reg.leases) && reg.leases.length ? reg.leases : ((reg.lease || '').toString().split(',').map(s => s.trim()).filter(Boolean));
+  if(leaseField) leaseField.value = registryLeases.join(', ');
+  if(supplierSel){
+    const firstLeaseRec = registryLeases.length ? (state.leases || []).find(l => (l.leaseNumber || l.id || '').toString() === registryLeases[0]) : null;
+    supplierSel.value = (firstLeaseRec && firstLeaseRec.supplier) || '';
+  }
+
+  renderInvoiceTrackingUnitBreakdown();
+  updateInvoiceTrackingDisputeAmountFromChecked();
 }
 const itWdInvoiceNumEl = qs('#itWdInvoiceNum');
 if(itWdInvoiceNumEl) itWdInvoiceNumEl.addEventListener('input', lookupInvoiceTrackingWd);
+
 
 function renderInvoiceTrackingTable(){
   const headerRow = qs('#invoiceTrackingHeaderRow');
@@ -11321,23 +11053,32 @@ if(invoiceTrackingForm){
   invoiceTrackingForm.addEventListener('submit', (e) => {
     e.preventDefault();
 
-    // Double-check, same as Invoice Registration: if units are listed in the breakdown table,
-    // their Tax + Other Charges + Amount must sum to the declared Invoice Amount, or the entry
-    // is not saved.
-    const matchResult = updateInvoiceTrackingAmountMatch();
-    if(matchResult.hasRows && !matchResult.matches){
-      alert('The sum of Tax + Other Charges + Amount for the selected units must equal the Invoice Amount. Entry not saved.');
+    // The invoice must already be posted (matched via WD Invoice Num lookup) and at least
+    // one of its units must be checked as disputed — there's nothing left to type by hand.
+    if(!_itMatchedRegistry){
+      alert('This WD Invoice Number must already be posted in the system (Invoices tab) before it can be tracked as a dispute.');
+      return;
+    }
+    const checkedUnits = getInvoiceTrackingCheckedUnits();
+    if(checkedUnits.length === 0){
+      alert('Check at least one unit above to mark it as disputed.');
       return;
     }
 
+    const registryLeases = Array.isArray(_itMatchedRegistry.leases) && _itMatchedRegistry.leases.length
+      ? _itMatchedRegistry.leases
+      : ((_itMatchedRegistry.lease || '').toString().split(',').map(s => s.trim()).filter(Boolean));
+
     const toMoney = (elId) => { const n = parseCurrency(qs('#'+elId) ? qs('#'+elId).value : ''); return n === null ? '' : n.toFixed(2); };
+    const wrap = qs('#itUnitAmountBreakdown');
+    const rowForUnit = (uid) => wrap ? Array.from(wrap.querySelectorAll('.unit-breakdown-row')).find(r => r.dataset.unitId === uid) : null;
 
     const record = {
       id: id(),
       supplier: (qs('#itSupplier') || {}).value || '',
-      lease: getSelectedInvoiceTrackingLeases(),
-      unitsInDispute: getSelectedInvoiceTrackingUnits(),
-      supplierInvoiceDoc: ((qs('#itSupplierInvoiceDoc') || {}).value || '').trim(),
+      lease: registryLeases,
+      unitsInDispute: checkedUnits,
+      supplierInvoiceDoc: (qs('#itSupplierInvoiceDoc') || {}).value || '',
       invoiceAmount: toMoney('itInvoiceAmount'),
       amountInDispute: toMoney('itAmountInDispute'),
       amountDue: toMoney('itAmountDue'),
@@ -11351,16 +11092,15 @@ if(invoiceTrackingForm){
       descriptionOfIssue: ((qs('#itDescriptionOfIssue') || {}).value || '').trim(),
       request: ((qs('#itRequest') || {}).value || '').trim(),
       status: ((qs('#itStatus') || {}).value || '').trim(),
-      unitAmountDetails: (function(){
-        const breakdown = getInvoiceTrackingBreakdownRowsData();
-        return getSelectedInvoiceTrackingUnits().map(uid => {
-          const row = breakdown[uid] || {};
-          const tax = (parseCurrency(row.tax || '') || 0).toFixed(2);
-          const other = (parseCurrency(row.other || '') || 0).toFixed(2);
-          const charge = (parseCurrency(row.charge || '') || 0).toFixed(2);
-          return { unit: uid, tax, other, charge };
-        });
-      })()
+      unitAmountDetails: checkedUnits.map(uid => {
+        const row = rowForUnit(uid);
+        return {
+          unit: uid,
+          tax: row ? row.dataset.tax : '',
+          other: row ? row.dataset.other : '',
+          charge: row ? row.dataset.charge : ''
+        };
+      })
     };
 
     state.invoiceTracking = state.invoiceTracking || [];
@@ -11371,13 +11111,11 @@ if(invoiceTrackingForm){
     if(typeof renderRegistries === 'function') renderRegistries();
 
     invoiceTrackingForm.reset();
-    syncInvoiceTrackingLeaseOptions([]);
-    syncInvoiceTrackingUnitOptions([], []);
-    updateInvoiceTrackingDerivedFields();
+    _itMatchedRegistry = null;
     renderInvoiceTrackingUnitBreakdown();
     const wdDateField = qs('#itWdInvoiceDate'); if(wdDateField) wdDateField.value = '';
-    const leaseSearchEl = qs('#itLeaseSearch'); if(leaseSearchEl){ leaseSearchEl.value = ''; leaseSearchEl.dispatchEvent(new Event('input')); }
-    const searchEl = qs('#itUnitSearch'); if(searchEl){ searchEl.value = ''; searchEl.dispatchEvent(new Event('input')); }
+    const leaseField = qs('#itLeaseSummary'); if(leaseField) leaseField.value = '';
+    const noteEl = qs('#itWdLookupNote'); if(noteEl) noteEl.textContent = '';
   });
 }
 
