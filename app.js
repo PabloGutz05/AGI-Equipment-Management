@@ -1373,6 +1373,20 @@ const UNIT_BREAKDOWN_COLUMNS = [
   { key:'costCenter', label:'Cost Center', width:120, get: (u,uid) => u ? (u.costCenter||'') : '' }
 ];
 
+// Populates a subcharge's Name <select> from the Developer tab's "Other Charge Types" list.
+// If the row's current value isn't in that list (e.g. an option was removed after this
+// subcharge was named), it's kept as an extra option instead of being silently dropped.
+function populateOtherChargeSelect(selectEl, currentValue){
+  selectEl.innerHTML = '<option value="">(select charge type)</option>';
+  (state.meta.devOtherCharges || []).forEach(v => {
+    const opt = document.createElement('option'); opt.value = v; opt.textContent = v; selectEl.appendChild(opt);
+  });
+  if(currentValue && (state.meta.devOtherCharges || []).indexOf(currentValue) === -1){
+    const opt = document.createElement('option'); opt.value = currentValue; opt.textContent = currentValue + ' (not in list)'; selectEl.appendChild(opt);
+  }
+  selectEl.value = currentValue || '';
+}
+
 function getUnitBreakdownRowsData(wrapId){
   const data = {};
   const wrap = qs('#' + wrapId); if(!wrap) return data;
@@ -1601,8 +1615,9 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
       subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;';
 
       const branch = document.createElement('span'); branch.textContent = '↳'; branch.style.cssText = 'color:#9ca3af;font-size:12px;flex:0 0 16px;';
-      const nameInput = document.createElement('input'); nameInput.type = 'text'; nameInput.className = 'ub-sub-name'; nameInput.placeholder = 'Charge name (e.g. Freight)';
-      nameInput.style.cssText = 'flex:1 1 140px;min-width:100px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      const nameSelect = document.createElement('select'); nameSelect.className = 'ub-sub-name';
+      nameSelect.style.cssText = 'flex:1 1 140px;min-width:120px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      populateOtherChargeSelect(nameSelect, sub.name || '');
       const amountInput = document.createElement('input'); amountInput.type = 'text'; amountInput.className = 'ub-sub-amount money-input'; amountInput.placeholder = 'Amount'; amountInput.inputMode = 'decimal';
       amountInput.style.cssText = 'flex:0 0 90px;font-size:12px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
       const taxInputSub = document.createElement('input'); taxInputSub.type = 'text'; taxInputSub.className = 'ub-sub-tax money-input'; taxInputSub.placeholder = 'Tax'; taxInputSub.inputMode = 'decimal';
@@ -1610,19 +1625,18 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
       const removeBtn = document.createElement('button'); removeBtn.type = 'button'; removeBtn.textContent = '✕'; removeBtn.title = 'Remove this charge';
       removeBtn.style.cssText = 'flex:0 0 20px;border:none;background:none;color:#dc2626;cursor:pointer;font-size:12px;';
 
-      nameInput.value = sub.name || '';
       amountInput.value = sub.amount || '';
       taxInputSub.value = sub.tax || '';
 
-      nameInput.addEventListener('input', recomputeOtherFromSubcharges);
+      nameSelect.addEventListener('change', recomputeOtherFromSubcharges);
       amountInput.addEventListener('input', recomputeOtherFromSubcharges);
       taxInputSub.addEventListener('input', recomputeOtherFromSubcharges);
-      nameInput.addEventListener('focus', selectRow);
+      nameSelect.addEventListener('focus', selectRow);
       amountInput.addEventListener('focus', selectRow);
       taxInputSub.addEventListener('focus', selectRow);
       removeBtn.addEventListener('click', () => { subRow.remove(); recomputeOtherFromSubcharges(); });
 
-      subRow.appendChild(branch); subRow.appendChild(nameInput); subRow.appendChild(amountInput); subRow.appendChild(taxInputSub); subRow.appendChild(removeBtn);
+      subRow.appendChild(branch); subRow.appendChild(nameSelect); subRow.appendChild(amountInput); subRow.appendChild(taxInputSub); subRow.appendChild(removeBtn);
       subchargesWrap.appendChild(subRow);
     };
 
@@ -4260,7 +4274,7 @@ function escapeHtml(str){
 
 // --- Config list protection (Sheets is the only source of truth) ---
 // Snapshot of what Sheets returned on last load. Never stored in localStorage.
-const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges'];
 let _sheetConfigSnapshot = {};
 // Set to true only by Developer-tab handlers before calling saveState() for a config change.
 let _configChangeIntentional = false;
@@ -4520,7 +4534,7 @@ function startAutoRefresh(){
 
       const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
       ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch','registrySearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
-      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'].forEach(f => {
+      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges'].forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ /* already parsed */ }
         else if(typeof v === 'string' && v.trim().startsWith('[')){
@@ -4596,7 +4610,8 @@ qs('#exportBtn').addEventListener('click', ()=>{
   state.meta.devSuppliers = state.meta.devSuppliers || [];
   state.meta.devArrangements = state.meta.devArrangements || [];
   state.meta.devPayments = state.meta.devPayments || [];
-  
+  state.meta.devOtherCharges = state.meta.devOtherCharges || [];
+
   const dataStr = JSON.stringify(state, null, 2);
   const blob = new Blob([dataStr], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -8618,6 +8633,86 @@ if(saveArrangementBtn){
 }
 
 renderArrangementList();
+
+// --- Developer "Other Charge Types" list — feeds the named-subcharge dropdown in the per-unit
+// Tax/Other/Amount breakdown table (Invoice Registration + Registry Edit), since the actual
+// charge names found on invoices (Freight, Gasoline, etc.) vary a lot between suppliers.
+state.meta.devOtherCharges = state.meta.devOtherCharges || [];
+const devOtherChargeInput = qs('#devOtherChargeInput');
+const devOtherChargeListEl = qs('#devOtherChargeList');
+
+function renderOtherChargeList(){
+  if(!devOtherChargeListEl) return;
+  devOtherChargeListEl.innerHTML = '';
+  state.meta.devOtherCharges.forEach((c, i)=>{
+    const li = document.createElement('li');
+    const text = document.createElement('span'); text.textContent = c;
+    const actions = document.createElement('div'); actions.className = 'dev-actions';
+    const editBtn = document.createElement('button'); editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', ()=>{
+      if(!devOtherChargeInput) return;
+      devOtherChargeInput.value = c;
+      const saveBtn = qs('#saveDevOtherCharge');
+      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.dataset.editOriginalValue = c; saveBtn.textContent = 'Save'; }
+      devOtherChargeInput.focus();
+    });
+    const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this charge type?')) return;
+      delBtn.disabled = true;
+      try{
+        const fresh = await fetchFreshConfigArray('devOtherCharges');
+        const idx = fresh.findIndex(x => x === c);
+        if(idx !== -1) fresh.splice(idx,1);
+        commitConfigListChange('devOtherCharges', fresh);
+        renderOtherChargeList();
+      }catch(e){
+        alert('Could not delete — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+        delBtn.disabled = false;
+      }
+    });
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    li.appendChild(text);
+    li.appendChild(actions);
+    devOtherChargeListEl.appendChild(li);
+  });
+}
+
+const saveOtherChargeBtn = qs('#saveDevOtherCharge');
+if(saveOtherChargeBtn){
+  saveOtherChargeBtn.addEventListener('click', async ()=>{
+    const v = devOtherChargeInput && devOtherChargeInput.value ? devOtherChargeInput.value.trim() : '';
+    if(v === ''){ alert('Please enter a charge type'); return; }
+    const isEditing = typeof saveOtherChargeBtn.dataset.editIndex !== 'undefined';
+    const originalValue = saveOtherChargeBtn.dataset.editOriginalValue;
+    saveOtherChargeBtn.disabled = true;
+    try{
+      const fresh = await fetchFreshConfigArray('devOtherCharges');
+      const dupIdx = fresh.findIndex(x => x.toLowerCase() === v.toLowerCase());
+      if(isEditing){
+        const idx = fresh.findIndex(x => x === originalValue);
+        if(dupIdx !== -1 && fresh[dupIdx] !== originalValue){ alert('"' + v + '" already exists.'); return; }
+        if(idx !== -1) fresh[idx] = v; else fresh.push(v);
+      } else {
+        if(dupIdx !== -1){ alert('"' + v + '" already exists.'); return; }
+        fresh.push(v);
+      }
+      commitConfigListChange('devOtherCharges', fresh);
+      delete saveOtherChargeBtn.dataset.editIndex;
+      delete saveOtherChargeBtn.dataset.editOriginalValue;
+      saveOtherChargeBtn.textContent = 'new';
+      renderOtherChargeList();
+      if(devOtherChargeInput) devOtherChargeInput.value = '';
+    }catch(e){
+      alert('Could not save changes — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+    }finally{
+      saveOtherChargeBtn.disabled = false;
+    }
+  });
+}
+
+renderOtherChargeList();
 
 // populate lease arrangement select from developer arrangements
 function syncLeaseArrangementOptions(){

@@ -211,7 +211,7 @@ const DB = {
 
       const parsedInvoiceTracking = (Array.isArray(invoiceTrackingRaw) ? invoiceTrackingRaw : []).map(_invoiceTrackingFromSheetRow);
 
-      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements'];
+      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges'];
       arrayFields.forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ return; } // already parsed
