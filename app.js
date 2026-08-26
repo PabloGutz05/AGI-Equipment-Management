@@ -1254,8 +1254,8 @@ function updateInvoiceQuarterlyPeriod1Mode(){
   }
 }
 
-function renderInvoicePeriodTable(period){
-  renderUnitBreakdownTable(period.wrapId, period.units, null, null, {
+function renderInvoicePeriodTable(period, seed){
+  renderUnitBreakdownTable(period.wrapId, period.units, null, seed, {
     showEmptyRow: true,
     onRemoveUnit: (uid) => {
       period.units = period.units.filter(u => u !== uid);
