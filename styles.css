@@ -72,6 +72,7 @@ button[title]{background:#f97316}
 .inline-form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .invoice-form-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%}
 .invoice-unit-breakdown{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;margin:10px 0;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
+.invoice-period-block, #invoicePeriodsContainer{width:100%}
 .invoice-picker-row{align-items:flex-start;border-top:1px solid #d7dce2;padding-top:12px;margin-top:8px}
 .invoice-picker-col{flex:1 1 280px;display:flex;flex-direction:column;gap:4px}
 .invoice-picker-label{font-weight:600;font-size:13px;color:#374151}
