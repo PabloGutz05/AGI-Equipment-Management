@@ -598,6 +598,10 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         alert('Period date ranges must fall within the invoice\'s overall declared period (From/To above) and must not overlap each other.');
         return;
       }
+      if(!invoicePeriodsCoverFullDeclaredRange()){
+        alert('The periods together must cover the invoice\'s entire declared period (From/To above), with no gaps.');
+        return;
+      }
       if(!invoiceQuarterlyPeriodsMatchDeclared()){
         alert('The sum of Charge Amount + Tax Amount across all periods must equal the declared invoice Amount before submitting.');
         return;
@@ -1322,8 +1326,9 @@ function validateInvoicePeriodRanges(){
 function updateQuarterlyPeriodsAggregateTotal(){
   const el = qs('#invoicePeriodsAggregateTotal'); if(!el) return;
   if(!_invoiceQuarterlyPeriod1Active){ el.textContent = ''; return; }
+  const wrapIds = ['invoiceUnitBreakdown'].concat(_invoicePeriods.map(p => p.wrapId));
   let sum = 0;
-  ['invoiceUnitBreakdown'].concat(_invoicePeriods.map(p => p.wrapId)).forEach(wrapId => {
+  wrapIds.forEach(wrapId => {
     const wrap = qs('#' + wrapId); if(!wrap) return;
     wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
       const c = row.querySelector('.ub-charge'); const t = row.querySelector('.ub-tax'); const o = row.querySelector('.ub-other');
@@ -1336,6 +1341,15 @@ function updateQuarterlyPeriodsAggregateTotal(){
   el.textContent = 'Total across all periods (Tax + Other Charges + Amount): ' + formatCurrency(sum.toFixed(2)) + (declared !== null ? ' / declared ' + formatCurrency(declared.toFixed(2)) : '');
   el.style.color = matches ? '#15803d' : '#dc2626';
   el.style.fontWeight = '700';
+
+  // Reflect the AGGREGATE match on every individual period table's own total bar too, so a
+  // table isn't stuck red just because it alone doesn't equal the full invoice amount.
+  wrapIds.forEach(wrapId => {
+    const wrap = qs('#' + wrapId); if(!wrap) return;
+    const totalEl = wrap.querySelector('.unit-breakdown-total-text'); if(!totalEl) return;
+    totalEl.style.color = matches ? '#15803d' : '#dc2626';
+    wrap.dataset.matches = matches ? 'true' : 'false';
+  });
 }
 
 function invoiceQuarterlyPeriodsMatchDeclared(){
@@ -1350,6 +1364,30 @@ function invoiceQuarterlyPeriodsMatchDeclared(){
   });
   const declared = parseCurrency((qs('#invoiceAmount')||{}).value || '');
   return declared !== null && Math.round(sum*100) === Math.round(declared*100);
+}
+
+function addDaysToDateStr(dateStr, days){
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0,10);
+}
+
+// The periods together must cover every day of the invoice's overall declared period, with no
+// gaps — checked only at submit time (there will naturally be gaps while still adding periods).
+function invoicePeriodsCoverFullDeclaredRange(){
+  if(!_invoiceQuarterlyPeriod1Active) return true;
+  const declaredFrom = (qs('#invoicePeriodStart')||{}).value || '';
+  const declaredTo = (qs('#invoicePeriodEnd')||{}).value || '';
+  if(!declaredFrom || !declaredTo) return true;
+  const entries = getActiveInvoicePeriodEntries().map(e => e.period).filter(p => p.fromDate && p.toDate);
+  if(entries.length === 0) return true;
+  const sorted = entries.slice().sort((a,b) => a.fromDate < b.fromDate ? -1 : (a.fromDate > b.fromDate ? 1 : 0));
+  if(sorted[0].fromDate !== declaredFrom) return false;
+  for(let i = 0; i < sorted.length - 1; i++){
+    if(addDaysToDateStr(sorted[i].toDate, 1) !== sorted[i+1].fromDate) return false;
+  }
+  if(sorted[sorted.length - 1].toDate !== declaredTo) return false;
+  return true;
 }
 
 function resetInvoiceQuarterlyPeriods(){
@@ -2074,14 +2112,16 @@ function updateUnitBreakdownTotal(wrapId){
   const amountFieldId = wrap.dataset.amountFieldId;
   const amountField = amountFieldId ? qs('#' + amountFieldId) : null;
   // Quarterly invoices: the declared Amount covers the sum across every period's table, not
-  // this one table alone — skip this table's own match and let
-  // updateQuarterlyPeriodsAggregateTotal() validate the combined total instead.
-  const inMultiPeriodMode = wrapId === 'invoiceUnitBreakdown' && typeof _invoicePeriods !== 'undefined' && _invoicePeriods.length > 0;
+  // this one table alone — its own color gets set below by updateQuarterlyPeriodsAggregateTotal()
+  // instead, based on whether the COMBINED total across every period matches.
+  const inMultiPeriodMode = wrapId === 'invoiceUnitBreakdown' && typeof _invoiceQuarterlyPeriod1Active !== 'undefined' && _invoiceQuarterlyPeriod1Active;
   const declared = inMultiPeriodMode ? null : parseCurrency(amountField ? amountField.value : '');
   const matches = declared !== null && Math.round(sum*100) === Math.round(declared*100);
   totalEl.textContent = 'Total (Tax + Other Charges + Amount): ' + formatCurrency(sum.toFixed(2)) + (declared !== null ? ' / declared ' + formatCurrency(declared.toFixed(2)) : '');
-  totalEl.style.color = matches ? '#15803d' : '#dc2626';
-  wrap.dataset.matches = matches ? 'true' : 'false';
+  if(!inMultiPeriodMode){
+    totalEl.style.color = matches ? '#15803d' : '#dc2626';
+    wrap.dataset.matches = matches ? 'true' : 'false';
+  }
 
   if(_isInvoiceQuarterlyPeriodWrap(wrapId) && typeof updateQuarterlyPeriodsAggregateTotal === 'function'){
     updateQuarterlyPeriodsAggregateTotal();
@@ -2827,6 +2867,28 @@ function getRegistryUnitDetails(r){
   });
 }
 
+// Returns the list of {from, to, units} coverage slices for a registry — one slice for a
+// normal invoice (its own declared period + full unit list), or one slice per period for a
+// quarterly invoice (Period 1's own sub-range + one per entry in registry.periods, each with
+// its own per-unit list) — since quarterly periods can't overlap and a unit can be added or
+// removed independently per period, coverage has to be checked per-period, not against the
+// registry's single overall periodStart/periodEnd + full unit list.
+function getRegistryCoveragePeriods(reg){
+  const hasQuarterlyPeriods = !!(reg.period1From || reg.period1To || (Array.isArray(reg.periods) && reg.periods.length > 0));
+  if(!hasQuarterlyPeriods){
+    return [{ from: reg.periodStart || '', to: reg.periodEnd || '', units: Array.isArray(reg.units) ? reg.units : [] }];
+  }
+  const slices = [];
+  const period1Units = Array.isArray(reg.unitDetails) && reg.unitDetails.length
+    ? reg.unitDetails.map(d => d.unit)
+    : (Array.isArray(reg.units) ? reg.units : []);
+  slices.push({ from: reg.period1From || reg.periodStart || '', to: reg.period1To || reg.periodEnd || '', units: period1Units });
+  (Array.isArray(reg.periods) ? reg.periods : []).forEach(p => {
+    slices.push({ from: p.fromDate || '', to: p.toDate || '', units: Array.isArray(p.unitDetails) ? p.unitDetails.map(d => d.unit) : [] });
+  });
+  return slices;
+}
+
 // Read-only sortable Company/UnitId/Lease/Cost Center/Tax/Charge detail table for a registry's
 // expanded view, built from its stored unitDetails snapshot (captured at registration time so
 // it survives reloads, since individual invoice records are not themselves persisted).
@@ -3166,7 +3228,10 @@ function renderRegistries(keepOpenRegistryId){
         // the still-there row back in and make it reappear until the next refresh cycle.
         if(hasId){
           try{
-            await DB.deleteRegistry(r.id);
+            // Falls back to matching by WD/Doc number server-side if the id itself can't be
+            // found (e.g. a row whose id ended up blank/mismatched from an earlier write issue)
+            // — otherwise that row would be permanently stuck and un-deletable from here.
+            await DB.deleteRegistry(r.id, { wdNumber: r.wdNumber || '', docNumber: r.docNumber || '' });
           }catch(err){
             alert('Failed to delete from Google Sheets: ' + err.message);
             return;
@@ -3256,15 +3321,40 @@ function renderRegistries(keepOpenRegistryId){
     unitsList.style.marginBottom = '8px';
     const unitsLabel = document.createElement('div'); unitsLabel.innerHTML = '<strong>Units:</strong>'; unitsLabel.style.marginBottom = '4px';
     unitsList.appendChild(unitsLabel);
-    const registryUnitDetails = getRegistryUnitDetails(r);
-    if(registryUnitDetails.length){
-      const detailTableEl = document.createElement('div'); detailTableEl.className = 'registry-unit-detail-table';
-      unitsList.appendChild(detailTableEl);
-      renderRegistryUnitDetailTable(detailTableEl, registryUnitDetails);
-    } else {
-      const noneEl = document.createElement('div'); noneEl.className = 'small-muted'; noneEl.textContent = '(no units)';
-      unitsList.appendChild(noneEl);
-    }
+    // Quarterly invoices carry more than one unit-detail table — Period 1 (this registry's own
+    // unitDetails, using its period1From/To sub-range when set) plus one more per entry in
+    // registry.periods, each labeled with its own declared From/To.
+    const isQuarterlyRegistry = !!(r.period1From || r.period1To || (Array.isArray(r.periods) && r.periods.length > 0));
+    const registryPeriodTables = [{
+      label: isQuarterlyRegistry ? 'Period 1' : null,
+      from: r.period1From || r.periodStart || '',
+      to: r.period1To || r.periodEnd || '',
+      unitDetails: getRegistryUnitDetails(r)
+    }];
+    (Array.isArray(r.periods) ? r.periods : []).forEach((p, pIdx) => {
+      registryPeriodTables.push({
+        label: 'Period ' + (pIdx + 2),
+        from: p.fromDate || '',
+        to: p.toDate || '',
+        unitDetails: Array.isArray(p.unitDetails) ? p.unitDetails : []
+      });
+    });
+    registryPeriodTables.forEach(pt => {
+      if(pt.label){
+        const ptLabel = document.createElement('div');
+        ptLabel.style.cssText = 'font-size:12px;font-weight:700;color:#374151;margin:8px 0 2px;';
+        ptLabel.textContent = pt.label + (pt.from && pt.to ? ' (' + formatDate(pt.from) + ' — ' + formatDate(pt.to) + ')' : '');
+        unitsList.appendChild(ptLabel);
+      }
+      if(pt.unitDetails.length){
+        const detailTableEl = document.createElement('div'); detailTableEl.className = 'registry-unit-detail-table';
+        unitsList.appendChild(detailTableEl);
+        renderRegistryUnitDetailTable(detailTableEl, pt.unitDetails);
+      } else {
+        const noneEl = document.createElement('div'); noneEl.className = 'small-muted'; noneEl.textContent = '(no units)';
+        unitsList.appendChild(noneEl);
+      }
+    });
     const period = document.createElement('div'); period.innerHTML = `<strong>Period:</strong> ${escapeHtml(formatDate(r.periodStart))} — ${escapeHtml(formatDate(r.periodEnd))}`;
     const submitted = document.createElement('div'); submitted.innerHTML = `<strong>Submitted:</strong> ${escapeHtml(formatDate(r.submittedDate))} <span class="small-muted">(created ${new Date(r.createdAt||'').toLocaleString()})</span>`;
     
@@ -9525,7 +9615,50 @@ function openRegistryEditModal(registry){
   });
   renderRegistryUnitBreakdown(seedFromDetails);
 
+  renderEditRegistryQuarterlyPeriodsReadonly(registry);
+
   modal.style.display = 'block';
+}
+
+// Quarterly invoices carry additional periods beyond the one editable table above — shown
+// here read-only for now (each with its own declared From/To and per-unit detail table),
+// same as the Registries list's expanded view. Editing them isn't supported yet — that's a
+// separate follow-up.
+function renderEditRegistryQuarterlyPeriodsReadonly(registry){
+  const container = qs('#editRegistryPeriodsReadonly'); if(!container) return;
+  container.innerHTML = '';
+  const periods = Array.isArray(registry.periods) ? registry.periods : [];
+  if(periods.length === 0) return;
+
+  const noteEl = document.createElement('div');
+  noteEl.className = 'small-muted';
+  noteEl.style.cssText = 'margin:8px 0 4px;font-style:italic;';
+  noteEl.textContent = 'This is a quarterly invoice with additional periods (shown read-only below — edit them by re-registering, or ask for period-editing support here).';
+  container.appendChild(noteEl);
+
+  if(registry.period1From || registry.period1To){
+    const p1Label = document.createElement('div');
+    p1Label.style.cssText = 'font-size:12px;font-weight:700;color:#374151;margin:8px 0 2px;';
+    p1Label.textContent = 'Period 1 (' + formatDate(registry.period1From) + ' — ' + formatDate(registry.period1To) + ')';
+    container.appendChild(p1Label);
+  }
+
+  periods.forEach((p, i) => {
+    const label = document.createElement('div');
+    label.style.cssText = 'font-size:12px;font-weight:700;color:#374151;margin:8px 0 2px;';
+    label.textContent = 'Period ' + (i + 2) + ' (' + formatDate(p.fromDate) + ' — ' + formatDate(p.toDate) + ')';
+    container.appendChild(label);
+
+    const unitDetails = Array.isArray(p.unitDetails) ? p.unitDetails : [];
+    if(unitDetails.length){
+      const detailTableEl = document.createElement('div'); detailTableEl.className = 'registry-unit-detail-table';
+      container.appendChild(detailTableEl);
+      renderRegistryUnitDetailTable(detailTableEl, unitDetails);
+    } else {
+      const noneEl = document.createElement('div'); noneEl.className = 'small-muted'; noneEl.textContent = '(no units)';
+      container.appendChild(noneEl);
+    }
+  });
 }
 
 function openRegistryCommentModal(registry){
@@ -10851,29 +10984,31 @@ function getDayState(unitIdNorm, y, m, d, registries, invoices, unit){
     result.disabled = isDateInDisabledPeriod(y, m, d, periods);
   }catch(e){}
 
-  // Check registry coverage
+  // Check registry coverage — per-period for a quarterly invoice (see getRegistryCoveragePeriods)
   registries.forEach(reg => {
-    const units = Array.isArray(reg.units) ? reg.units : [];
-    const inReg = units.some(u => String(u).trim().toLowerCase() === unitIdNorm);
-    if(!inReg) return;
-    if(!reg.periodStart || !reg.periodEnd) return;
+    const slices = getRegistryCoveragePeriods(reg);
+    slices.forEach(slice => {
+      const inSlice = slice.units.some(u => String(u).trim().toLowerCase() === unitIdNorm);
+      if(!inSlice) return;
+      if(!slice.from || !slice.to) return;
 
-    const sp = String(reg.periodStart).split('-');
-    const ep = String(reg.periodEnd).split('-');
-    if(sp.length < 3 || ep.length < 3) return;
+      const sp = String(slice.from).split('-');
+      const ep = String(slice.to).split('-');
+      if(sp.length < 3 || ep.length < 3) return;
 
-    const start = `${sp[0]}-${sp[1].padStart(2,'0')}-${sp[2].padStart(2,'0')}`;
-    const end = `${ep[0]}-${ep[1].padStart(2,'0')}-${ep[2].padStart(2,'0')}`;
-    if(dateStr < start || dateStr > end) return;
+      const start = `${sp[0]}-${sp[1].padStart(2,'0')}-${sp[2].padStart(2,'0')}`;
+      const end = `${ep[0]}-${ep[1].padStart(2,'0')}-${ep[2].padStart(2,'0')}`;
+      if(dateStr < start || dateStr > end) return;
 
-    let cat = String(reg.category || '').toLowerCase();
-    if(!cat){
-      const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
-      cat = inv ? String(inv.category||'').toLowerCase() : '';
-    }
+      let cat = String(reg.category || '').toLowerCase();
+      if(!cat){
+        const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
+        cat = inv ? String(inv.category||'').toLowerCase() : '';
+      }
 
-    if(cat === 'rental'){ result.rentalCount++; result.covered = true; }
-    if(cat === 'credit'){ result.credit = true; }
+      if(cat === 'rental'){ result.rentalCount++; result.covered = true; }
+      if(cat === 'credit'){ result.credit = true; }
+    });
   });
 
   if(result.rentalCount > 1) result.overlap = true;
@@ -10886,17 +11021,18 @@ function showDayDetail(unit, y, m, d, registries, invoices, popupEl){
   const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
   const monthName = new Date(y,m,d).toLocaleString('en-US', { month:'long', day:'numeric', year:'numeric' });
 
-  const matchingRegs = registries.filter(reg => {
-    const units = Array.isArray(reg.units) ? reg.units : [];
-    if(!units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return false;
-    if(!reg.periodStart || !reg.periodEnd) return false;
-    const sp = String(reg.periodStart).split('-');
-    const ep = String(reg.periodEnd).split('-');
+  // Match per-period for a quarterly invoice (see getRegistryCoveragePeriods) — the card shown
+  // below still displays the invoice's own general WD/period/amount info either way.
+  const matchingRegs = registries.filter(reg => getRegistryCoveragePeriods(reg).some(slice => {
+    if(!slice.units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return false;
+    if(!slice.from || !slice.to) return false;
+    const sp = String(slice.from).split('-');
+    const ep = String(slice.to).split('-');
     if(sp.length < 3 || ep.length < 3) return false;
     const start = `${sp[0]}-${sp[1].padStart(2,'0')}-${sp[2].padStart(2,'0')}`;
     const end = `${ep[0]}-${ep[1].padStart(2,'0')}-${ep[2].padStart(2,'0')}`;
     return dateStr >= start && dateStr <= end;
-  });
+  }));
 
   // Newest coverage period first
   matchingRegs.sort((a, b) => new Date(b.periodStart || 0) - new Date(a.periodStart || 0));
@@ -10945,19 +11081,20 @@ function showMonthDetail(unit, y, m, popupEl){
   const invoices = state.invoices || [];
   const daysInMonth = new Date(y, m+1, 0).getDate();
 
-  const matchingRegs = registries.filter(reg => {
-    const units = Array.isArray(reg.units) ? reg.units : [];
-    if(!units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return false;
-    if(!reg.periodStart || !reg.periodEnd) return false;
-    const sp = String(reg.periodStart).split('-');
-    const ep = String(reg.periodEnd).split('-');
+  // Match per-period for a quarterly invoice (see getRegistryCoveragePeriods) — the card shown
+  // below still displays the invoice's own general WD/period/amount info either way.
+  const matchingRegs = registries.filter(reg => getRegistryCoveragePeriods(reg).some(slice => {
+    if(!slice.units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return false;
+    if(!slice.from || !slice.to) return false;
+    const sp = String(slice.from).split('-');
+    const ep = String(slice.to).split('-');
     if(sp.length < 3 || ep.length < 3) return false;
     const start = new Date(parseInt(sp[0]), parseInt(sp[1])-1, parseInt(sp[2]));
     const end = new Date(parseInt(ep[0]), parseInt(ep[1])-1, parseInt(ep[2]));
     const mStart = new Date(y, m, 1);
     const mEnd = new Date(y, m, daysInMonth);
     return start <= mEnd && end >= mStart;
-  });
+  }));
 
   // Newest coverage period first
   matchingRegs.sort((a, b) => new Date(b.periodStart || 0) - new Date(a.periodStart || 0));
@@ -11050,32 +11187,35 @@ function buildUnitStats(unit){
     let hasCredit = false;
 
     registries.forEach(reg => {
-      const units = Array.isArray(reg.units) ? reg.units : [];
-      if(!units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return;
-      if(!reg.periodStart || !reg.periodEnd) return;
-      const sp = String(reg.periodStart).split('-');
-      const ep = String(reg.periodEnd).split('-');
-      if(sp.length < 3 || ep.length < 3) return;
-      const start = new Date(parseInt(sp[0]), parseInt(sp[1])-1, parseInt(sp[2]));
-      const end = new Date(parseInt(ep[0]), parseInt(ep[1])-1, parseInt(ep[2]));
-      const mStart = new Date(y, m, 1);
-      const mEnd = new Date(y, m, daysInMonth);
-      if(start > mEnd || end < mStart) return;
-
       let cat = String(reg.category||'').toLowerCase();
       if(!cat){
         const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
         cat = inv ? String(inv.category||'').toLowerCase() : '';
       }
-      if(cat === 'rental'){
-        hasCoverage = true;
-        // Count days overlap with month
-        const effectiveStart = start < mStart ? mStart : start;
-        const effectiveEnd = end > mEnd ? mEnd : end;
-        const days = Math.floor((effectiveEnd - effectiveStart) / 86400000) + 1;
-        totalDaysBilled += Math.max(0, days);
-      }
-      if(cat === 'credit') hasCredit = true;
+      // Per-period for a quarterly invoice (see getRegistryCoveragePeriods) — days billed are
+      // summed per matching slice so a unit only in one period isn't billed for the others.
+      getRegistryCoveragePeriods(reg).forEach(slice => {
+        if(!slice.units.some(u => String(u).trim().toLowerCase() === unitIdNorm)) return;
+        if(!slice.from || !slice.to) return;
+        const sp = String(slice.from).split('-');
+        const ep = String(slice.to).split('-');
+        if(sp.length < 3 || ep.length < 3) return;
+        const start = new Date(parseInt(sp[0]), parseInt(sp[1])-1, parseInt(sp[2]));
+        const end = new Date(parseInt(ep[0]), parseInt(ep[1])-1, parseInt(ep[2]));
+        const mStart = new Date(y, m, 1);
+        const mEnd = new Date(y, m, daysInMonth);
+        if(start > mEnd || end < mStart) return;
+
+        if(cat === 'rental'){
+          hasCoverage = true;
+          // Count days overlap with month
+          const effectiveStart = start < mStart ? mStart : start;
+          const effectiveEnd = end > mEnd ? mEnd : end;
+          const days = Math.floor((effectiveEnd - effectiveStart) / 86400000) + 1;
+          totalDaysBilled += Math.max(0, days);
+        }
+        if(cat === 'credit') hasCredit = true;
+      });
     });
 
     if(hasCoverage) monthsCovered++;

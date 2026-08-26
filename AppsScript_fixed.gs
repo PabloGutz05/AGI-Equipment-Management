@@ -55,7 +55,7 @@ function handleRequest(e) {
         result = updateRow(sheet, postData.id, postData.data);
         break;
       case 'delete':
-        result = deleteRow(sheet, postData.id);
+        result = deleteRow(sheet, postData.id, postData.fallbackMatch);
         break;
       case 'getMeta':
         result = getMeta();
@@ -169,7 +169,7 @@ function updateRow(sheetName, id, data) {
   throw new Error('Row not found: ' + id);
 }
 
-function deleteRow(sheetName, id) {
+function deleteRow(sheetName, id, fallbackMatch) {
   const sheet = getSheet(sheetName);
   const allData = sheet.getDataRange().getValues();
   const headers = allData[0];
@@ -182,6 +182,26 @@ function deleteRow(sheetName, id) {
       return { deleted: true, id };
     }
   }
+
+  // Fall back to matching by other identifying fields (e.g. wdNumber + docNumber) when the id
+  // itself can't be found — protects against a row whose id ended up blank or mismatched from
+  // an earlier write issue, which would otherwise leave that row permanently un-deletable.
+  if (fallbackMatch && typeof fallbackMatch === 'object') {
+    const matchKeys = Object.keys(fallbackMatch).filter(k => fallbackMatch[k] !== undefined && fallbackMatch[k] !== '');
+    if (matchKeys.length > 0) {
+      const colIdxs = matchKeys.map(k => headers.indexOf(k));
+      if (colIdxs.every(ci => ci !== -1)) {
+        for (let i = 1; i < allData.length; i++) {
+          const isMatch = matchKeys.every((k, mi) => String(allData[i][colIdxs[mi]]).trim().toLowerCase() === String(fallbackMatch[k]).trim().toLowerCase());
+          if (isMatch) {
+            sheet.deleteRow(i + 1);
+            return { deleted: true, id: allData[i][idCol], matchedByFallback: true };
+          }
+        }
+      }
+    }
+  }
+
   throw new Error('Row not found: ' + id);
 }
 

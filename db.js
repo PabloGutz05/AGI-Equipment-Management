@@ -280,8 +280,8 @@ const DB = {
     return DB.post({ action: 'update', sheet: 'invoices', id: record.id, data });
   },
 
-  async deleteRegistry(id) {
-    return DB.post({ action: 'delete', sheet: 'invoices', id });
+  async deleteRegistry(id, fallbackMatch) {
+    return DB.post({ action: 'delete', sheet: 'invoices', id, fallbackMatch });
   },
 
   async saveUnit(record) {
