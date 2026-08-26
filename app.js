@@ -587,10 +587,15 @@ qs('#invoiceForm').addEventListener('submit', e=>{
   // quarterly invoice with additional periods, that's the sum across every period's table.
   try{
     if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
-    if(_invoicePeriods.length > 0){
-      const missingDates = _invoicePeriods.some(p => !p.fromDate || !p.toDate);
+    if(_invoiceQuarterlyPeriod1Active){
+      const missingP1Dates = !_invoicePeriod1.fromDate || !_invoicePeriod1.toDate;
+      const missingDates = missingP1Dates || _invoicePeriods.some(p => !p.fromDate || !p.toDate);
       if(missingDates){
-        alert('Every additional period needs both a From and To date before submitting.');
+        alert('Every period (including Period 1) needs both a From and To date before submitting.');
+        return;
+      }
+      if(!validateInvoicePeriodRanges()){
+        alert('Period date ranges must fall within the invoice\'s overall declared period (From/To above) and must not overlap each other.');
         return;
       }
       if(!invoiceQuarterlyPeriodsMatchDeclared()){
@@ -1006,6 +1011,12 @@ qs('#invoiceForm').addEventListener('submit', e=>{
           return { fromDate: p.fromDate, toDate: p.toDate, unitDetails: periodUnitDetails };
         });
       }
+      // Period 1's own declared sub-range (distinct from registry.periodStart/periodEnd, which
+      // stays the invoice's overall declared period).
+      if(_invoiceQuarterlyPeriod1Active){
+        registry.period1From = _invoicePeriod1.fromDate || '';
+        registry.period1To = _invoicePeriod1.toDate || '';
+      }
 
       state.registries = state.registries || [];
       state.registries.push(registry);
@@ -1111,10 +1122,15 @@ function onInvoiceLeaseSelectionChange(){
 // A lease invoiced quarterly is billed every 4 months and covers 3 separate periods per unit
 // in that one invoice. "Add Period" (enabled only while a Quarterly-arrangement lease is
 // selected) adds another full Tax/Other/Amount breakdown table with its own editable From/To
-// dates, seeded with whichever units are currently checked at the moment it's clicked. Each
-// period is independent after that — units can be individually removed from just one period.
+// sub-period, seeded with whichever units are currently checked at the moment it's clicked.
+// Each period is independent after that — units can be individually removed from just one
+// period. The form's own Period From/To fields stay put as the invoice's overall declared
+// period (general information); every period table — including Period 1 — declares its own
+// From/To sub-range, which must fall inside that overall range and never overlap another.
 let _invoicePeriods = [];
 let _invoicePeriodSeq = 0;
+let _invoicePeriod1 = { fromDate: '', toDate: '', fromInputEl: null, toInputEl: null };
+let _invoiceQuarterlyPeriod1Active = false;
 
 function invoiceHasQuarterlyLeaseSelected(){
   const selectedLeases = getSelectedInvoiceLeases();
@@ -1134,13 +1150,36 @@ function updateInvoiceAddPeriodAvailability(){
   btn.style.color = enabled ? '' : '#9ca3af';
 }
 
-// While a quarterly lease AND at least one unit are selected, the plain default breakdown
-// table gets relocated into a "Period 1" card — identical in style to the cards "Add Period"
-// creates, with its own From/To (the very same fields the form already had, just moved so
-// period 1 is declared exactly like every other period instead of implicitly). Leaving
-// quarterly mode puts everything back exactly where it started.
-let _invoiceQuarterlyPeriod1Active = false;
+// Builds one period card's header row (title + From/To date inputs, optionally a Remove
+// button) — shared by Period 1 and every additional period so they're all visually identical.
+function buildInvoicePeriodCardHeader(opts){
+  const headerRow = document.createElement('div');
+  headerRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;';
+  const titleEl = document.createElement('strong'); titleEl.textContent = opts.label;
+  const fromLabel = document.createElement('span'); fromLabel.className = 'small-muted'; fromLabel.textContent = 'From';
+  const fromInput = document.createElement('input'); fromInput.type = 'date'; fromInput.value = opts.fromValue || '';
+  const toLabel = document.createElement('span'); toLabel.className = 'small-muted'; toLabel.textContent = 'To';
+  const toInput = document.createElement('input'); toInput.type = 'date'; toInput.value = opts.toValue || '';
+  fromInput.addEventListener('input', () => { opts.onFromChange(fromInput.value); validateInvoicePeriodRanges(); });
+  toInput.addEventListener('input', () => { opts.onToChange(toInput.value); validateInvoicePeriodRanges(); });
+  headerRow.appendChild(titleEl);
+  headerRow.appendChild(fromLabel); headerRow.appendChild(fromInput);
+  headerRow.appendChild(toLabel); headerRow.appendChild(toInput);
+  if(opts.onRemove){
+    const removePeriodBtn = document.createElement('button');
+    removePeriodBtn.type = 'button';
+    removePeriodBtn.textContent = 'Remove Period';
+    removePeriodBtn.style.cssText = 'margin-left:auto;color:#dc2626;';
+    removePeriodBtn.addEventListener('click', opts.onRemove);
+    headerRow.appendChild(removePeriodBtn);
+  }
+  return { headerRow, fromInput, toInput };
+}
 
+// While a quarterly lease AND at least one unit are selected, the plain default breakdown
+// table is wrapped in a "Period 1" card — identical in style to the cards "Add Period"
+// creates, with its own dedicated From/To sub-period (separate from the invoice's overall
+// declared From/To above). Leaving quarterly mode puts the table back exactly where it was.
 function updateInvoiceQuarterlyPeriod1Mode(){
   const shouldBeActive = invoiceHasQuarterlyLeaseSelected() && getSelectedInvoiceUnits().length > 0;
   if(shouldBeActive === _invoiceQuarterlyPeriod1Active) return;
@@ -1148,9 +1187,7 @@ function updateInvoiceQuarterlyPeriod1Mode(){
 
   const breakdownEl = qs('#invoiceUnitBreakdown');
   const breakdownAnchor = qs('#invoiceUnitBreakdownAnchor');
-  const fieldsWrap = qs('#invoiceMainPeriodFieldsWrap');
-  const fieldsAnchor = qs('#invoiceMainPeriodFieldsAnchor');
-  if(!breakdownEl || !breakdownAnchor || !fieldsWrap || !fieldsAnchor) return;
+  if(!breakdownEl || !breakdownAnchor) return;
 
   if(shouldBeActive){
     let periodCard = qs('#invoicePeriod1Card');
@@ -1159,18 +1196,27 @@ function updateInvoiceQuarterlyPeriod1Mode(){
       periodCard.id = 'invoicePeriod1Card';
       periodCard.className = 'invoice-period-block';
       periodCard.style.cssText = 'border:1px solid #e6e9ee;border-radius:8px;padding:10px;margin-top:6px;background:#fafbfc;';
-      const titleEl = document.createElement('strong'); titleEl.textContent = 'Period 1';
-      titleEl.style.cssText = 'display:block;margin-bottom:8px;';
-      periodCard.appendChild(titleEl);
+      const { headerRow, fromInput, toInput } = buildInvoicePeriodCardHeader({
+        label: 'Period 1',
+        fromValue: _invoicePeriod1.fromDate,
+        toValue: _invoicePeriod1.toDate,
+        onFromChange: (v) => { _invoicePeriod1.fromDate = v; },
+        onToChange: (v) => { _invoicePeriod1.toDate = v; }
+      });
+      _invoicePeriod1.fromInputEl = fromInput;
+      _invoicePeriod1.toInputEl = toInput;
+      periodCard.appendChild(headerRow);
       breakdownAnchor.parentNode.insertBefore(periodCard, breakdownAnchor);
     }
-    periodCard.appendChild(fieldsWrap);
     periodCard.appendChild(breakdownEl);
+    updateInvoicePeriodDateBounds();
+    validateInvoicePeriodRanges();
   } else {
-    fieldsAnchor.parentNode.insertBefore(fieldsWrap, fieldsAnchor);
     breakdownAnchor.parentNode.insertBefore(breakdownEl, breakdownAnchor.nextSibling);
     const periodCard = qs('#invoicePeriod1Card');
     if(periodCard) periodCard.remove();
+    _invoicePeriod1.fromInputEl = null;
+    _invoicePeriod1.toInputEl = null;
   }
 }
 
@@ -1192,28 +1238,21 @@ function renderInvoicePeriodBlock(period){
   block.dataset.periodId = period.id;
   block.style.cssText = 'border:1px solid #e6e9ee;border-radius:8px;padding:10px;margin-top:10px;background:#fafbfc;';
 
-  const headerRow = document.createElement('div');
-  headerRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;';
-  const titleEl = document.createElement('strong'); titleEl.textContent = 'Additional Period';
-  const fromLabel = document.createElement('span'); fromLabel.className = 'small-muted'; fromLabel.textContent = 'From';
-  const fromInput = document.createElement('input'); fromInput.type = 'date'; fromInput.value = period.fromDate || '';
-  const toLabel = document.createElement('span'); toLabel.className = 'small-muted'; toLabel.textContent = 'To';
-  const toInput = document.createElement('input'); toInput.type = 'date'; toInput.value = period.toDate || '';
-  fromInput.addEventListener('input', () => { period.fromDate = fromInput.value; });
-  toInput.addEventListener('input', () => { period.toDate = toInput.value; });
-  const removePeriodBtn = document.createElement('button');
-  removePeriodBtn.type = 'button';
-  removePeriodBtn.textContent = 'Remove Period';
-  removePeriodBtn.style.cssText = 'margin-left:auto;color:#dc2626;';
-  removePeriodBtn.addEventListener('click', () => {
-    _invoicePeriods = _invoicePeriods.filter(p => p.id !== period.id);
-    block.remove();
-    updateQuarterlyPeriodsAggregateTotal();
+  const { headerRow, fromInput, toInput } = buildInvoicePeriodCardHeader({
+    label: 'Additional Period',
+    fromValue: period.fromDate,
+    toValue: period.toDate,
+    onFromChange: (v) => { period.fromDate = v; },
+    onToChange: (v) => { period.toDate = v; },
+    onRemove: () => {
+      _invoicePeriods = _invoicePeriods.filter(p => p.id !== period.id);
+      block.remove();
+      updateQuarterlyPeriodsAggregateTotal();
+      validateInvoicePeriodRanges();
+    }
   });
-  headerRow.appendChild(titleEl);
-  headerRow.appendChild(fromLabel); headerRow.appendChild(fromInput);
-  headerRow.appendChild(toLabel); headerRow.appendChild(toInput);
-  headerRow.appendChild(removePeriodBtn);
+  period.fromInputEl = fromInput;
+  period.toInputEl = toInput;
   block.appendChild(headerRow);
 
   const tableWrap = document.createElement('div'); tableWrap.id = period.wrapId; tableWrap.className = 'invoice-unit-breakdown';
@@ -1221,11 +1260,68 @@ function renderInvoicePeriodBlock(period){
   container.appendChild(block);
 
   renderInvoicePeriodTable(period);
+  updateInvoicePeriodDateBounds();
+  validateInvoicePeriodRanges();
+}
+
+// Every period's date inputs are bounded (native min/max) by the invoice's own overall
+// declared From/To — the browser's date picker itself won't offer a date outside that range.
+function updateInvoicePeriodDateBounds(){
+  const declaredFrom = (qs('#invoicePeriodStart')||{}).value || '';
+  const declaredTo = (qs('#invoicePeriodEnd')||{}).value || '';
+  const inputs = [];
+  if(_invoiceQuarterlyPeriod1Active && _invoicePeriod1.fromInputEl){ inputs.push(_invoicePeriod1.fromInputEl, _invoicePeriod1.toInputEl); }
+  _invoicePeriods.forEach(p => { if(p.fromInputEl){ inputs.push(p.fromInputEl, p.toInputEl); } });
+  inputs.forEach(inp => {
+    if(!inp) return;
+    if(declaredFrom) inp.min = declaredFrom; else inp.removeAttribute('min');
+    if(declaredTo) inp.max = declaredTo; else inp.removeAttribute('max');
+  });
+}
+
+function getActiveInvoicePeriodEntries(){
+  const list = [];
+  if(_invoiceQuarterlyPeriod1Active) list.push({ label: 'Period 1', period: _invoicePeriod1 });
+  _invoicePeriods.forEach((p, i) => list.push({ label: 'Period ' + (i + 2), period: p }));
+  return list;
+}
+
+// Flags (red border) any period whose From/To falls outside the invoice's overall declared
+// period, or overlaps another period's range — the hard backstop behind the native min/max
+// bounds above (which a manually-typed date could otherwise bypass).
+function validateInvoicePeriodRanges(){
+  const entries = getActiveInvoicePeriodEntries();
+  if(entries.length === 0) return true;
+  const declaredFrom = (qs('#invoicePeriodStart')||{}).value || '';
+  const declaredTo = (qs('#invoicePeriodEnd')||{}).value || '';
+  entries.forEach(({period}) => {
+    if(period.fromInputEl) period.fromInputEl.style.borderColor = '';
+    if(period.toInputEl) period.toInputEl.style.borderColor = '';
+  });
+  let allValid = true;
+  entries.forEach(({period}, idx) => {
+    if(!period.fromDate || !period.toDate) return;
+    let invalid = false;
+    if(period.fromDate > period.toDate) invalid = true;
+    if(declaredFrom && period.fromDate < declaredFrom) invalid = true;
+    if(declaredTo && period.toDate > declaredTo) invalid = true;
+    entries.forEach((other, oidx) => {
+      if(oidx === idx || !other.period.fromDate || !other.period.toDate) return;
+      const overlaps = period.fromDate <= other.period.toDate && other.period.fromDate <= period.toDate;
+      if(overlaps) invalid = true;
+    });
+    if(invalid){
+      allValid = false;
+      if(period.fromInputEl) period.fromInputEl.style.borderColor = '#dc2626';
+      if(period.toInputEl) period.toInputEl.style.borderColor = '#dc2626';
+    }
+  });
+  return allValid;
 }
 
 function updateQuarterlyPeriodsAggregateTotal(){
   const el = qs('#invoicePeriodsAggregateTotal'); if(!el) return;
-  if(_invoicePeriods.length === 0){ el.textContent = ''; return; }
+  if(!_invoiceQuarterlyPeriod1Active){ el.textContent = ''; return; }
   let sum = 0;
   ['invoiceUnitBreakdown'].concat(_invoicePeriods.map(p => p.wrapId)).forEach(wrapId => {
     const wrap = qs('#' + wrapId); if(!wrap) return;
@@ -1243,7 +1339,7 @@ function updateQuarterlyPeriodsAggregateTotal(){
 }
 
 function invoiceQuarterlyPeriodsMatchDeclared(){
-  if(_invoicePeriods.length === 0) return true;
+  if(!_invoiceQuarterlyPeriod1Active) return true;
   let sum = 0;
   ['invoiceUnitBreakdown'].concat(_invoicePeriods.map(p => p.wrapId)).forEach(wrapId => {
     const wrap = qs('#' + wrapId); if(!wrap) return;
@@ -1258,11 +1354,17 @@ function invoiceQuarterlyPeriodsMatchDeclared(){
 
 function resetInvoiceQuarterlyPeriods(){
   _invoicePeriods = [];
+  _invoicePeriod1 = { fromDate: '', toDate: '', fromInputEl: null, toInputEl: null };
   const container = qs('#invoicePeriodsContainer'); if(container) container.innerHTML = '';
   const totalEl = qs('#invoicePeriodsAggregateTotal'); if(totalEl) totalEl.textContent = '';
   updateInvoiceAddPeriodAvailability();
   updateInvoiceQuarterlyPeriod1Mode();
 }
+
+const invoicePeriodStartEl = qs('#invoicePeriodStart');
+const invoicePeriodEndEl = qs('#invoicePeriodEnd');
+if(invoicePeriodStartEl) invoicePeriodStartEl.addEventListener('input', () => { updateInvoicePeriodDateBounds(); validateInvoicePeriodRanges(); });
+if(invoicePeriodEndEl) invoicePeriodEndEl.addEventListener('input', () => { updateInvoicePeriodDateBounds(); validateInvoicePeriodRanges(); });
 
 const invoiceAddPeriodBtn = qs('#invoiceAddPeriodBtn');
 if(invoiceAddPeriodBtn){
