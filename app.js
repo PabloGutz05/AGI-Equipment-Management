@@ -1270,17 +1270,15 @@ function renderInvoicePeriodBlock(period){
 
 // Every period's date inputs are bounded (native min/max) by the invoice's own overall
 // declared From/To — the browser's date picker itself won't offer a date outside that range.
+// Deliberately NOT setting native HTML5 min/max on these date inputs: a real click on the
+// submit button runs the browser's own constraint validation before our 'submit' handler ever
+// sees the event, and if any value violated min/max at that moment, the browser would silently
+// block submission and paint its own native invalid styling — a second, uncontrollable "red"
+// on top of (and inconsistent with) our own validateInvoicePeriodRanges() below. All the actual
+// out-of-range/overlap enforcement already happens there and at submit time, so native min/max
+// would only add a confusing, redundant failure mode. Kept as a no-op since it's still called
+// from a few places below in case bounds-driven UI is wanted here again later.
 function updateInvoicePeriodDateBounds(){
-  const declaredFrom = (qs('#invoicePeriodStart')||{}).value || '';
-  const declaredTo = (qs('#invoicePeriodEnd')||{}).value || '';
-  const inputs = [];
-  if(_invoiceQuarterlyPeriod1Active && _invoicePeriod1.fromInputEl){ inputs.push(_invoicePeriod1.fromInputEl, _invoicePeriod1.toInputEl); }
-  _invoicePeriods.forEach(p => { if(p.fromInputEl){ inputs.push(p.fromInputEl, p.toInputEl); } });
-  inputs.forEach(inp => {
-    if(!inp) return;
-    if(declaredFrom) inp.min = declaredFrom; else inp.removeAttribute('min');
-    if(declaredTo) inp.max = declaredTo; else inp.removeAttribute('max');
-  });
 }
 
 function getActiveInvoicePeriodEntries(){
@@ -10793,6 +10791,19 @@ function openUnitWdNumbersModal(unitId, year, month, unitIdList) {
   // once the modal's (possibly tall) content has actually painted.
   try{ requestAnimationFrame(restoreScroll); }catch(e){}
   setTimeout(restoreScroll, 0);
+  // Belt-and-suspenders: whatever is nudging the page, actively correct it for a short window
+  // after opening rather than only re-asserting a fixed few times immediately — catches a
+  // scroll that happens slightly later (e.g. after a delayed layout/reflow).
+  let restoreScrollGuardUntil = Date.now() + 600;
+  const restoreScrollGuard = () => {
+    if(Date.now() > restoreScrollGuardUntil){
+      window.removeEventListener('scroll', restoreScrollGuard);
+      return;
+    }
+    if(window.scrollX !== scrollX || window.scrollY !== scrollY) window.scrollTo(scrollX, scrollY);
+  };
+  window.addEventListener('scroll', restoreScrollGuard);
+  setTimeout(() => window.removeEventListener('scroll', restoreScrollGuard), 600);
 }
 
 function renderUnitDetailModal(unitId) {
