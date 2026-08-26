@@ -161,14 +161,18 @@
                 <span style="font-size:11px;font-weight:600;color:#6b7280;">Supplier Inv. Date</span>
                 <input id="invoiceSupplierInvoiceDate" name="invoiceSupplierInvoiceDate" type="date">
               </label>
-              <label style="display:flex;flex-direction:column;gap:2px;">
-                <span style="font-size:11px;font-weight:600;color:#6b7280;">From</span>
-                <input id="invoicePeriodStart" name="invoicePeriodStart" type="date">
-              </label>
-              <label style="display:flex;flex-direction:column;gap:2px;">
-                <span style="font-size:11px;font-weight:600;color:#6b7280;">To</span>
-                <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date">
-              </label>
+              <div id="invoiceMainPeriodFieldsWrap" style="display:flex;gap:16px;">
+                <label style="display:flex;flex-direction:column;gap:2px;">
+                  <span style="font-size:11px;font-weight:600;color:#6b7280;">From</span>
+                  <input id="invoicePeriodStart" name="invoicePeriodStart" type="date">
+                </label>
+                <label style="display:flex;flex-direction:column;gap:2px;">
+                  <span style="font-size:11px;font-weight:600;color:#6b7280;">To</span>
+                  <input id="invoicePeriodEnd" name="invoicePeriodEnd" type="date">
+                </label>
+              </div>
+              <!-- Anchor the main Period fields snap back to when leaving quarterly-period mode -->
+              <span id="invoiceMainPeriodFieldsAnchor" style="display:none;"></span>
               <!-- Submitted date: pre-filled to today's date (editable) -->
               <label style="display:flex;flex-direction:column;gap:2px;">
                 <span style="font-size:11px;font-weight:600;color:#6b7280;">Submitted</span>
@@ -205,6 +209,9 @@
             </div>
             <!-- Lease detail table: informational only, mirrors the selected leases' info -->
             <div id="invoiceLeaseDetail" class="invoice-unit-breakdown" style="display:none"></div>
+            <!-- Anchor marking where the plain (non-quarterly) breakdown table normally sits;
+                 in quarterly-period mode it's relocated inside a "Period 1" card instead. -->
+            <span id="invoiceUnitBreakdownAnchor" style="display:none;"></span>
             <!-- Per-unit Company/UnitId/Lease/Cost Center + Tax/Charge breakdown; always visible,
                  defaults to a single empty placeholder row until units are selected -->
             <div id="invoiceUnitBreakdown" class="invoice-unit-breakdown"></div>

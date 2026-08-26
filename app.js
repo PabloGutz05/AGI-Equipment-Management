@@ -1104,6 +1104,7 @@ function onInvoiceLeaseSelectionChange(){
   // ensure the Submitted date is prefilled to today's date (predetermined actual date)
   const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
   if(typeof updateInvoiceAddPeriodAvailability === 'function') updateInvoiceAddPeriodAvailability();
+  if(typeof updateInvoiceQuarterlyPeriod1Mode === 'function') updateInvoiceQuarterlyPeriod1Mode();
 }
 
 // ========== Quarterly leases: multiple invoice periods per WD invoice ==========
@@ -1125,7 +1126,52 @@ function invoiceHasQuarterlyLeaseSelected(){
 
 function updateInvoiceAddPeriodAvailability(){
   const btn = qs('#invoiceAddPeriodBtn'); if(!btn) return;
-  btn.disabled = !invoiceHasQuarterlyLeaseSelected();
+  const enabled = invoiceHasQuarterlyLeaseSelected();
+  btn.disabled = !enabled;
+  btn.style.opacity = enabled ? '1' : '0.5';
+  btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+  btn.style.background = enabled ? '' : '#e5e7eb';
+  btn.style.color = enabled ? '' : '#9ca3af';
+}
+
+// While a quarterly lease AND at least one unit are selected, the plain default breakdown
+// table gets relocated into a "Period 1" card — identical in style to the cards "Add Period"
+// creates, with its own From/To (the very same fields the form already had, just moved so
+// period 1 is declared exactly like every other period instead of implicitly). Leaving
+// quarterly mode puts everything back exactly where it started.
+let _invoiceQuarterlyPeriod1Active = false;
+
+function updateInvoiceQuarterlyPeriod1Mode(){
+  const shouldBeActive = invoiceHasQuarterlyLeaseSelected() && getSelectedInvoiceUnits().length > 0;
+  if(shouldBeActive === _invoiceQuarterlyPeriod1Active) return;
+  _invoiceQuarterlyPeriod1Active = shouldBeActive;
+
+  const breakdownEl = qs('#invoiceUnitBreakdown');
+  const breakdownAnchor = qs('#invoiceUnitBreakdownAnchor');
+  const fieldsWrap = qs('#invoiceMainPeriodFieldsWrap');
+  const fieldsAnchor = qs('#invoiceMainPeriodFieldsAnchor');
+  if(!breakdownEl || !breakdownAnchor || !fieldsWrap || !fieldsAnchor) return;
+
+  if(shouldBeActive){
+    let periodCard = qs('#invoicePeriod1Card');
+    if(!periodCard){
+      periodCard = document.createElement('div');
+      periodCard.id = 'invoicePeriod1Card';
+      periodCard.className = 'invoice-period-block';
+      periodCard.style.cssText = 'border:1px solid #e6e9ee;border-radius:8px;padding:10px;margin-top:6px;background:#fafbfc;';
+      const titleEl = document.createElement('strong'); titleEl.textContent = 'Period 1';
+      titleEl.style.cssText = 'display:block;margin-bottom:8px;';
+      periodCard.appendChild(titleEl);
+      breakdownAnchor.parentNode.insertBefore(periodCard, breakdownAnchor);
+    }
+    periodCard.appendChild(fieldsWrap);
+    periodCard.appendChild(breakdownEl);
+  } else {
+    fieldsAnchor.parentNode.insertBefore(fieldsWrap, fieldsAnchor);
+    breakdownAnchor.parentNode.insertBefore(breakdownEl, breakdownAnchor.nextSibling);
+    const periodCard = qs('#invoicePeriod1Card');
+    if(periodCard) periodCard.remove();
+  }
 }
 
 function renderInvoicePeriodTable(period){
@@ -1215,6 +1261,7 @@ function resetInvoiceQuarterlyPeriods(){
   const container = qs('#invoicePeriodsContainer'); if(container) container.innerHTML = '';
   const totalEl = qs('#invoicePeriodsAggregateTotal'); if(totalEl) totalEl.textContent = '';
   updateInvoiceAddPeriodAvailability();
+  updateInvoiceQuarterlyPeriod1Mode();
 }
 
 const invoiceAddPeriodBtn = qs('#invoiceAddPeriodBtn');
@@ -1228,6 +1275,7 @@ if(invoiceAddPeriodBtn){
     renderInvoicePeriodBlock(period);
   });
 }
+updateInvoiceAddPeriodAvailability();
 
 // Always-visible box + search input (same format as the Registry Edit modal's lease/unit
 // pickers) — no more toggle button / floating dropdown-panel.
@@ -2021,6 +2069,7 @@ function refreshInvoiceBreakdownIfVisible(){
   if(wrap && wrap.style.display !== 'none') renderInvoiceUnitBreakdown();
 }
 function renderInvoiceUnitBreakdown(seed){
+  if(typeof updateInvoiceQuarterlyPeriod1Mode === 'function') updateInvoiceQuarterlyPeriod1Mode();
   renderUnitBreakdownTable('invoiceUnitBreakdown', getSelectedInvoiceUnits(), 'invoiceAmount', seed, { showEmptyRow: true });
 }
 
