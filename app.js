@@ -5561,6 +5561,39 @@ function isDateInDisabledPeriod(year, month, day, disabledPeriods){
   });
 }
 
+// Every date range this unit is covered by an invoice that's currently tracked as disputed
+// (Invoice Tracking tab) — mirrors getDisabledPeriods/isDateInDisabledPeriod so day-square
+// rendering can flag disputed coverage the same way it already flags disabled periods.
+function getDisputedPeriods(unit){
+  const unitId = (unit.unitId || unit.id || '').toString().trim().toLowerCase();
+  if(!unitId) return [];
+  const disputedWds = new Set(
+    (state.invoiceTracking || [])
+      .filter(t => Array.isArray(t.unitsInDispute) && t.unitsInDispute.some(u => (u||'').toString().trim().toLowerCase() === unitId))
+      .map(t => (t.wdInvoiceNum||'').toString().trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if(disputedWds.size === 0) return [];
+  const periods = [];
+  (state.registries || []).forEach(reg => {
+    const regWd = (reg.wdNumber||'').toString().trim().toLowerCase();
+    if(!disputedWds.has(regWd)) return;
+    getRegistryCoveragePeriods(reg).forEach(slice => {
+      const inSlice = (slice.units||[]).some(u => (u||'').toString().trim().toLowerCase() === unitId);
+      if(inSlice && slice.from && slice.to) periods.push({ from: slice.from, to: slice.to });
+    });
+  });
+  return periods;
+}
+
+function isDateInDisputedPeriod(year, month, day, disputedPeriods){
+  if(!disputedPeriods || disputedPeriods.length === 0) return false;
+  const monthStr = String(month + 1).padStart(2, '0');
+  const dayStr = String(day).padStart(2, '0');
+  const checkDateStr = `${year}-${monthStr}-${dayStr}`;
+  return disputedPeriods.some(p => checkDateStr >= p.from && checkDateStr <= p.to);
+}
+
 // Render the Unit Overview page: year/month selectors and per-unit day grid
 function renderUnitOverview(){
   const el = qs('#unitOverview'); if(!el) return;
@@ -6031,6 +6064,7 @@ function renderUnitOverview(){
 
       // Get disabled periods for this unit
       const disabledPeriods = getDisabledPeriods(u);
+      const disputedPeriods = getDisputedPeriods(u);
 
       // Day columns - create squares for each day with day numbers inside
       for(let d = 1; d <= daysInMonth; d++){
@@ -6038,10 +6072,11 @@ function renderUnitOverview(){
         tdDay.style.padding = '2px';
         tdDay.style.textAlign = 'center';
         tdDay.style.verticalAlign = 'middle';
-        
+
         // Check if this day is in a disabled period
         const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
-        
+        const isDisputed = isDateInDisputedPeriod(year, month, d, disputedPeriods);
+
         // Apply red background to the cell if disabled
         if(isDisabled){
           tdDay.style.backgroundColor = '#dc2626';
@@ -6106,7 +6141,16 @@ function renderUnitOverview(){
           square.style.backgroundColor = '#fff';
           square.style.color = '#6b7280';
         }
-        
+
+        // Disputed invoice coverage: pink + bold just on the day number, layered on top of
+        // whatever background/border the coverage/overlap/credit/disabled logic above already
+        // set, so it never conflicts with those existing status colors.
+        if(isDisputed){
+          square.style.color = '#db2777';
+          square.style.fontWeight = '800';
+          square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day';
+        }
+
         // Add tooltip for disabled periods
         if(isDisabled){
           const matchingPeriod = disabledPeriods.find(p => isDateInDisabledPeriod(year, month, d, [p]));
@@ -6477,9 +6521,14 @@ function renderLeaseOverview(){
 
       // Build set of days covered by invoices/registries for this lease (Rental category only)
       const coveredDays = new Set();
+      const disputedDays = new Set();
       const invoices = state.invoices || [];
       const registries = state.registries || [];
-      
+      // Lease-level rollup can't isolate which specific unit a dispute applies to, so a day is
+      // flagged disputed here whenever ANY invoice covering it under this lease has an open
+      // dispute record for that WD number (coarser than the per-unit checks elsewhere).
+      const disputedWdSet = new Set((state.invoiceTracking || []).map(t => (t.wdInvoiceNum||'').toString().trim().toLowerCase()).filter(Boolean));
+
       // First, check registries that have a lease field matching this lease
       registries.forEach(reg => {
         if(!reg) return;
@@ -6511,11 +6560,13 @@ function renderLeaseOverview(){
             const endDate = new Date(parseInt(endParts[0]), parseInt(endParts[1]) - 1, parseInt(endParts[2]));
             
             if(!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())){
+              const regDisputed = disputedWdSet.has((reg.wdNumber||'').toString().trim().toLowerCase());
               // Add all days in the period that fall in the selected month/year
               const currentDate = new Date(startDate);
               while(currentDate <= endDate){
                 if(currentDate.getFullYear() === year && currentDate.getMonth() === month){
                   coveredDays.add(currentDate.getDate());
+                  if(regDisputed) disputedDays.add(currentDate.getDate());
                 }
                 currentDate.setDate(currentDate.getDate() + 1);
               }
@@ -6523,7 +6574,7 @@ function renderLeaseOverview(){
           }
         }
       });
-      
+
       // Then check invoices (for backwards compatibility with invoices not in registries)
       invoices.forEach(inv => {
         // Skip if invoice doesn't have required data
@@ -6568,11 +6619,13 @@ function renderLeaseOverview(){
             const endDate = new Date(parseInt(endParts[0]), parseInt(endParts[1]) - 1, parseInt(endParts[2]));
             
             if(!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())){
+              const invDisputed = disputedWdSet.has((inv.wdNumber||'').toString().trim().toLowerCase());
               // Add all days in the period that fall in the selected month/year
               const currentDate = new Date(startDate);
               while(currentDate <= endDate){
                 if(currentDate.getFullYear() === year && currentDate.getMonth() === month){
                   coveredDays.add(currentDate.getDate());
+                  if(invDisputed) disputedDays.add(currentDate.getDate());
                 }
                 currentDate.setDate(currentDate.getDate() + 1);
               }
@@ -6598,7 +6651,7 @@ function renderLeaseOverview(){
         square.style.justifyContent = 'center';
         square.style.fontSize = '9px';
         square.textContent = d;
-        
+
         // Highlight if day is covered by a Rental invoice
         if(coveredDays.has(d)){
           square.style.backgroundColor = '#dcfce7';
@@ -6609,6 +6662,7 @@ function renderLeaseOverview(){
           square.style.backgroundColor = '#fff';
           square.style.color = '#6b7280';
         }
+        if(disputedDays.has(d)){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = 'Invoice under dispute for this day'; }
 
         tdDay.appendChild(square);
         row.appendChild(tdDay);
@@ -7412,6 +7466,7 @@ function renderReport(){
         const counts = rentalCountsArrayForUnit(u, year, month) || [];
         const creditDays = creditArrayForUnit(u, year, month) || [];
         const disabledPeriods = getDisabledPeriods(u) || [];
+        const disputedPeriods = getDisputedPeriods(u) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div');
@@ -7422,6 +7477,7 @@ function renderReport(){
           const overlap = (counts[d-1] > 1);
           const credit = !!creditDays[d-1];
           const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+          const isDisputed = isDateInDisputedPeriod(year, month, d, disputedPeriods);
 
           // Match Unit Overview: red cell background during disabled periods
           if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
@@ -7458,6 +7514,7 @@ function renderReport(){
             square.style.backgroundColor = '#fff';
             square.style.color = '#6b7280';
           }
+          if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square);
           tr.appendChild(tdDay);
         }
@@ -7566,6 +7623,7 @@ function renderReport(){
     const rentalCountsMapMissing = new Map();
     const creditMapMissing = new Map();
     const disabledPeriodsMapMissing = new Map();
+    const disputedPeriodsMapMissing = new Map();
     missingUnits.forEach(u => {
       const key = (u.id || u.unitId);
       try{
@@ -7577,6 +7635,9 @@ function renderReport(){
       try{
         disabledPeriodsMapMissing.set(key, getDisabledPeriods(u));
       }catch(e){ disabledPeriodsMapMissing.set(key, []); }
+      try{
+        disputedPeriodsMapMissing.set(key, getDisputedPeriods(u));
+      }catch(e){ disputedPeriodsMapMissing.set(key, []); }
     });
 
     if(missingUnits.length === 0){
@@ -7638,6 +7699,7 @@ function renderReport(){
         const counts = rentalCountsMapMissing.get(u.id || u.unitId) || [];
         const creditDays = creditMapMissing.get(u.id || u.unitId) || [];
         const disabledPeriods = disabledPeriodsMapMissing.get(u.id || u.unitId) || [];
+        const disputedPeriodsForMissing = disputedPeriodsMapMissing.get(u.id || u.unitId) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div');
@@ -7648,6 +7710,7 @@ function renderReport(){
           const overlap = (counts[d-1] > 1);
           const credit = !!creditDays[d-1];
           const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+          const isDisputed = isDateInDisputedPeriod(year, month, d, disputedPeriodsForMissing);
 
           // Match Unit Overview: red cell background during disabled periods
           if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
@@ -7684,6 +7747,7 @@ function renderReport(){
             square.style.backgroundColor = '#fff';
             square.style.color = '#6b7280';
           }
+          if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square);
           tr.appendChild(tdDay);
         }
@@ -7806,10 +7870,12 @@ function renderReport(){
         const overlaps = overlapMap.get(u.id || u.unitId) || [];
         const covered = rentalCoveredMap.get(u.id || u.unitId) || [];
         const disabledPeriods = getDisabledPeriods(u) || [];
+        const disputedPeriodsOverlap = getDisputedPeriods(u) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
           const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+          const isDisputed = isDateInDisputedPeriod(year, month, d, disputedPeriodsOverlap);
           if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
           if(overlaps[d-1]){
             square.style.backgroundColor='#fee2e2'; square.style.borderColor='#dc2626'; square.style.color='#991b1b'; square.style.fontWeight='600';
@@ -7821,6 +7887,7 @@ function renderReport(){
             square.style.backgroundColor='#ffffff'; square.style.borderColor='#991b1b'; square.style.color='#dc2626'; square.style.fontWeight='600';
           }
           else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
+          if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square); tr.appendChild(tdDay);
         }
         tbodyOverlap.appendChild(tr);
@@ -7936,10 +8003,12 @@ function renderReport(){
         const creditDays = creditMap.get(u.id || u.unitId) || [];
         const counts = rentalCountsMap.get(u.id || u.unitId) || [];
         const disabledPeriods = getDisabledPeriods(u) || [];
+        const disputedPeriodsCredit = getDisputedPeriods(u) || [];
         for(let d=1; d<=daysInMonth; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
           const isDisabled = isDateInDisabledPeriod(year, month, d, disabledPeriods);
+          const isDisputed = isDateInDisputedPeriod(year, month, d, disputedPeriodsCredit);
           if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
           if(creditDays[d-1]){
             square.style.borderColor='#eab308'; square.style.borderWidth='2px'; square.style.color='#eab308'; square.style.fontWeight='700';
@@ -7952,6 +8021,7 @@ function renderReport(){
             else if(isDisabled){ square.style.backgroundColor='#ffffff'; square.style.borderColor='#991b1b'; square.style.color='#dc2626'; square.style.fontWeight='600'; }
             else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
           }
+          if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square); tr.appendChild(tdDay);
         }
         tbodyCredit.appendChild(tr);
@@ -8099,18 +8169,27 @@ function renderReport(){
           tr.appendChild(td);
         });
 
-        // Labels column: show other visual labels present this month (Overlap, Credit)
+        // Labels column: show other visual labels present this month (Overlap, Credit, Disputed)
         try{
           const counts = rentalCountsArrayForUnit(u, year, month) || [];
           const hasOverlap = counts.some(c => c > 1);
           const creditDays = creditArrayForUnit(u, year, month) || [];
           const hasCredit = creditDays.some(Boolean);
+          const unitDisputedPeriods = getDisputedPeriods(u);
+          const daysInMonthForDispute = new Date(year, month+1, 0).getDate();
+          let hasDispute = false;
+          for(let dd=1; dd<=daysInMonthForDispute; dd++){ if(isDateInDisputedPeriod(year, month, dd, unitDisputedPeriods)){ hasDispute = true; break; } }
           const labels = [];
           if(hasOverlap) labels.push('Overlap');
           if(hasCredit) labels.push('Credit');
           const tdLabels = document.createElement('td');
           tdLabels.style.padding='6px'; tdLabels.style.borderBottom='1px solid #eef2f7'; tdLabels.style.fontSize='12px';
-          tdLabels.textContent = labels.length ? labels.join(', ') : '-';
+          if(hasDispute){
+            tdLabels.textContent = labels.concat(['Disputed']).join(', ');
+            tdLabels.style.color = '#db2777'; tdLabels.style.fontWeight = '700';
+          } else {
+            tdLabels.textContent = labels.length ? labels.join(', ') : '-';
+          }
           tr.appendChild(tdLabels);
         }catch(e){
           const tdLabels = document.createElement('td');
@@ -8123,9 +8202,11 @@ function renderReport(){
         // Compute per-day overlap counts and credit markers like Unit Overview
         const counts = rentalCountsArrayForUnit(u, year, month) || [];
         const creditDays = creditArrayForUnit(u, year, month) || [];
+        const disputedPeriodsDC = getDisputedPeriods(u);
         for(let d=1; d<=daysInMonthDC; d++){
           const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
           const isDisabled = isDateInDisabledPeriod(year, month, d, data.disabledPeriods || []);
+          const isDisputed = isDateInDisputedPeriod(year, month, d, disputedPeriodsDC);
           if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
           const square = document.createElement('div'); square.style.width='20px'; square.style.height='20px'; square.style.border='1px solid #ddd'; square.style.borderRadius='3px'; square.style.display='flex'; square.style.alignItems='center'; square.style.justifyContent='center'; square.style.fontSize='9px'; square.textContent=d;
           const covered = !!(data.coverage && data.coverage[d-1]);
@@ -8168,6 +8249,7 @@ function renderReport(){
             square.style.backgroundColor = '#fff';
             square.style.color = '#6b7280';
           }
+          if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
 
           tdDay.appendChild(square); tr.appendChild(tdDay);
         }
@@ -8299,6 +8381,7 @@ function renderReport(){
           const countsFOM = rentalCountsArrayForUnit(u, nextYearFOM, nextMonthFOM) || [];
           const creditDaysFOM = creditArrayForUnit(u, nextYearFOM, nextMonthFOM) || [];
           const disabledPeriodsFOM = getDisabledPeriods(u) || [];
+          const disputedPeriodsFOM = getDisputedPeriods(u) || [];
           for(let d=1; d<=daysInMonthFOM; d++){
             const tdDay = document.createElement('td'); tdDay.style.padding='2px'; tdDay.style.textAlign='center'; tdDay.style.verticalAlign='middle';
             const square = document.createElement('div');
@@ -8309,6 +8392,7 @@ function renderReport(){
             const overlap = (countsFOM[d-1] > 1);
             const credit = !!creditDaysFOM[d-1];
             const isDisabled = isDateInDisabledPeriod(nextYearFOM, nextMonthFOM, d, disabledPeriodsFOM);
+            const isDisputed = isDateInDisputedPeriod(nextYearFOM, nextMonthFOM, d, disputedPeriodsFOM);
 
             if(isDisabled){ tdDay.style.backgroundColor = '#dc2626'; }
 
@@ -8339,6 +8423,7 @@ function renderReport(){
               square.style.backgroundColor = '#fff';
               square.style.color = '#6b7280';
             }
+            if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
             tdDay.appendChild(square);
             tr.appendChild(tdDay);
           }
@@ -11015,6 +11100,11 @@ function buildUnitCoverageGrid(unit) {
         sq.style.color = '#374151';
         sq.style.border = '1px solid #1f2937';
       }
+      if(dayState.disputed){
+        sq.style.color = '#f472b6';
+        sq.style.fontWeight = '800';
+        tdDay.title = 'Invoice under dispute for this day';
+      }
 
       sq.addEventListener('mouseenter', () => { sq.style.transform = 'scale(1.3)'; sq.style.zIndex = '10'; sq.style.position = 'relative'; });
       sq.addEventListener('mouseleave', () => { sq.style.transform = ''; sq.style.zIndex = ''; sq.style.position = ''; });
@@ -11032,12 +11122,18 @@ function buildUnitCoverageGrid(unit) {
 
 function getDayState(unitIdNorm, y, m, d, registries, invoices, unit){
   const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-  const result = { covered: false, overlap: false, credit: false, disabled: false, rentalCount: 0 };
+  const result = { covered: false, overlap: false, credit: false, disabled: false, disputed: false, rentalCount: 0 };
 
   // Check disabled
   try{
     const periods = getDisabledPeriods(unit);
     result.disabled = isDateInDisabledPeriod(y, m, d, periods);
+  }catch(e){}
+
+  // Check disputed (invoice covering this day is tracked as in dispute)
+  try{
+    const disputedPeriods = getDisputedPeriods(unit);
+    result.disputed = isDateInDisputedPeriod(y, m, d, disputedPeriods);
   }catch(e){}
 
   // Check registry coverage — per-period for a quarterly invoice (see getRegistryCoveragePeriods)
