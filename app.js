@@ -1265,7 +1265,7 @@ function renderInvoicePeriodTable(period, seed){
   updateQuarterlyPeriodsAggregateTotal();
 }
 
-function renderInvoicePeriodBlock(period){
+function renderInvoicePeriodBlock(period, seed){
   const container = qs('#invoicePeriodsContainer'); if(!container) return;
   const block = document.createElement('div');
   block.className = 'invoice-period-block';
@@ -1293,7 +1293,7 @@ function renderInvoicePeriodBlock(period){
   block.appendChild(tableWrap);
   container.appendChild(block);
 
-  renderInvoicePeriodTable(period);
+  renderInvoicePeriodTable(period, seed);
   updateInvoicePeriodDateBounds();
   validateInvoicePeriodRanges();
 }
@@ -1819,7 +1819,7 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;gap:8px;font-weight:600;font-size:12px;color:#374151;padding:4px 0;border-bottom:2px solid #e6e9ee;';
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
-      const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;`; header.appendChild(d);
+      const d = document.createElement('div'); d.textContent = col.label; d.style.cssText = `flex:1 0 ${getColWidth(wrap, col.key, col.width)}px;`; header.appendChild(d);
     });
     [['tax','Tax',110],['other','Other Charges',120],['charge','Amount',110],['rowTotal','Total Charge',110]].forEach(([key,label,w]) => {
       const d = document.createElement('div'); d.textContent = label; d.style.cssText = `flex:0 0 ${getColWidth(wrap, key, w)}px;`; header.appendChild(d);
@@ -1877,7 +1877,7 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
   UNIT_BREAKDOWN_COLUMNS.forEach(col => {
     const d = document.createElement('div');
     d.textContent = col.label + (sortCol === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
-    d.style.cssText = `flex:0 0 ${getColWidth(wrap, col.key, col.width)}px;cursor:pointer;user-select:none;`;
+    d.style.cssText = `flex:1 0 ${getColWidth(wrap, col.key, col.width)}px;cursor:pointer;user-select:none;`;
     d.title = 'Click to sort';
     d.addEventListener('click', ()=>{
       const newDir = (wrap.dataset.sortCol === col.key && wrap.dataset.sortDir === 'asc') ? 'desc' : 'asc';
@@ -1920,7 +1920,7 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     // via a CSS class (not inline style) so hover/selected highlighting still overrides it.
     row.classList.add(rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd');
 
-    const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:0 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
+    const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:1 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
       const cell = mkCell(col.get(unitRec, uid), getColWidth(wrap, col.key, col.width));
       if(col.key === 'unitId' && uid){

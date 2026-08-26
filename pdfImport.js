@@ -60,30 +60,54 @@
     return { key: yyyy + '-' + mm, from: `${yyyy}-${mm}-01`, to: `${yyyy}-${mm}-${String(lastDay).padStart(2,'0')}` };
   }
 
+  function looseAmount(tokens){
+    const t = tokens[tokens.length-1] || '';
+    return /^[\d,]+\.\d{2}$/.test(t) ? parseFloat(t.replace(/,/g,'')) : null;
+  }
+  function looseMonthKey(tokens){
+    const found = tokens.find(t => /^\d{2}\/\d{2}\/\d{4}$/.test(t));
+    return found ? monthKeyFromMDY(found) : null;
+  }
+
   // Every detail line item is exactly 10 whitespace-separated tokens: barcode, fleet code,
   // model, service type, start date, end date, est/act/avg use, amount — immediately followed
   // by a second row ending in "Labour"/"Parts"/"Usage" that says which of the three this line
   // is. Section-header rows ("BELTLOADER/GASOLINE"), the repeated page header row, and the
-  // Document Overview page's summary rows never match the first shape, so they're skipped
-  // without needing special-casing. A line whose next row isn't recognized falls back to
-  // Usage (rent) rather than silently dropping the amount, and is counted as uncategorized
-  // so the review screen can flag it.
+  // Document Overview page's summary rows never start with a barcode-shaped token, so they're
+  // skipped without needing special-casing. Anything that DOES start with a barcode-shaped
+  // token but doesn't fully match the expected shape (bad dates/amount) — or whose category
+  // can't be identified from the row below it — is never silently dropped: it's recorded as an
+  // "issue" for the operator to review/complete at the top of the screen instead. An
+  // unidentified category still defaults into Usage (rent) so nothing is silently missing from
+  // the totals while it's still flagged.
   function parseDetailRows(rows){
     const unitMonthCat = {};
     const monthRanges = {};
-    let rowCount = 0;
-    let uncategorizedCount = 0;
+    const issues = [];
+    let issueSeq = 0;
+    let totalCandidates = 0;
     for(let i = 0; i < rows.length; i++){
       const tokens = rows[i].split(' ');
-      if(tokens.length !== 10) continue;
       if(!/^\d{5,8}$/.test(tokens[0])) continue;
-      if(!/^\d{2}\/\d{2}\/\d{4}$/.test(tokens[4]) || !/^\d{2}\/\d{2}\/\d{4}$/.test(tokens[5])) continue;
-      const amtStr = tokens[9].replace(/,/g,'');
-      if(!/^\d+(\.\d{2})?$/.test(amtStr)) continue;
+      totalCandidates++;
+      const barcode = tokens[0];
+
+      const validShape = tokens.length === 10
+        && /^\d{2}\/\d{2}\/\d{4}$/.test(tokens[4]) && /^\d{2}\/\d{2}\/\d{4}$/.test(tokens[5])
+        && /^[\d,]+\.\d{2}$/.test(tokens[9]);
+
+      if(!validShape){
+        const mk = looseMonthKey(tokens);
+        issues.push({
+          id: 'iss' + (++issueSeq), unit: barcode, monthKey: mk ? mk.key : '', category: '', amount: looseAmount(tokens),
+          rawText: rows[i], reason: 'Row shape not recognized (missing/garbled date or amount) — fill in the missing fields.'
+        });
+        continue;
+      }
+
       const mk = monthKeyFromMDY(tokens[4]);
-      if(!mk) continue;
-      const unit = tokens[0];
-      const amt = parseFloat(amtStr);
+      const amt = parseFloat(tokens[9].replace(/,/g,''));
+      monthRanges[mk.key] = { from: mk.from, to: mk.to };
 
       let category = null;
       const nextTokens = rows[i+1] ? rows[i+1].split(' ') : null;
@@ -91,15 +115,20 @@
         const last = nextTokens[nextTokens.length-1];
         if(['Labour','Parts','Usage'].indexOf(last) !== -1) category = last;
       }
-      if(!category){ category = 'Usage'; uncategorizedCount++; }
 
-      unitMonthCat[unit] = unitMonthCat[unit] || {};
-      unitMonthCat[unit][mk.key] = unitMonthCat[unit][mk.key] || { Labour:0, Parts:0, Usage:0 };
-      unitMonthCat[unit][mk.key][category] += amt;
-      monthRanges[mk.key] = { from: mk.from, to: mk.to };
-      rowCount++;
+      if(!category){
+        issues.push({
+          id: 'iss' + (++issueSeq), unit: barcode, monthKey: mk.key, category: 'Usage', amount: amt,
+          rawText: rows[i], reason: 'Could not identify Labour/Parts/Usage from the line below it — defaulted to Usage (rent).'
+        });
+        continue;
+      }
+
+      unitMonthCat[barcode] = unitMonthCat[barcode] || {};
+      unitMonthCat[barcode][mk.key] = unitMonthCat[barcode][mk.key] || { Labour:0, Parts:0, Usage:0 };
+      unitMonthCat[barcode][mk.key][category] += amt;
     }
-    return { unitMonthCat, monthRanges, rowCount, uncategorizedCount };
+    return { unitMonthCat, monthRanges, totalCandidates, issues };
   }
 
   function parseHeaderInfo(rows){
@@ -180,7 +209,38 @@
   }
 
   // ---- Review UI state ----
-  let _reviewData = null; // { header, periods, matchedUnitIds, unmatchedUnitIds, overallFrom, overallTo, uncategorizedCount }
+  // { header, baseUnitMonthCat, monthRanges, issues, periods, matchedUnitIds, unmatchedUnitIds,
+  //   overallFrom, overallTo } — baseUnitMonthCat holds only confidently-parsed amounts and is
+  // never mutated; issues holds the operator-editable rows shown at the top of the screen.
+  // periods/matchedUnitIds/etc. are always derived fresh from those two via recompute().
+  let _reviewData = null;
+
+  // Folds baseUnitMonthCat + every issue that currently has a complete unit/period/category/
+  // amount into one combined map, then rebuilds periods/matchedUnitIds/etc. from it — this is
+  // what makes editing a row in the issues table show up in the tables below.
+  function recompute(){
+    const combined = {};
+    Object.keys(_reviewData.baseUnitMonthCat).forEach(uid => {
+      combined[uid] = {};
+      Object.keys(_reviewData.baseUnitMonthCat[uid]).forEach(mk => {
+        combined[uid][mk] = Object.assign({}, _reviewData.baseUnitMonthCat[uid][mk]);
+      });
+    });
+    _reviewData.issues.forEach(issue => {
+      if(!issue.unit || !issue.monthKey || !issue.category) return;
+      const amt = Number(issue.amount);
+      if(!isFinite(amt)) return;
+      combined[issue.unit] = combined[issue.unit] || {};
+      combined[issue.unit][issue.monthKey] = combined[issue.unit][issue.monthKey] || { Labour:0, Parts:0, Usage:0 };
+      combined[issue.unit][issue.monthKey][issue.category] += amt;
+    });
+    const built = buildPeriods(combined);
+    _reviewData.periods = built.periods;
+    _reviewData.matchedUnitIds = built.matchedUnitIds;
+    _reviewData.unmatchedUnitIds = built.unmatchedUnitIds;
+    _reviewData.overallFrom = built.overallFrom;
+    _reviewData.overallTo = built.overallTo;
+  }
 
   function monthLabel(key){
     const [yyyy, mm] = key.split('-');
@@ -200,6 +260,94 @@
     return getUnitBreakdownRowsData('pdfImportPreview_' + idx);
   }
 
+  // Every row this app already knows as an Other Charge Type, for the issues table's Category
+  // picker, plus the two fixed buckets every line item actually belongs to before that split.
+  function issueCategoryOptionsHtml(current){
+    return ['', 'Usage', 'Labour', 'Parts'].map(v => {
+      const label = v === '' ? '(select)' : (v === 'Usage' ? 'Usage (rent)' : v);
+      return `<option value="${v}"${v === current ? ' selected' : ''}>${label}</option>`;
+    }).join('');
+  }
+
+  function renderIssuesTable(){
+    const issuesWrap = qs('#pdfImportIssuesWrap');
+    if(!issuesWrap) return;
+    issuesWrap.innerHTML = '';
+    const issues = _reviewData.issues;
+    if(!issues || issues.length === 0) return;
+
+    const monthKeys = Object.keys(_reviewData.monthRanges).sort();
+    const title = document.createElement('div');
+    title.innerHTML = `<strong>⚠ ${issues.length} line item(s) need review</strong> — edit Unit/Period/Category/Amount below; changes apply to the tables further down immediately. The matching row is highlighted red until you dismiss it here.`;
+    title.style.cssText = 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:6px;padding:8px 10px;font-size:12px;margin-bottom:8px;';
+    issuesWrap.appendChild(title);
+
+    const table = document.createElement('table');
+    table.style.cssText = 'border-collapse:collapse;width:100%;font-size:12px;';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Unit','Period','Category','Amount','Reason','Raw text','']
+      .forEach(label => { const th = document.createElement('th'); th.textContent = label; th.style.cssText = 'text-align:left;padding:6px 8px;border-bottom:2px solid #fecaca;background:#fef2f2;'; headRow.appendChild(th); });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    issues.forEach(issue => {
+      const tr = document.createElement('tr'); tr.style.cssText = 'background:#fff5f5;';
+
+      const mk = (cell, el) => { const td = document.createElement('td'); td.style.cssText = 'padding:4px 8px;border-bottom:1px solid #fee2e2;'; td.appendChild(el); tr.appendChild(td); return td; };
+
+      const unitInput = document.createElement('input'); unitInput.type = 'text'; unitInput.value = issue.unit || '';
+      unitInput.style.cssText = 'width:100px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      unitInput.addEventListener('input', () => { issue.unit = unitInput.value.trim(); recompute(); renderReview(); });
+      mk('unit', unitInput);
+
+      const periodSelect = document.createElement('select');
+      periodSelect.style.cssText = 'padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      periodSelect.innerHTML = '<option value="">(select)</option>' + monthKeys.map(k => `<option value="${k}"${k===issue.monthKey?' selected':''}>${monthLabel(k)}</option>`).join('');
+      periodSelect.addEventListener('change', () => { issue.monthKey = periodSelect.value; recompute(); renderReview(); });
+      mk('period', periodSelect);
+
+      const catSelect = document.createElement('select');
+      catSelect.style.cssText = 'padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      catSelect.innerHTML = issueCategoryOptionsHtml(issue.category);
+      catSelect.addEventListener('change', () => { issue.category = catSelect.value; recompute(); renderReview(); });
+      mk('category', catSelect);
+
+      const amountInput = document.createElement('input'); amountInput.type = 'text'; amountInput.inputMode = 'decimal';
+      amountInput.value = (issue.amount === null || issue.amount === undefined) ? '' : issue.amount.toFixed(2);
+      amountInput.style.cssText = 'width:90px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      amountInput.addEventListener('input', () => { const n = parseCurrency(amountInput.value); issue.amount = n; recompute(); renderReview(); });
+      mk('amount', amountInput);
+
+      const reasonEl = document.createElement('div'); reasonEl.textContent = issue.reason; reasonEl.style.cssText = 'max-width:220px;color:#7f1d1d;';
+      mk('reason', reasonEl);
+
+      const rawEl = document.createElement('div'); rawEl.textContent = issue.rawText; rawEl.title = issue.rawText;
+      rawEl.style.cssText = 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ca3af;';
+      mk('raw', rawEl);
+
+      const dismissBtn = document.createElement('button'); dismissBtn.type = 'button'; dismissBtn.textContent = 'Dismiss';
+      dismissBtn.title = 'Accept the current values as final and stop flagging this row';
+      dismissBtn.style.cssText = 'font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;cursor:pointer;';
+      dismissBtn.addEventListener('click', () => {
+        if(issue.unit && issue.monthKey && issue.category && isFinite(Number(issue.amount))){
+          _reviewData.baseUnitMonthCat[issue.unit] = _reviewData.baseUnitMonthCat[issue.unit] || {};
+          _reviewData.baseUnitMonthCat[issue.unit][issue.monthKey] = _reviewData.baseUnitMonthCat[issue.unit][issue.monthKey] || { Labour:0, Parts:0, Usage:0 };
+          _reviewData.baseUnitMonthCat[issue.unit][issue.monthKey][issue.category] += Number(issue.amount);
+        }
+        _reviewData.issues = _reviewData.issues.filter(i => i.id !== issue.id);
+        recompute();
+        renderReview();
+      });
+      mk('actions', dismissBtn);
+
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    issuesWrap.appendChild(table);
+  }
+
   function renderReview(){
     const wrap = qs('#pdfImportReview');
     const headerWrap = qs('#pdfImportHeaderInfo');
@@ -207,7 +355,9 @@
     const tableWrap = qs('#pdfImportTableWrap');
     if(!wrap || !headerWrap || !warnWrap || !tableWrap || !_reviewData) return;
 
-    const { header, periods, matchedUnitIds, unmatchedUnitIds, overallFrom, overallTo, uncategorizedCount } = _reviewData;
+    const { header, periods, matchedUnitIds, unmatchedUnitIds, overallFrom, overallTo, issues } = _reviewData;
+
+    renderIssuesTable();
 
     const leaseRec = (state.leases||[]).find(l => (l.leaseNumber||'').toString().trim().toLowerCase() === (header.leaseNumber||'').toString().trim().toLowerCase());
     const isQuarterlyLease = !!(leaseRec && (leaseRec.arrangement||'').toString().trim().toLowerCase() === 'quarterly');
@@ -230,7 +380,6 @@
     if(!leaseRec) warnings.push(`Lease "${header.leaseNumber || '(none found)'}" doesn't match any lease in the system — you'll need to select it manually before sending.`);
     if(periods.length > 1 && leaseRec && !isQuarterlyLease) warnings.push(`This invoice spans ${periods.length} separate months, but Lease ${header.leaseNumber} isn't marked Quarterly — periods will be merged into one period unless you fix the lease's Arrangement first.`);
     if(unmatchedUnitIds.length > 0) warnings.push(`${unmatchedUnitIds.length} unit(s) in the PDF don't match any UnitId in the system and will be skipped: ${unmatchedUnitIds.join(', ')}`);
-    if(uncategorizedCount > 0) warnings.push(`${uncategorizedCount} line item(s) couldn't be identified as Labour/Parts/Usage and were counted as the main Charge (rent) by default — double-check the amounts below.`);
     const parsedSum = periods.reduce((s,p) => s + periodTotalFromUnitData(p.unitData), 0);
     if(header.subtotalAmount !== null && Math.round(parsedSum*100) !== Math.round(header.subtotalAmount*100)){
       warnings.push(`Parsed total (${formatCurrency(parsedSum.toFixed(2))}) doesn't match the PDF's own "Subtotal Amount" (${formatCurrency(header.subtotalAmount.toFixed(2))}) — some rows may not have been read correctly. Note: this excludes the invoice's Tax (${header.tax !== null ? formatCurrency(header.tax.toFixed(2)) : 'n/a'}), which isn't broken out per unit and isn't allocated automatically.`);
@@ -275,6 +424,12 @@
         totalEl.style.color = '#374151';
         new MutationObserver(() => { totalEl.style.color = '#374151'; }).observe(totalEl, { childList: true, characterData: true, subtree: true });
       }
+      // Highlight whichever unit rows have an open issue for this exact period, so it's obvious
+      // which numbers below came from a guess/incomplete row until it's fixed or dismissed above.
+      issues.filter(iss => iss.monthKey === period.key && iss.unit).forEach(iss => {
+        const row = wrapDiv.querySelector(`.unit-breakdown-row[data-unit-id="${CSS.escape(iss.unit)}"]`);
+        if(row){ row.style.backgroundColor = '#fee2e2'; row.title = iss.reason; }
+      });
     });
 
     wrap.style.display = 'block';
@@ -341,15 +496,16 @@
       }
       totalAmount += sumSeed(periodSeeds[0]);
 
+      // Build periods 2+ directly (rather than simulating a click on #invoiceAddPeriodBtn) so
+      // the seed is applied on the table's very first render — clicking the button renders an
+      // empty table first, and the shared component treats those just-created blank cells as
+      // real prior data that then wins over a seed applied a moment later, leaving $0 amounts.
       for(let i = 1; i < periods.length; i++){
-        const addBtn = qs('#invoiceAddPeriodBtn'); if(addBtn) addBtn.click();
-        const periodObj = _invoicePeriods[_invoicePeriods.length - 1];
-        if(!periodObj) continue;
+        if(typeof _invoicePeriodSeq !== 'undefined') _invoicePeriodSeq++;
         const src = periods[i];
-        periodObj.fromDate = src.fromDate; periodObj.toDate = src.toDate;
-        if(periodObj.fromInputEl) periodObj.fromInputEl.value = src.fromDate;
-        if(periodObj.toInputEl) periodObj.toInputEl.value = src.toDate;
-        if(typeof renderInvoicePeriodTable === 'function') renderInvoicePeriodTable(periodObj, periodSeeds[i]);
+        const periodObj = { id: 'p' + _invoicePeriodSeq, wrapId: 'invoicePeriodBreakdown_' + _invoicePeriodSeq, fromDate: src.fromDate, toDate: src.toDate, units: matchedUnitIds.slice() };
+        if(typeof _invoicePeriods !== 'undefined') _invoicePeriods.push(periodObj);
+        if(typeof renderInvoicePeriodBlock === 'function') renderInvoicePeriodBlock(periodObj, periodSeeds[i]);
         totalAmount += sumSeed(periodSeeds[i]);
       }
       if(typeof validateInvoicePeriodRanges === 'function') validateInvoicePeriodRanges();
@@ -397,18 +553,29 @@
       const pdf = await lib.getDocument({ data: buf }).promise;
       const rows = await extractRows(pdf);
       const header = parseHeaderInfo(rows);
-      const { unitMonthCat, rowCount, uncategorizedCount } = parseDetailRows(rows);
-      if(rowCount === 0){
+      const { unitMonthCat, monthRanges, totalCandidates, issues } = parseDetailRows(rows);
+      if(totalCandidates === 0){
         if(statusEl) statusEl.textContent = 'No recognizable line items found — this may not be a TCR quarterly usage-detail invoice.';
         return;
       }
-      const built = buildPeriods(unitMonthCat);
-      _reviewData = { header, periods: built.periods, matchedUnitIds: built.matchedUnitIds, unmatchedUnitIds: built.unmatchedUnitIds, overallFrom: built.overallFrom, overallTo: built.overallTo, uncategorizedCount };
-      if(statusEl) statusEl.textContent = `Parsed ${rowCount} line item(s) across ${built.periods.length} period(s) for ${built.matchedUnitIds.length} matched unit(s).`;
+      _reviewData = { header, baseUnitMonthCat: unitMonthCat, monthRanges, issues, periods: [], matchedUnitIds: [], unmatchedUnitIds: [], overallFrom: '', overallTo: '' };
+      recompute();
+      if(statusEl) statusEl.textContent = `Parsed ${totalCandidates} line item(s) across ${_reviewData.periods.length} period(s) for ${_reviewData.matchedUnitIds.length} matched unit(s)` + (issues.length ? ` — ${issues.length} need review.` : '.');
       renderReview();
     }catch(err){
       if(statusEl) statusEl.textContent = 'Failed to parse PDF: ' + (err && err.message ? err.message : String(err));
     }
+  }
+
+  function clearImport(){
+    _reviewData = null;
+    const fileInput = qs('#pdfImportFile'); if(fileInput) fileInput.value = '';
+    const statusEl = qs('#pdfImportStatus'); if(statusEl) statusEl.textContent = '';
+    const reviewWrap = qs('#pdfImportReview'); if(reviewWrap) reviewWrap.style.display = 'none';
+    const issuesWrap = qs('#pdfImportIssuesWrap'); if(issuesWrap) issuesWrap.innerHTML = '';
+    const headerWrap = qs('#pdfImportHeaderInfo'); if(headerWrap) headerWrap.innerHTML = '';
+    const warnWrap = qs('#pdfImportWarnings'); if(warnWrap) warnWrap.innerHTML = '';
+    const tableWrap = qs('#pdfImportTableWrap'); if(tableWrap) tableWrap.innerHTML = '';
   }
 
   const fileInput = qs('#pdfImportFile');
@@ -420,4 +587,6 @@
   }
   const sendBtn = qs('#pdfImportSendBtn');
   if(sendBtn) sendBtn.addEventListener('click', sendToRegistration);
+  const clearBtn = qs('#pdfImportClearBtn');
+  if(clearBtn) clearBtn.addEventListener('click', clearImport);
 })();

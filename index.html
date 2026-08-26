@@ -253,13 +253,17 @@
            final review/edit before actually posting it. -->
       <div id="pdfImport" class="tab-panel">
         <h2>Import Invoice (PDF)</h2>
-        <p class="small-muted">For TCR Americas quarterly usage-detail invoices only. Upload the PDF, review the parsed amounts below, then send it to Invoice Registration to finish and post it.</p>
+        <p class="small-muted">Each supplier's invoice PDF has its own fixed layout, so each gets its own processor below. Upload a matching PDF, review the parsed amounts, then send it to Invoice Registration to finish and post it.</p>
         <div class="invoice-registration-block">
+          <h3 class="invoice-registration-block-title">TCR Americas, LLC — ATS PDF Reader Processor</h3>
+          <p class="small-muted" style="margin-top:-6px;">Quarterly usage-detail invoices only (per-unit Labour/Parts/Usage rows, repeated per billed month).</p>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
             <input type="file" id="pdfImportFile" accept="application/pdf">
+            <button type="button" id="pdfImportClearBtn">Clear</button>
             <span id="pdfImportStatus" class="small-muted"></span>
           </div>
           <div id="pdfImportReview" style="margin-top:16px;display:none;">
+            <div id="pdfImportIssuesWrap" style="margin-bottom:14px;"></div>
             <div id="pdfImportHeaderInfo" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;font-size:13px;"></div>
             <div id="pdfImportWarnings" style="margin-bottom:12px;"></div>
             <div id="pdfImportTableWrap" style="overflow-x:auto;"></div>
