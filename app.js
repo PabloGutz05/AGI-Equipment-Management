@@ -8052,6 +8052,17 @@ function renderReport(){
       }
     });
 
+    // Sort handling for Disabled + Covered table
+    state.meta.reportSimple.sortDisabledCovered = state.meta.reportSimple.sortDisabledCovered || { column: 'unitId', ascending: true };
+    const sortDisabledCovered = state.meta.reportSimple.sortDisabledCovered;
+    disabledCoveredUnits.sort((a, b) => {
+      const va = (a[sortDisabledCovered.column] || '').toString().toLowerCase();
+      const vb = (b[sortDisabledCovered.column] || '').toString().toLowerCase();
+      if(va < vb) return sortDisabledCovered.ascending ? -1 : 1;
+      if(va > vb) return sortDisabledCovered.ascending ? 1 : -1;
+      return 0;
+    });
+
     // assign export datasets
     computedDisabledCoveredUnits = disabledCoveredUnits.slice();
     // Build maps for export
@@ -8118,9 +8129,23 @@ function renderReport(){
     thCounterDC.style.position='sticky'; thCounterDC.style.top='0'; thCounterDC.style.zIndex='2'; thCounterDC.style.width='40px';
     hdrDC.appendChild(thCounterDC);
     headerDefsDC.forEach(def => {
-      const th = document.createElement('th'); th.textContent = def.text;
+      const th = document.createElement('th');
+      let labelDC = def.text;
+      if(sortDisabledCovered.column === def.key){ labelDC += sortDisabledCovered.ascending ? ' ▲' : ' ▼'; }
+      th.textContent = labelDC;
       th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
       th.style.position='sticky'; th.style.top='0'; th.style.zIndex='2';
+      th.style.cursor = 'pointer'; th.style.userSelect = 'none'; th.title = 'Click to sort';
+      th.addEventListener('click', ()=>{
+        if(state.meta.reportSimple.sortDisabledCovered.column === def.key){
+          state.meta.reportSimple.sortDisabledCovered.ascending = !state.meta.reportSimple.sortDisabledCovered.ascending;
+        } else {
+          state.meta.reportSimple.sortDisabledCovered.column = def.key;
+          state.meta.reportSimple.sortDisabledCovered.ascending = true;
+        }
+        try{ saveState(); }catch(e){}
+        run();
+      });
       hdrDC.appendChild(th);
     });
     const thPeriodDC = document.createElement('th');
@@ -8277,6 +8302,17 @@ function renderReport(){
         return true;
       });
 
+      // Sort handling for First of the Month table
+      state.meta.reportSimple.sortFOM = state.meta.reportSimple.sortFOM || { column: 'unitId', ascending: true };
+      const sortFOM = state.meta.reportSimple.sortFOM;
+      firstOfMonthUnits.sort((a, b) => {
+        const va = (a[sortFOM.column] || '').toString().toLowerCase();
+        const vb = (b[sortFOM.column] || '').toString().toLowerCase();
+        if(va < vb) return sortFOM.ascending ? -1 : 1;
+        if(va > vb) return sortFOM.ascending ? 1 : -1;
+        return 0;
+      });
+
       const daysInMonthFOM = new Date(nextYearFOM, nextMonthFOM + 1, 0).getDate();
       const monthNameFOM = monthNames[nextMonthFOM];
 
@@ -8313,9 +8349,23 @@ function renderReport(){
       thCounterFOM.style.position='sticky'; thCounterFOM.style.top='0'; thCounterFOM.style.zIndex='2'; thCounterFOM.style.width='40px';
       hdrFOM.appendChild(thCounterFOM);
       headerDefsFOM.forEach(def => {
-        const th = document.createElement('th'); th.textContent = def.text;
+        const th = document.createElement('th');
+        let labelFOM = def.text;
+        if(sortFOM.column === def.key){ labelFOM += sortFOM.ascending ? ' ▲' : ' ▼'; }
+        th.textContent = labelFOM;
         th.style.textAlign='left'; th.style.padding='6px'; th.style.fontSize='12px'; th.style.borderBottom='2px solid #eef2f7'; th.style.fontWeight='600'; th.style.background='#f9fafb';
         th.style.position='sticky'; th.style.top='0'; th.style.zIndex='2';
+        th.style.cursor = 'pointer'; th.style.userSelect = 'none'; th.title = 'Click to sort';
+        th.addEventListener('click', ()=>{
+          if(state.meta.reportSimple.sortFOM.column === def.key){
+            state.meta.reportSimple.sortFOM.ascending = !state.meta.reportSimple.sortFOM.ascending;
+          } else {
+            state.meta.reportSimple.sortFOM.column = def.key;
+            state.meta.reportSimple.sortFOM.ascending = true;
+          }
+          try{ saveState(); }catch(e){}
+          run();
+        });
         hdrFOM.appendChild(th);
       });
       const thPeriodFOM = document.createElement('th');
@@ -11924,7 +11974,17 @@ function lookupInvoiceTrackingWd(){
   updateInvoiceTrackingDisputeAmountFromChecked();
 }
 const itWdInvoiceNumEl = qs('#itWdInvoiceNum');
-if(itWdInvoiceNumEl) itWdInvoiceNumEl.addEventListener('input', lookupInvoiceTrackingWd);
+if(itWdInvoiceNumEl){
+  itWdInvoiceNumEl.addEventListener('input', lookupInvoiceTrackingWd);
+  // Enter is commonly used here to re-trigger the lookup when data looks stale/missing rather
+  // than to submit the form — block the native submit and just refresh the lookup instead.
+  itWdInvoiceNumEl.addEventListener('keydown', (e) => {
+    if(e.key === 'Enter'){
+      e.preventDefault();
+      lookupInvoiceTrackingWd();
+    }
+  });
+}
 
 
 function renderInvoiceTrackingTable(){
