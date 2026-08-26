@@ -10,6 +10,22 @@ function doPost(e) {
 }
 
 function handleRequest(e) {
+  // Serialize every request this script handles. Without this, two requests that arrive at
+  // nearly the same moment (two open tabs, a background auto-refresh overlapping a save, or
+  // the brief overlap while a new deployment is rolling out) can interleave their sheet reads
+  // and writes — e.g. one request's getMeta() reads the "meta" sheet half-way through another
+  // request's saveMeta() writing it, or two saveMeta() calls race and the one that finishes
+  // last silently wins with whatever (possibly stale/incomplete) data it started with. That
+  // race is what was erasing Developer tab config lists. Waiting for the lock makes requests
+  // queue instead of interleave.
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+  } catch (lockErr) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ success: false, error: 'Server is busy handling another request — please try again in a moment.' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
   try {
     const params = e.parameter || {};
     const postData = e.postData ? JSON.parse(e.postData.contents) : {};
@@ -65,6 +81,8 @@ function handleRequest(e) {
     return ContentService
       .createTextOutput(JSON.stringify({ success: false, error: err.message }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -186,7 +204,35 @@ function saveMeta(data) {
   const sheet = getSheet('meta');
   const existing = sheet.getDataRange().getValues();
   Object.keys(data).forEach(key => {
-    const value = typeof data[key] === 'object' ? JSON.stringify(data[key]) : data[key];
+    const incoming = data[key];
+
+    // Guard against silently wiping out real configuration data (Developer tab lists, etc.):
+    // if the incoming value for this key is an empty array but the sheet currently holds a
+    // non-empty array for it, keep what's there instead of overwriting it. A stale browser
+    // tab, or a request that raced with another one, can otherwise send back an incomplete
+    // snapshot and blank out data another session just added. Emptying a list all the way to
+    // zero items only ever happens one row at a time from the Developer tab anyway, so this
+    // only blocks the one genuinely destructive case (silently zeroing something populated) —
+    // if you ever truly need to clear the very last item, do it directly in this sheet.
+    if (Array.isArray(incoming) && incoming.length === 0) {
+      let skip = false;
+      for (let i = 1; i < existing.length; i++) {
+        if (existing[i][0] === key) {
+          let currentVal = existing[i][1];
+          if (typeof currentVal === 'string') {
+            try { currentVal = JSON.parse(currentVal); } catch (e) {}
+          }
+          if (Array.isArray(currentVal) && currentVal.length > 0) {
+            Logger.log('saveMeta: refusing to overwrite non-empty "' + key + '" with an empty array.');
+            skip = true;
+          }
+          break;
+        }
+      }
+      if (skip) return; // leave this key untouched, continue with the rest of the payload
+    }
+
+    const value = typeof incoming === 'object' ? JSON.stringify(incoming) : incoming;
     let found = false;
     for (let i = 1; i < existing.length; i++) {
       if (existing[i][0] === key) {

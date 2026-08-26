@@ -3264,7 +3264,7 @@ function renderUnits(){
       const searchInput = document.createElement('input');
       searchInput.type = 'text';
       searchInput.id = 'unitSearchInput';
-      searchInput.placeholder = 'Filter by unit, lease, company, supplier, comments... ("," = or, ";" = and)';
+      searchInput.placeholder = 'Filter by unit, lease, company, supplier, comments... ("," = or, ";" = and, "term." = exact)';
       searchInput.style.padding = '6px 10px';
       searchInput.style.border = '1px solid #e6e9ee';
       searchInput.style.borderRadius = '6px';
@@ -3789,7 +3789,7 @@ function renderLeases(){
     
     const searchInput = document.createElement('input');
     searchInput.type = 'text';
-    searchInput.placeholder = 'Search leases... ("," = or, ";" = and)';
+    searchInput.placeholder = 'Search leases... ("," = or, ";" = and, "term." = exact)';
     searchInput.value = state.meta.leaseSearch;
     searchInput.style.cssText = 'flex:1;padding:8px;border:1px solid #ddd;border-radius:6px;';
     
@@ -4290,16 +4290,31 @@ if(invoiceClearBtn){
 // Syntax: comma "," = OR (any term in the group matches), semicolon ";" = AND
 // (every group must have at least one matching term). Groups can combine both,
 // e.g. "19-10298,ACU-804; Operational" = (19-10298 OR ACU-804) AND Operational.
+// A trailing "." on any individual term makes that one term an exact/whole-value lookup
+// instead of a substring match — e.g. searching unit "511" as a plain substring also matches
+// "5112565", "5248511", "sdhud511"; searching "511." matches only the unit actually named 511.
+// Mixable with the rest: "511.,T10587,T105779" = exact 511, OR substring T10587, OR T105779.
 function parseSearchGroups(raw){
   return (raw || '')
     .split(';')
-    .map(group => group.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0))
+    .map(group => group.split(',').map(t => {
+      const trimmed = t.trim();
+      const exact = trimmed.length > 1 && trimmed.endsWith('.');
+      const term = (exact ? trimmed.slice(0, -1) : trimmed).trim().toLowerCase();
+      return { term, exact };
+    }).filter(t => t.term.length > 0))
     .filter(group => group.length > 0);
 }
 
 function matchesSearchGroups(groups, fields){
   if(!groups || groups.length === 0) return true;
-  return groups.every(orTerms => orTerms.some(term => fields.some(f => f.includes(term))));
+  return groups.every(orTerms => orTerms.some(({ term, exact }) => fields.some(f => {
+    if(!exact) return f.includes(term);
+    // Exact/whole-token match — split the field on whitespace/comma/semicolon so a composite
+    // field (e.g. a joined list of unit ids) matches only a token equal to the term, not a
+    // substring buried inside a different token.
+    return f.split(/[\s,;]+/).some(tok => tok === term);
+  })));
 }
 
 // small helper to avoid HTML injection in table cells
@@ -5152,7 +5167,7 @@ function renderUnitOverview(){
   const searchInput = document.createElement('input');
   searchInput.type = 'text';
   searchInput.id = 'unitOverviewSearch';
-  searchInput.placeholder = 'Filter by unit, lease, arrangement, invoicing... ("," = or, ";" = and)';
+  searchInput.placeholder = 'Filter by unit, lease, arrangement, invoicing... ("," = or, ";" = and, "term." = exact)';
   searchInput.style.padding = '6px 10px';
   searchInput.style.border = '1px solid #e6e9ee';
   searchInput.style.borderRadius = '6px';
@@ -5705,7 +5720,7 @@ function renderLeaseOverview(){
   const searchInput = document.createElement('input');
   searchInput.type = 'text';
   searchInput.id = 'leaseOverviewSearch';
-  searchInput.placeholder = 'Filter by lease, company, supplier, invoicing... ("," = or, ";" = and)';
+  searchInput.placeholder = 'Filter by lease, company, supplier, invoicing... ("," = or, ";" = and, "term." = exact)';
   searchInput.style.padding = '6px 10px';
   searchInput.style.border = '1px solid #e6e9ee';
   searchInput.style.borderRadius = '6px';
@@ -11512,6 +11527,15 @@ function resetInvoiceTrackingFormToAddMode(){
 const itCancelEditBtn = qs('#itCancelEditBtn');
 if(itCancelEditBtn){
   itCancelEditBtn.addEventListener('click', () => {
+    resetInvoiceTrackingFormToAddMode();
+  });
+}
+
+// Always-visible "Clear" button — wipes whatever's currently entered in the Add/Edit form,
+// whether or not an edit is in progress (Cancel above only shows during an edit).
+const itClearBtn = qs('#itClearBtn');
+if(itClearBtn){
+  itClearBtn.addEventListener('click', () => {
     resetInvoiceTrackingFormToAddMode();
   });
 }
