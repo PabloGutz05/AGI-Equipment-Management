@@ -69,6 +69,23 @@
     return found ? monthKeyFromMDY(found) : null;
   }
 
+  // The description/category line for a data row ("...BOS Labour") is usually the very next
+  // row, but when the data row falls last on a PDF page, the repeated table header/column
+  // titles reprint at the top of the next page *before* that continuation line reaches us.
+  // Scan forward past any such noise (bounded, so a genuinely uncategorized row doesn't
+  // wrongly borrow some later unit's category) until we find a row ending in Labour/Parts/
+  // Usage, or hit the next unit's own data row first — whichever comes first.
+  function findCategoryAhead(rows, i, maxLookahead){
+    const limit = Math.min(rows.length, i + 1 + (maxLookahead || 20));
+    for(let j = i + 1; j < limit; j++){
+      const t = rows[j].split(' ');
+      if(/^\d{5,8}$/.test(t[0])) return null; // reached the next data row — no category found for row i
+      const last = t[t.length - 1];
+      if(t.length >= 2 && ['Labour','Parts','Usage'].indexOf(last) !== -1) return last;
+    }
+    return null;
+  }
+
   // Every detail line item is exactly 10 whitespace-separated tokens: barcode, fleet code,
   // model, service type, start date, end date, est/act/avg use, amount — immediately followed
   // by a second row ending in "Labour"/"Parts"/"Usage" that says which of the three this line
@@ -86,7 +103,17 @@
     const issues = [];
     let issueSeq = 0;
     let totalCandidates = 0;
-    for(let i = 0; i < rows.length; i++){
+
+    // Real detail lines only ever appear under the "Document Details ADV" section banner —
+    // everything before it (bill-to address, bank/wire/routing numbers, FEIN, customer/billing
+    // document numbers) can contain barcode-shaped numbers purely by coincidence. Starting the
+    // scan after that banner rules those false positives out without changing anything about
+    // how an actual detail line is recognized or categorized once we're past it. Falls back to
+    // scanning everything if the banner isn't found, rather than silently parsing nothing.
+    const bannerIdx = rows.findIndex(r => /Document Details ADV/i.test(r));
+    const scanStart = bannerIdx === -1 ? 0 : bannerIdx + 1;
+
+    for(let i = scanStart; i < rows.length; i++){
       const tokens = rows[i].split(' ');
       if(!/^\d{5,8}$/.test(tokens[0])) continue;
       totalCandidates++;
@@ -109,12 +136,7 @@
       const amt = parseFloat(tokens[9].replace(/,/g,''));
       monthRanges[mk.key] = { from: mk.from, to: mk.to };
 
-      let category = null;
-      const nextTokens = rows[i+1] ? rows[i+1].split(' ') : null;
-      if(nextTokens && nextTokens.length >= 3){
-        const last = nextTokens[nextTokens.length-1];
-        if(['Labour','Parts','Usage'].indexOf(last) !== -1) category = last;
-      }
+      const category = findCategoryAhead(rows, i);
 
       if(!category){
         issues.push({
