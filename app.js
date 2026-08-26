@@ -7808,7 +7808,8 @@ function renderReport(){
       { text: 'Supplier', key: 'supplier' },
       { text: 'Arrangement', key: 'arrangement' },
       { text: 'Invoicing', key: 'invoicing' },
-      { text: 'Status', key: 'status' }
+      { text: 'Status', key: 'status' },
+      { text: 'Labels', key: 'labels' }
     ];
     // Counter column
     const thCounterOverlap = document.createElement('th');
@@ -7864,8 +7865,31 @@ function renderReport(){
             }catch(e){}
             td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#ffe4e6'; } try{ openUnitWdNumbersModal(u.unitId, year, month, overlapUnits.map(x => x.unitId));}catch(e){} }); 
           } else { td.textContent = String(val); }
-          tr.appendChild(td); 
+          tr.appendChild(td);
         });
+
+        // Labels column: flags this unit as Disputed when an invoice covering one of its
+        // overlapped days this month has an open dispute record (same convention as the
+        // Disabled Units with Rental Coverage table).
+        try{
+          const disputedPeriodsForLabel = getDisputedPeriods(u);
+          let hasDispute = false;
+          for(let dd=1; dd<=daysInMonth; dd++){ if(isDateInDisputedPeriod(year, month, dd, disputedPeriodsForLabel)){ hasDispute = true; break; } }
+          const tdLabels = document.createElement('td');
+          tdLabels.style.padding='6px'; tdLabels.style.borderBottom='1px solid #eef2f7'; tdLabels.style.fontSize='12px';
+          if(hasDispute){
+            tdLabels.textContent = 'Disputed';
+            tdLabels.style.color = '#db2777'; tdLabels.style.fontWeight = '700';
+          } else {
+            tdLabels.textContent = '-';
+          }
+          tr.appendChild(tdLabels);
+        }catch(e){
+          const tdLabels = document.createElement('td');
+          tdLabels.style.padding='6px'; tdLabels.style.borderBottom='1px solid #eef2f7'; tdLabels.style.fontSize='12px';
+          tdLabels.textContent = '-';
+          tr.appendChild(tdLabels);
+        }
 
         const overlaps = overlapMap.get(u.id || u.unitId) || [];
         const covered = rentalCoveredMap.get(u.id || u.unitId) || [];
