@@ -5921,19 +5921,12 @@ function renderUnitOverview(){
       const invoices = state.invoices || [];
       
       registries.forEach(reg => {
-        // Check if this unit is in the registry's units array
-        const units = reg.units || [];
         const unitId = (u.unitId || '').toString().trim().toLowerCase();
         const unitIdAlt = (u.id || '').toString().trim().toLowerCase();
-        
-        const isInRegistry = units.some(unitStr => {
-          const regUnit = (unitStr || '').toString().trim().toLowerCase();
-          return regUnit === unitId || regUnit === unitIdAlt;
-        });
-        
+
         // Check if registry or matching invoice has a category
         let category = '';
-        
+
         // First, check if registry has a category
         if(reg.category){
           category = reg.category.toString().trim().toLowerCase();
@@ -5948,29 +5941,38 @@ function renderUnitOverview(){
             category = (matchingInvoice.category || '').toString().trim().toLowerCase();
           }
         }
-        
+
         const hasRentalCategory = category === 'rental';
         const hasCreditCategory = category === 'credit';
-        
-        if(isInRegistry && reg.periodStart && reg.periodEnd){
+
+        // Per-period for a quarterly invoice (see getRegistryCoveragePeriods) — a unit only
+        // present in one period's own table must only be marked covered for that period's
+        // own dates, not the registry's whole overall declared range.
+        getRegistryCoveragePeriods(reg).forEach(slice => {
+          const isInSlice = slice.units.some(unitStr => {
+            const regUnit = (unitStr || '').toString().trim().toLowerCase();
+            return regUnit === unitId || regUnit === unitIdAlt;
+          });
+          if(!isInSlice || !slice.from || !slice.to) return;
+
           // Parse dates as local dates to avoid timezone issues
-          const startParts = reg.periodStart.toString().trim().split('-');
-          const endParts = reg.periodEnd.toString().trim().split('-');
+          const startParts = slice.from.toString().trim().split('-');
+          const endParts = slice.to.toString().trim().split('-');
           const startDate = new Date(parseInt(startParts[0]), parseInt(startParts[1]) - 1, parseInt(startParts[2]));
           const endDate = new Date(parseInt(endParts[0]), parseInt(endParts[1]) - 1, parseInt(endParts[2]));
-          
+
           if(!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())){
             // Add all days in the period that fall in the selected month/year
             const currentDate = new Date(startDate);
             while(currentDate <= endDate){
               if(currentDate.getFullYear() === year && currentDate.getMonth() === month){
                 const day = currentDate.getDate();
-                
+
                 // Track rental coverage for count
                 if(hasRentalCategory){
                   coveredDays.set(day, (coveredDays.get(day) || 0) + 1);
                 }
-                
+
                 // Track credit coverage separately
                 if(hasCreditCategory){
                   creditDays.add(day);
@@ -5979,7 +5981,7 @@ function renderUnitOverview(){
               currentDate.setDate(currentDate.getDate() + 1);
             }
           }
-        }
+        });
       });
 
       // Get disabled periods for this unit
@@ -7076,10 +7078,10 @@ function renderReport(){
     const covered = new Array(daysInMonth).fill(false);
     const unitIdNorm = (u.unitId || u.id || '').toString().trim().toLowerCase();
 
-    // Registries (Rental) covering this unit
+    // Registries (Rental) covering this unit — per-period for a quarterly invoice (see
+    // getRegistryCoveragePeriods), so a unit only in one period's own table is only marked
+    // covered for that period's own dates.
     (state.registries||[]).forEach(reg => {
-      const units = Array.isArray(reg.units) ? reg.units.map(x=> (x||'').toString().trim().toLowerCase()) : [];
-      if(!units.includes(unitIdNorm)) return;
       // Determine category
       let cat = (reg.category||'').toString().trim().toLowerCase();
       if(!cat){
@@ -7087,18 +7089,22 @@ function renderReport(){
         cat = (inv && inv.category) ? inv.category.toString().trim().toLowerCase() : '';
       }
       if(cat !== 'rental') return;
-      if(!reg.periodStart || !reg.periodEnd) return;
-      const sp = String(reg.periodStart).split('-'); const ep = String(reg.periodEnd).split('-');
-      const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
-      const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
-      if(isNaN(start) || isNaN(end)) return;
-      const cur = new Date(start);
-      while(cur <= end){
-        if(cur.getFullYear() === year && cur.getMonth() === month){
-          const d = cur.getDate(); covered[d-1] = true;
+      getRegistryCoveragePeriods(reg).forEach(slice => {
+        const units = slice.units.map(x=> (x||'').toString().trim().toLowerCase());
+        if(!units.includes(unitIdNorm)) return;
+        if(!slice.from || !slice.to) return;
+        const sp = String(slice.from).split('-'); const ep = String(slice.to).split('-');
+        const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+        const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+        if(isNaN(start) || isNaN(end)) return;
+        const cur = new Date(start);
+        while(cur <= end){
+          if(cur.getFullYear() === year && cur.getMonth() === month){
+            const d = cur.getDate(); covered[d-1] = true;
+          }
+          cur.setDate(cur.getDate()+1);
         }
-        cur.setDate(cur.getDate()+1);
-      }
+      });
     });
 
     // Invoices (Rental) not in registries
@@ -7129,28 +7135,31 @@ function renderReport(){
     const counts = new Array(daysInMonth).fill(0);
     const unitIdNorm = (u.unitId || u.id || '').toString().trim().toLowerCase();
 
-    // Use registries membership and category (fallback to matching invoice category)
+    // Use registries membership and category (fallback to matching invoice category) —
+    // per-period for a quarterly invoice (see getRegistryCoveragePeriods).
     const registries = state.registries || [];
     const invoices = state.invoices || [];
     registries.forEach(reg => {
-      const unitsArr = Array.isArray(reg.units) ? reg.units.map(x=> (x||'').toString().trim().toLowerCase()) : [];
-      if(!unitsArr.includes(unitIdNorm)) return;
       let cat = (reg.category||'').toString().trim().toLowerCase();
       if(!cat){
         const inv = invoices.find(i => (i.wdNumber||'').toString().trim().toLowerCase() === (reg.wdNumber||'').toString().trim().toLowerCase());
         cat = (inv && (inv.category||'').toString().trim().toLowerCase()) || '';
       }
       if(cat !== 'rental') return;
-      const ps = reg.periodStart, pe = reg.periodEnd; if(!ps || !pe) return;
-      const sp = String(ps).split('-'); const ep = String(pe).split('-');
-      const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
-      const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
-      if(isNaN(start) || isNaN(end)) return;
-      const cur = new Date(start);
-      while(cur <= end){
-        if(cur.getFullYear()===year && cur.getMonth()===month){ counts[cur.getDate()-1] += 1; }
-        cur.setDate(cur.getDate()+1);
-      }
+      getRegistryCoveragePeriods(reg).forEach(slice => {
+        const unitsArr = slice.units.map(x=> (x||'').toString().trim().toLowerCase());
+        if(!unitsArr.includes(unitIdNorm)) return;
+        if(!slice.from || !slice.to) return;
+        const sp = String(slice.from).split('-'); const ep = String(slice.to).split('-');
+        const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+        const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+        if(isNaN(start) || isNaN(end)) return;
+        const cur = new Date(start);
+        while(cur <= end){
+          if(cur.getFullYear()===year && cur.getMonth()===month){ counts[cur.getDate()-1] += 1; }
+          cur.setDate(cur.getDate()+1);
+        }
+      });
     });
     return counts;
   }
@@ -7163,24 +7172,26 @@ function renderReport(){
     const registries = state.registries || [];
     const invoices = state.invoices || [];
     registries.forEach(reg => {
-      const unitsArr = Array.isArray(reg.units) ? reg.units.map(x=> (x||'').toString().trim().toLowerCase()) : [];
-      if(!unitsArr.includes(unitIdNorm)) return;
       let cat = (reg.category||'').toString().trim().toLowerCase();
       if(!cat){
         const inv = invoices.find(i => (i.wdNumber||'').toString().trim().toLowerCase() === (reg.wdNumber||'').toString().trim().toLowerCase());
         cat = (inv && (inv.category||'').toString().trim().toLowerCase()) || '';
       }
       if(cat !== 'credit') return;
-      const ps = reg.periodStart, pe = reg.periodEnd; if(!ps || !pe) return;
-      const sp = String(ps).split('-'); const ep = String(pe).split('-');
-      const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
-      const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
-      if(isNaN(start) || isNaN(end)) return;
-      const cur = new Date(start);
-      while(cur <= end){
-        if(cur.getFullYear()===year && cur.getMonth()===month){ credit[cur.getDate()-1] = true; }
-        cur.setDate(cur.getDate()+1);
-      }
+      getRegistryCoveragePeriods(reg).forEach(slice => {
+        const unitsArr = slice.units.map(x=> (x||'').toString().trim().toLowerCase());
+        if(!unitsArr.includes(unitIdNorm)) return;
+        if(!slice.from || !slice.to) return;
+        const sp = String(slice.from).split('-'); const ep = String(slice.to).split('-');
+        const start = new Date(parseInt(sp[0]), parseInt(sp[1]) - 1, parseInt(sp[2]));
+        const end = new Date(parseInt(ep[0]), parseInt(ep[1]) - 1, parseInt(ep[2]));
+        if(isNaN(start) || isNaN(end)) return;
+        const cur = new Date(start);
+        while(cur <= end){
+          if(cur.getFullYear()===year && cur.getMonth()===month){ credit[cur.getDate()-1] = true; }
+          cur.setDate(cur.getDate()+1);
+        }
+      });
     });
     return credit;
   }
