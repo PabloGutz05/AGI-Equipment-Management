@@ -2882,8 +2882,25 @@ function getRegistryCoveragePeriods(reg){
   const period1Units = Array.isArray(reg.unitDetails) && reg.unitDetails.length
     ? reg.unitDetails.map(d => d.unit)
     : (Array.isArray(reg.units) ? reg.units : []);
-  slices.push({ from: reg.period1From || reg.periodStart || '', to: reg.period1To || reg.periodEnd || '', units: period1Units });
-  (Array.isArray(reg.periods) ? reg.periods : []).forEach(p => {
+
+  let period1From = reg.period1From || '';
+  let period1To = reg.period1To || '';
+  const otherPeriods = Array.isArray(reg.periods) ? reg.periods : [];
+  if((!period1From || !period1To) && otherPeriods.length > 0){
+    // Legacy/malformed data missing period1From/period1To — falling back to the registry's
+    // whole overall declared range here would overlap every other period (they're carved out
+    // of that same range) and falsely double-count every unit/day they share. Instead, infer
+    // Period 1's own bounds as whatever's left once the other periods' own ranges are excluded
+    // — assumes Period 1 comes chronologically first, which is the normal case.
+    if(!period1From) period1From = reg.periodStart || '';
+    if(!period1To){
+      const otherFroms = otherPeriods.map(p => p.fromDate).filter(Boolean).sort();
+      period1To = otherFroms.length > 0 ? addDaysToDateStr(otherFroms[0], -1) : (reg.periodEnd || '');
+    }
+  }
+
+  slices.push({ from: period1From || reg.periodStart || '', to: period1To || reg.periodEnd || '', units: period1Units });
+  otherPeriods.forEach(p => {
     slices.push({ from: p.fromDate || '', to: p.toDate || '', units: Array.isArray(p.unitDetails) ? p.unitDetails.map(d => d.unit) : [] });
   });
   return slices;
@@ -10727,6 +10744,14 @@ let _unitDetailList = [];
 let _unitDetailIndex = 0;
 
 function openUnitWdNumbersModal(unitId, year, month, unitIdList) {
+  // Opening this modal (and the render work it triggers) can shift the page's scroll position
+  // — restore exactly where the operator was looking instead of leaving them dropped back at
+  // the top of the page. The modal itself is position:fixed, so this is purely about not
+  // letting the underlying page move while it opens.
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  const restoreScroll = () => window.scrollTo(scrollX, scrollY);
+
   window.currentWdNumbersYear = year;
   window.currentWdNumbersMonth = month;
 
@@ -10762,6 +10787,12 @@ function openUnitWdNumbersModal(unitId, year, month, unitIdList) {
 
   const modal = qs('#unitWdNumbersModal');
   if(modal) modal.style.display = 'flex';
+
+  restoreScroll();
+  // Also restore on the next frame — some browsers re-adjust scroll after layout settles
+  // once the modal's (possibly tall) content has actually painted.
+  try{ requestAnimationFrame(restoreScroll); }catch(e){}
+  setTimeout(restoreScroll, 0);
 }
 
 function renderUnitDetailModal(unitId) {
