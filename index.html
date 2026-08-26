@@ -95,6 +95,10 @@
         <span class="tab-title">Invoices</span>
         <span class="tab-desc">Create & manage</span>
       </button>
+      <button class="tab" data-tab="pdfImport">
+        <span class="tab-title">Import Invoice</span>
+        <span class="tab-desc">PDF → registration</span>
+      </button>
       <button class="tab" data-tab="accruals">
         <span class="tab-title">Accruals</span>
         <span class="tab-desc">Month-end closing</span>
@@ -243,6 +247,28 @@
       
       <!-- Excel export library with styling support -->
       <script src="https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
+
+      <!-- Import Invoice: upload a TCR quarterly usage-detail PDF, review the parsed per-unit
+           per-month amounts, then hand the result to the Invoice Registration form above for
+           final review/edit before actually posting it. -->
+      <div id="pdfImport" class="tab-panel">
+        <h2>Import Invoice (PDF)</h2>
+        <p class="small-muted">For TCR Americas quarterly usage-detail invoices only. Upload the PDF, review the parsed amounts below, then send it to Invoice Registration to finish and post it.</p>
+        <div class="invoice-registration-block">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <input type="file" id="pdfImportFile" accept="application/pdf">
+            <span id="pdfImportStatus" class="small-muted"></span>
+          </div>
+          <div id="pdfImportReview" style="margin-top:16px;display:none;">
+            <div id="pdfImportHeaderInfo" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;font-size:13px;"></div>
+            <div id="pdfImportWarnings" style="margin-bottom:12px;"></div>
+            <div id="pdfImportTableWrap" style="overflow-x:auto;"></div>
+            <div style="margin-top:14px;">
+              <button type="button" id="pdfImportSendBtn" class="btn-primary">Send to Registration</button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div id="accruals" class="tab-panel">
         <h2>Accruals</h2>
@@ -1295,5 +1321,6 @@
 
   <script src="db.js"></script>
   <script src="app.js?v=11.5"></script>
+  <script src="pdfImport.js"></script>
 </body>
 </html>
