@@ -208,6 +208,16 @@
             <!-- Per-unit Company/UnitId/Lease/Cost Center + Tax/Charge breakdown; always visible,
                  defaults to a single empty placeholder row until units are selected -->
             <div id="invoiceUnitBreakdown" class="invoice-unit-breakdown"></div>
+
+            <!-- Quarterly leases are invoiced every 4 months covering 3 periods per unit —
+                 "Add Period" is only enabled when a Quarterly-arrangement lease is selected,
+                 and adds another full unit breakdown table for an additional From/To period. -->
+            <div class="invoice-form-row" style="align-items:center;gap:10px;margin-top:6px;">
+              <button type="button" id="invoiceAddPeriodBtn" disabled title="Only available when a lease with Arrangement = Quarterly is selected">+ Add Period</button>
+              <span id="invoicePeriodsAggregateTotal" class="small-muted"></span>
+            </div>
+            <div id="invoicePeriodsContainer"></div>
+
             <div class="invoice-form-row invoice-actions-row">
               <!-- Add Comment button (opens modal editor) -->
               <button type="button" id="invoiceCommentBtn" class="btn-primary">Add Comment</button>

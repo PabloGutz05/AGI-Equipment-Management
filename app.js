@@ -583,10 +583,21 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       return;
     }
   }catch(err){ alert('Validation error: ' + err.message); return; }
-  // The per-unit Charge + Tax breakdown must add up to the declared invoice Amount.
+  // The per-unit Charge + Tax breakdown must add up to the declared invoice Amount — for a
+  // quarterly invoice with additional periods, that's the sum across every period's table.
   try{
     if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
-    if(!unitBreakdownMatches('invoiceUnitBreakdown')){
+    if(_invoicePeriods.length > 0){
+      const missingDates = _invoicePeriods.some(p => !p.fromDate || !p.toDate);
+      if(missingDates){
+        alert('Every additional period needs both a From and To date before submitting.');
+        return;
+      }
+      if(!invoiceQuarterlyPeriodsMatchDeclared()){
+        alert('The sum of Charge Amount + Tax Amount across all periods must equal the declared invoice Amount before submitting.');
+        return;
+      }
+    } else if(!unitBreakdownMatches('invoiceUnitBreakdown')){
       alert('The sum of Charge Amount + Tax Amount for the selected units must equal the declared invoice Amount before submitting.');
       return;
     }
@@ -757,6 +768,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       commentBtn.title = '';
       try{ commentBtn.classList.remove('btn-warning'); commentBtn.classList.add('btn-primary'); }catch(e){}
     }
+    if(typeof resetInvoiceQuarterlyPeriods === 'function') resetInvoiceQuarterlyPeriods();
 
     if(skippedGroup.length){ alert('Some units were skipped because a matching invoice already exists elsewhere: ' + skippedGroup.join(', ')); }
   } else if(editingId){
@@ -961,6 +973,40 @@ qs('#invoiceForm').addEventListener('submit', e=>{
         lease: uniqueLeases.join(', '),
         unitDetails: createdUnitDetails.slice()
       };
+
+      // Quarterly leases: any additional periods added via "Add Period" get attached here,
+      // each with its own From/To dates and its own per-unit Tax/Other/Amount breakdown —
+      // separate from the registry's own (first) period above, and from state.invoices (which
+      // only ever represents the first period), so existing per-unit/per-month coverage logic
+      // elsewhere in the app is unaffected.
+      if(_invoicePeriods.length > 0){
+        registry.periods = _invoicePeriods.map(p => {
+          const periodRowData = getUnitBreakdownRowsData(p.wrapId);
+          const periodUnitDetails = p.units.map(uid => {
+            const resolved = resolveInvoiceUnitLeaseInfo(uid, selectedLeases);
+            const unitRecForDetail = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim() === uid.toString().trim());
+            const r = periodRowData[uid] || {};
+            const chargeAmount = (function(){ const n = parseCurrency(r.charge||''); return n===null ? '' : n.toFixed(2); })();
+            const taxAmount = (function(){ const n = parseCurrency(r.tax||''); return n===null ? '' : n.toFixed(2); })();
+            const otherAmount = (function(){ const n = parseCurrency(r.other||''); return n===null ? '' : n.toFixed(2); })();
+            return {
+              unit: uid,
+              lease: resolved.lease || '',
+              company: resolved.company || '',
+              supplier: resolved.supplier || '',
+              arrangement: resolved.arrangement || '',
+              invoicing: resolved.invoicing || '',
+              costCenter: unitRecForDetail ? (unitRecForDetail.costCenter||'') : '',
+              tax: taxAmount,
+              other: otherAmount,
+              otherChargeDetails: r.otherChargeDetails || [],
+              charge: chargeAmount
+            };
+          });
+          return { fromDate: p.fromDate, toDate: p.toDate, unitDetails: periodUnitDetails };
+        });
+      }
+
       state.registries = state.registries || [];
       state.registries.push(registry);
 
@@ -1002,6 +1048,7 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       commentBtn.title = '';
       try{ commentBtn.classList.remove('btn-warning'); commentBtn.classList.add('btn-primary'); }catch(e){}
     }
+    if(typeof resetInvoiceQuarterlyPeriods === 'function') resetInvoiceQuarterlyPeriods();
 
     if(skipped.length && createdIds.length){ alert('Some units were skipped because a matching registry already exists: ' + skipped.join(', ')); }
     else if(skipped.length && createdIds.length===0){ alert('No invoices were created — all provided units already have an invoice with the same Lease, Category and WD number.'); }
@@ -1056,6 +1103,130 @@ function onInvoiceLeaseSelectionChange(){
   if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
   // ensure the Submitted date is prefilled to today's date (predetermined actual date)
   const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
+  if(typeof updateInvoiceAddPeriodAvailability === 'function') updateInvoiceAddPeriodAvailability();
+}
+
+// ========== Quarterly leases: multiple invoice periods per WD invoice ==========
+// A lease invoiced quarterly is billed every 4 months and covers 3 separate periods per unit
+// in that one invoice. "Add Period" (enabled only while a Quarterly-arrangement lease is
+// selected) adds another full Tax/Other/Amount breakdown table with its own editable From/To
+// dates, seeded with whichever units are currently checked at the moment it's clicked. Each
+// period is independent after that — units can be individually removed from just one period.
+let _invoicePeriods = [];
+let _invoicePeriodSeq = 0;
+
+function invoiceHasQuarterlyLeaseSelected(){
+  const selectedLeases = getSelectedInvoiceLeases();
+  return selectedLeases.some(lv => {
+    const rec = (state.leases||[]).find(l => (l.leaseNumber||l.id||'').toString().trim().toLowerCase() === lv.toString().trim().toLowerCase());
+    return rec && (rec.arrangement||'').toString().trim().toLowerCase() === 'quarterly';
+  });
+}
+
+function updateInvoiceAddPeriodAvailability(){
+  const btn = qs('#invoiceAddPeriodBtn'); if(!btn) return;
+  btn.disabled = !invoiceHasQuarterlyLeaseSelected();
+}
+
+function renderInvoicePeriodTable(period){
+  renderUnitBreakdownTable(period.wrapId, period.units, null, null, {
+    showEmptyRow: true,
+    onRemoveUnit: (uid) => {
+      period.units = period.units.filter(u => u !== uid);
+      renderInvoicePeriodTable(period);
+    }
+  });
+  updateQuarterlyPeriodsAggregateTotal();
+}
+
+function renderInvoicePeriodBlock(period){
+  const container = qs('#invoicePeriodsContainer'); if(!container) return;
+  const block = document.createElement('div');
+  block.className = 'invoice-period-block';
+  block.dataset.periodId = period.id;
+  block.style.cssText = 'border:1px solid #e6e9ee;border-radius:8px;padding:10px;margin-top:10px;background:#fafbfc;';
+
+  const headerRow = document.createElement('div');
+  headerRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;';
+  const titleEl = document.createElement('strong'); titleEl.textContent = 'Additional Period';
+  const fromLabel = document.createElement('span'); fromLabel.className = 'small-muted'; fromLabel.textContent = 'From';
+  const fromInput = document.createElement('input'); fromInput.type = 'date'; fromInput.value = period.fromDate || '';
+  const toLabel = document.createElement('span'); toLabel.className = 'small-muted'; toLabel.textContent = 'To';
+  const toInput = document.createElement('input'); toInput.type = 'date'; toInput.value = period.toDate || '';
+  fromInput.addEventListener('input', () => { period.fromDate = fromInput.value; });
+  toInput.addEventListener('input', () => { period.toDate = toInput.value; });
+  const removePeriodBtn = document.createElement('button');
+  removePeriodBtn.type = 'button';
+  removePeriodBtn.textContent = 'Remove Period';
+  removePeriodBtn.style.cssText = 'margin-left:auto;color:#dc2626;';
+  removePeriodBtn.addEventListener('click', () => {
+    _invoicePeriods = _invoicePeriods.filter(p => p.id !== period.id);
+    block.remove();
+    updateQuarterlyPeriodsAggregateTotal();
+  });
+  headerRow.appendChild(titleEl);
+  headerRow.appendChild(fromLabel); headerRow.appendChild(fromInput);
+  headerRow.appendChild(toLabel); headerRow.appendChild(toInput);
+  headerRow.appendChild(removePeriodBtn);
+  block.appendChild(headerRow);
+
+  const tableWrap = document.createElement('div'); tableWrap.id = period.wrapId; tableWrap.className = 'invoice-unit-breakdown';
+  block.appendChild(tableWrap);
+  container.appendChild(block);
+
+  renderInvoicePeriodTable(period);
+}
+
+function updateQuarterlyPeriodsAggregateTotal(){
+  const el = qs('#invoicePeriodsAggregateTotal'); if(!el) return;
+  if(_invoicePeriods.length === 0){ el.textContent = ''; return; }
+  let sum = 0;
+  ['invoiceUnitBreakdown'].concat(_invoicePeriods.map(p => p.wrapId)).forEach(wrapId => {
+    const wrap = qs('#' + wrapId); if(!wrap) return;
+    wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+      const c = row.querySelector('.ub-charge'); const t = row.querySelector('.ub-tax'); const o = row.querySelector('.ub-other');
+      sum += (parseCurrency(c ? c.value : '') || 0) + (parseCurrency(t ? t.value : '') || 0) + (parseCurrency(o ? o.value : '') || 0);
+    });
+  });
+  const amountField = qs('#invoiceAmount');
+  const declared = parseCurrency(amountField ? amountField.value : '');
+  const matches = declared !== null && Math.round(sum*100) === Math.round(declared*100);
+  el.textContent = 'Total across all periods (Tax + Other Charges + Amount): ' + formatCurrency(sum.toFixed(2)) + (declared !== null ? ' / declared ' + formatCurrency(declared.toFixed(2)) : '');
+  el.style.color = matches ? '#15803d' : '#dc2626';
+  el.style.fontWeight = '700';
+}
+
+function invoiceQuarterlyPeriodsMatchDeclared(){
+  if(_invoicePeriods.length === 0) return true;
+  let sum = 0;
+  ['invoiceUnitBreakdown'].concat(_invoicePeriods.map(p => p.wrapId)).forEach(wrapId => {
+    const wrap = qs('#' + wrapId); if(!wrap) return;
+    wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+      const c = row.querySelector('.ub-charge'); const t = row.querySelector('.ub-tax'); const o = row.querySelector('.ub-other');
+      sum += (parseCurrency(c ? c.value : '') || 0) + (parseCurrency(t ? t.value : '') || 0) + (parseCurrency(o ? o.value : '') || 0);
+    });
+  });
+  const declared = parseCurrency((qs('#invoiceAmount')||{}).value || '');
+  return declared !== null && Math.round(sum*100) === Math.round(declared*100);
+}
+
+function resetInvoiceQuarterlyPeriods(){
+  _invoicePeriods = [];
+  const container = qs('#invoicePeriodsContainer'); if(container) container.innerHTML = '';
+  const totalEl = qs('#invoicePeriodsAggregateTotal'); if(totalEl) totalEl.textContent = '';
+  updateInvoiceAddPeriodAvailability();
+}
+
+const invoiceAddPeriodBtn = qs('#invoiceAddPeriodBtn');
+if(invoiceAddPeriodBtn){
+  invoiceAddPeriodBtn.addEventListener('click', () => {
+    const units = getSelectedInvoiceUnits();
+    if(units.length === 0){ alert('Select the invoice units first, then Add Period.'); return; }
+    _invoicePeriodSeq++;
+    const period = { id: 'p' + _invoicePeriodSeq, wrapId: 'invoicePeriodBreakdown_' + _invoicePeriodSeq, fromDate: '', toDate: '', units: units.slice() };
+    _invoicePeriods.push(period);
+    renderInvoicePeriodBlock(period);
+  });
 }
 
 // Always-visible box + search input (same format as the Registry Edit modal's lease/unit
@@ -1671,6 +1842,18 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     priorSubcharges.forEach(sub => addSubchargeRow(sub));
     recomputeOtherFromSubcharges();
     updateUnitBreakdownRowTotal(row);
+
+    // Quarterly-period tables let an operator drop a unit from just that one period without
+    // touching the main selection or any other period — not shown unless the caller opts in.
+    if(opts && typeof opts.onRemoveUnit === 'function'){
+      const removeUnitBtn = document.createElement('button');
+      removeUnitBtn.type = 'button';
+      removeUnitBtn.textContent = '✕';
+      removeUnitBtn.title = 'Remove this unit from this period';
+      removeUnitBtn.style.cssText = 'flex:0 0 22px;border:none;background:none;color:#dc2626;cursor:pointer;font-size:13px;margin-left:6px;';
+      removeUnitBtn.addEventListener('click', (e) => { e.stopPropagation(); opts.onRemoveUnit(uid); });
+      row.appendChild(removeUnitBtn);
+    }
   });
 
   // Expand/collapse arrow, centered on the table's bottom edge: toggles between the capped
@@ -1724,6 +1907,10 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
 
 // The running total is Tax + Other Charges + Amount summed across every unit row; it must
 // equal the declared Amount field (red until it matches, green once it does).
+function _isInvoiceQuarterlyPeriodWrap(wrapId){
+  return wrapId === 'invoiceUnitBreakdown' || wrapId.indexOf('invoicePeriodBreakdown_') === 0;
+}
+
 function updateUnitBreakdownTotal(wrapId){
   const wrap = qs('#' + wrapId); if(!wrap) return;
   const totalEl = wrap.querySelector('.unit-breakdown-total-text'); if(!totalEl) return;
@@ -1736,11 +1923,19 @@ function updateUnitBreakdownTotal(wrapId){
   });
   const amountFieldId = wrap.dataset.amountFieldId;
   const amountField = amountFieldId ? qs('#' + amountFieldId) : null;
-  const declared = parseCurrency(amountField ? amountField.value : '');
+  // Quarterly invoices: the declared Amount covers the sum across every period's table, not
+  // this one table alone — skip this table's own match and let
+  // updateQuarterlyPeriodsAggregateTotal() validate the combined total instead.
+  const inMultiPeriodMode = wrapId === 'invoiceUnitBreakdown' && typeof _invoicePeriods !== 'undefined' && _invoicePeriods.length > 0;
+  const declared = inMultiPeriodMode ? null : parseCurrency(amountField ? amountField.value : '');
   const matches = declared !== null && Math.round(sum*100) === Math.round(declared*100);
   totalEl.textContent = 'Total (Tax + Other Charges + Amount): ' + formatCurrency(sum.toFixed(2)) + (declared !== null ? ' / declared ' + formatCurrency(declared.toFixed(2)) : '');
   totalEl.style.color = matches ? '#15803d' : '#dc2626';
   wrap.dataset.matches = matches ? 'true' : 'false';
+
+  if(_isInvoiceQuarterlyPeriodWrap(wrapId) && typeof updateQuarterlyPeriodsAggregateTotal === 'function'){
+    updateQuarterlyPeriodsAggregateTotal();
+  }
 }
 
 function unitBreakdownMatches(wrapId){
@@ -4283,6 +4478,7 @@ if(invoiceClearBtn){
       commentBtn.title = '';
       try{ commentBtn.classList.remove('btn-warning'); commentBtn.classList.add('btn-primary'); }catch(e){}
     }
+    if(typeof resetInvoiceQuarterlyPeriods === 'function') resetInvoiceQuarterlyPeriods();
   });
 }
 
@@ -4547,6 +4743,7 @@ function startAutoRefresh(){
         lease: String(r.lease || ''),
         leases: (()=>{ const v = DB.parseField(r.leases); return Array.isArray(v) ? v : []; })(),
         unitDetails: (()=>{ const v = DB.parseField(r.unitDetails); return Array.isArray(v) ? v : []; })(),
+        periods: (()=>{ const v = DB.parseField(r.periods); return Array.isArray(v) ? v : []; })(),
         invoiceDate: String(r['Invoice Date'] || r.invoiceDate || ''),
         periodStart: String(r.periodStart || '').slice(0,10),
         periodEnd: String(r.periodEnd || '').slice(0,10),

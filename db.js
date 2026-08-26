@@ -138,6 +138,9 @@ const DB = {
         createdAt: String(r.createdAt || ''),
         units: DB.parseField(r.units),
         unitDetails: (()=>{ const v = DB.parseField(r.unitDetails); return Array.isArray(v) ? v : []; })(),
+        // Quarterly leases: any additional periods beyond the registry's own (first) period
+        // above, each carrying its own From/To dates and its own per-unit unitDetails.
+        periods: (()=>{ const v = DB.parseField(r.periods); return Array.isArray(v) ? v : []; })(),
         comments: DB.parseField(r.comments) || []
       }));
 
@@ -253,6 +256,7 @@ const DB = {
       units: Array.isArray(record.units) ? JSON.stringify(record.units) : record.units,
       leases: Array.isArray(record.leases) ? JSON.stringify(record.leases) : (record.leases || '[]'),
       unitDetails: Array.isArray(record.unitDetails) ? JSON.stringify(record.unitDetails) : (record.unitDetails || '[]'),
+      periods: Array.isArray(record.periods) ? JSON.stringify(record.periods) : (record.periods || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
     // "Invoice Date" is the one column on this sheet with a spaced/title-case header instead
@@ -268,6 +272,7 @@ const DB = {
       units: Array.isArray(record.units) ? JSON.stringify(record.units) : record.units,
       leases: Array.isArray(record.leases) ? JSON.stringify(record.leases) : (record.leases || '[]'),
       unitDetails: Array.isArray(record.unitDetails) ? JSON.stringify(record.unitDetails) : (record.unitDetails || '[]'),
+      periods: Array.isArray(record.periods) ? JSON.stringify(record.periods) : (record.periods || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
     delete data.invoiceDate;
