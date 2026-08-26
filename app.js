@@ -163,10 +163,40 @@ function initWeatherWidgets(){
 (function setupModalScrollLock(){
   const modals = Array.from(document.querySelectorAll('.modal'));
   if(modals.length === 0) return;
+  // Plain `overflow:hidden` on html/body collapses the scrollable area the instant a modal
+  // opens, which snaps the visual scroll position to 0 — the page "jumps to the top" the
+  // moment any modal appears. Pin the body at its current scroll offset via position:fixed +
+  // a matching negative `top` instead, so the underlying page never actually moves; restore
+  // real document scroll on unlock.
+  let isLocked = false;
+  let lockedScrollY = 0;
+  function lock(){
+    if(isLocked) return;
+    isLocked = true;
+    lockedScrollY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0;
+    document.body.style.position = 'fixed';
+    document.body.style.top = (-lockedScrollY) + 'px';
+    document.body.style.left = '0';
+    document.body.style.right = '0';
+    document.body.style.width = '100%';
+    document.documentElement.classList.add('modal-open-lock');
+    document.body.classList.add('modal-open-lock');
+  }
+  function unlock(){
+    if(!isLocked) return;
+    isLocked = false;
+    document.documentElement.classList.remove('modal-open-lock');
+    document.body.classList.remove('modal-open-lock');
+    document.body.style.position = '';
+    document.body.style.top = '';
+    document.body.style.left = '';
+    document.body.style.right = '';
+    document.body.style.width = '';
+    window.scrollTo(0, lockedScrollY);
+  }
   function refresh(){
     const anyOpen = modals.some(m => getComputedStyle(m).display !== 'none');
-    document.documentElement.classList.toggle('modal-open-lock', anyOpen);
-    document.body.classList.toggle('modal-open-lock', anyOpen);
+    if(anyOpen) lock(); else unlock();
   }
   const observer = new MutationObserver(refresh);
   modals.forEach(m => observer.observe(m, { attributes: true, attributeFilter: ['style'] }));
@@ -10742,14 +10772,6 @@ let _unitDetailList = [];
 let _unitDetailIndex = 0;
 
 function openUnitWdNumbersModal(unitId, year, month, unitIdList) {
-  // Opening this modal (and the render work it triggers) can shift the page's scroll position
-  // — restore exactly where the operator was looking instead of leaving them dropped back at
-  // the top of the page. The modal itself is position:fixed, so this is purely about not
-  // letting the underlying page move while it opens.
-  const scrollX = window.scrollX;
-  const scrollY = window.scrollY;
-  const restoreScroll = () => window.scrollTo(scrollX, scrollY);
-
   window.currentWdNumbersYear = year;
   window.currentWdNumbersMonth = month;
 
@@ -10785,25 +10807,6 @@ function openUnitWdNumbersModal(unitId, year, month, unitIdList) {
 
   const modal = qs('#unitWdNumbersModal');
   if(modal) modal.style.display = 'flex';
-
-  restoreScroll();
-  // Also restore on the next frame — some browsers re-adjust scroll after layout settles
-  // once the modal's (possibly tall) content has actually painted.
-  try{ requestAnimationFrame(restoreScroll); }catch(e){}
-  setTimeout(restoreScroll, 0);
-  // Belt-and-suspenders: whatever is nudging the page, actively correct it for a short window
-  // after opening rather than only re-asserting a fixed few times immediately — catches a
-  // scroll that happens slightly later (e.g. after a delayed layout/reflow).
-  let restoreScrollGuardUntil = Date.now() + 600;
-  const restoreScrollGuard = () => {
-    if(Date.now() > restoreScrollGuardUntil){
-      window.removeEventListener('scroll', restoreScrollGuard);
-      return;
-    }
-    if(window.scrollX !== scrollX || window.scrollY !== scrollY) window.scrollTo(scrollX, scrollY);
-  };
-  window.addEventListener('scroll', restoreScrollGuard);
-  setTimeout(() => window.removeEventListener('scroll', restoreScrollGuard), 600);
 }
 
 function renderUnitDetailModal(unitId) {
