@@ -11520,15 +11520,16 @@ function buildUnitStats(unit, statsId){
     });
 
     // Manual coverage is tracked separately here (its own "Manual Coverage Days" stat below) —
-    // it deliberately does NOT mark a month as covered or add to Days Billed, so those two
-    // stats stay a read on real, invoice-backed coverage only. A month with only manual days
-    // still falls into Months Missing as a result.
+    // it deliberately never marks a month as covered or adds to Days Billed, so those two stats
+    // stay a read on real, invoice-backed coverage only. But an operator only adds it once
+    // they've decided no invoice is actually expected for that period, so a month resolved
+    // that way should stop counting as Months Missing too — it just isn't Covered either.
     let manualDays = 0;
     for(let dd = 1; dd <= daysInMonth; dd++){ if(isManuallyCovered(unit, y, m, dd)) manualDays++; }
     manualCoverageDaysTotal += manualDays;
 
     if(hasCoverage) monthsCovered++;
-    else monthsMissing++;
+    else if(manualDays === 0) monthsMissing++;
     if(hasCredit) creditMonths++;
   });
 
