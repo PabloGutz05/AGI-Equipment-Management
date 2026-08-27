@@ -66,6 +66,9 @@ function handleRequest(e) {
       case 'bulkSave':
         result = bulkSave(sheet, postData.data);
         break;
+      case 'bulkDelete':
+        result = bulkDelete(sheet, postData.ids);
+        break;
       case 'repairMissingIds':
         result = repairMissingIds(sheet);
         break;
@@ -285,6 +288,29 @@ function bulkSave(sheetName, dataArray) {
   const rows = dataArray.map(data => headers.map(h => data[h] !== undefined ? data[h] : ''));
   sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
   return { saved: rows.length };
+}
+
+// Deletes every row in `sheetName` whose id is in `ids`, in one pass — counterpart to
+// bulkSave, for the same reason: deleting many rows one request at a time (e.g. un-marking a
+// wide manual-coverage drag) means that many separate lock-acquire-and-write cycles, which
+// doesn't hold up under a large batch the way one bulk pass does.
+function bulkDelete(sheetName, ids) {
+  if (!ids || ids.length === 0) return { deleted: 0 };
+  const sheet = getSheet(sheetName);
+  const idSet = new Set(ids.map(String));
+  const allData = sheet.getDataRange().getValues();
+  const headers = allData[0];
+  const idCol = headers.indexOf('id');
+  if (idCol === -1) throw new Error('No id column found');
+  let deleted = 0;
+  // Walk bottom-up so deleting a row doesn't shift the indices of rows still to be checked.
+  for (let i = allData.length - 1; i >= 1; i--) {
+    if (idSet.has(String(allData[i][idCol]))) {
+      sheet.deleteRow(i + 1);
+      deleted++;
+    }
+  }
+  return { deleted: deleted };
 }
 
 // One-time repair: fills in a fresh unique id for any row in `sheetName` whose id column

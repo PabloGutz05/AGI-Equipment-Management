@@ -5694,17 +5694,26 @@ let _accrualsSessionOriginalDates = new Set();
 
 // Saves/deletes exactly the dates that actually changed since the panel was opened for this
 // unit — each manually-covered date is its own row in the "Manual Coverage" sheet (see
-// db.js's saveManualCoverage/deleteManualCoverage), so this never touches any other unit field.
-// This replaces an earlier version that called DB.updateUnit(unit) with the unit's *entire*
-// record: any other in-flight edit to the same unit (a comment, a status change) sends its own
-// full snapshot too, and whichever write reached the sheet last silently won — if that snapshot
-// was taken before the manual-coverage edit, it wiped the mark back out. Per-date rows can't
-// collide like that, since nothing else in the app ever touches this sheet.
+// db.js's bulkSaveManualCoverage/bulkDeleteManualCoverage), so this never touches any other
+// unit field. This replaces an earlier version that called DB.updateUnit(unit) with the unit's
+// *entire* record: any other in-flight edit to the same unit (a comment, a status change)
+// sends its own full snapshot too, and whichever write reached the sheet last silently won —
+// if that snapshot was taken before the manual-coverage edit, it wiped the mark back out.
+// Per-date rows can't collide like that, since nothing else in the app ever touches this sheet.
+//
+// Everything changed this session is batched into ONE save request and ONE delete request,
+// not one request per date — a wide drag across several months can touch 100+ dates, and
+// firing that many near-simultaneous requests at Apps Script's single LockService queue (30s
+// client timeout on top) meant a random subset would silently fail, which is exactly what was
+// making only "some" of a large drag actually stick after a refresh.
 function persistManualCoverage(unit){
   try{ saveState(); }catch(e){}
   unit.manualCoverageRowIds = (unit.manualCoverageRowIds && typeof unit.manualCoverageRowIds === 'object') ? unit.manualCoverageRowIds : {};
   const uid = (unit.unitId || unit.id || '').toString();
   const current = new Set(unit.manualCoverageDates || []);
+
+  const toSave = [];
+  const toDeleteIds = [];
 
   _accrualsPendingDates.forEach(dateStr => {
     const nowCovered = current.has(dateStr);
@@ -5712,18 +5721,22 @@ function persistManualCoverage(unit){
     if(nowCovered && !wasCovered){
       const rowId = unit.manualCoverageRowIds[dateStr] || id();
       unit.manualCoverageRowIds[dateStr] = rowId;
-      DB.saveManualCoverage({ id: rowId, unitId: uid, date: dateStr, createdAt: new Date().toISOString() })
-        .catch(e => console.error('Manual coverage save error:', e));
+      toSave.push({ id: rowId, unitId: uid, date: dateStr, createdAt: new Date().toISOString() });
     } else if(!nowCovered && wasCovered){
       const rowId = unit.manualCoverageRowIds[dateStr];
-      if(rowId){
-        DB.deleteManualCoverage(rowId).catch(e => console.error('Manual coverage delete error:', e));
-      }
+      if(rowId) toDeleteIds.push(rowId);
       delete unit.manualCoverageRowIds[dateStr];
     }
     // nowCovered === wasCovered: toggled back to its original state within this same pending
     // session (e.g. marked then unmarked before Accept) — nothing to reconcile remotely.
   });
+
+  if(toSave.length > 0){
+    DB.bulkSaveManualCoverage(toSave).catch(e => console.error('Manual coverage bulk save error:', e));
+  }
+  if(toDeleteIds.length > 0){
+    DB.bulkDeleteManualCoverage(toDeleteIds).catch(e => console.error('Manual coverage bulk delete error:', e));
+  }
 
   _accrualsSessionOriginalDates = new Set(current);
 }

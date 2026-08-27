@@ -374,6 +374,18 @@ const DB = {
   async deleteManualCoverage(id) {
     return DB.post({ action: 'delete', sheet: 'Manual Coverage', id });
   },
+  // A single drag can mark/unmark hundreds of dates at once — one network request per date
+  // (the old approach) means a wide drag fires that many near-simultaneous requests against
+  // Apps Script's single LockService queue and 30s client timeout, and a random subset would
+  // silently fail. These batch everything from one Accept into one request each.
+  async bulkSaveManualCoverage(records) {
+    if (!records || records.length === 0) return { saved: 0 };
+    return DB.post({ action: 'bulkSave', sheet: 'Manual Coverage', data: records });
+  },
+  async bulkDeleteManualCoverage(ids) {
+    if (!ids || ids.length === 0) return { deleted: 0 };
+    return DB.post({ action: 'bulkDelete', sheet: 'Manual Coverage', ids });
+  },
 
   async saveLease(record) {
     return DB.post({ action: 'save', sheet: 'leases', data: record });
