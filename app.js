@@ -5008,12 +5008,16 @@ function startAutoRefresh(){
 
     _refreshRunning = true;
     try{
-      const [registries, units, leases, users, meta] = await fetchWithTimeout(
+      const [registries, units, leases, users, accrualsRaw, manualCoverageRaw, meta] = await fetchWithTimeout(
         Promise.all([
           DB.get({ action: 'getAll', sheet: 'invoices' }),
           DB.get({ action: 'getAll', sheet: 'units' }),
           DB.get({ action: 'getAll', sheet: 'leases' }),
           DB.get({ action: 'getAll', sheet: 'users' }),
+          // Guarded like loadAll()'s own fetch of these — this refresh must keep working even
+          // if one of these newer sheets is temporarily unreachable.
+          DB.get({ action: 'getAll', sheet: 'Accruals' }).catch(() => null),
+          DB.get({ action: 'getAll', sheet: 'Manual Coverage' }).catch(() => null),
           DB.get({ action: 'getMeta' })
         ])
       );
@@ -5041,16 +5045,71 @@ function startAutoRefresh(){
         comments: DB.parseField(r.comments) || []
       }));
 
-      state.units = units.map(u => ({
-        ...u,
-        id: String(u.id || ''),
-        lease: String(u.lease || ''),
-        unitId: String(u.unitId || ''),
-        status: String(u.status || ''),
-        statusHistory: DB.parseField(u.statusHistory) || [],
-        comments: DB.parseField(u.comments) || [],
-        overviewComments: DB.parseField(u.overviewComments) || []
-      }));
+      // Manual coverage lives in its own "Manual Coverage" sheet (see db.js's loadAll for the
+      // full explanation) — this refresh must attach it the exact same way, or every unit
+      // object it rebuilds here would silently lose its manualCoverageDates/manualCoverageRowIds
+      // every 60 seconds, making any manual coverage marked in the meantime look like it
+      // "un-splits" itself back out of the missing-periods table the next time it recomputes.
+      if(Array.isArray(manualCoverageRaw)){
+        const parsedManualCoverage = manualCoverageRaw.map(mc => ({
+          id: String(mc.id || ''), unitId: String(mc.unitId || ''), date: String(mc.date || '')
+        }));
+        state.units = units.map(u => {
+          const uidNorm = String(u.unitId || '').trim().toLowerCase();
+          const ownCoverage = parsedManualCoverage.filter(mc => mc.unitId.trim().toLowerCase() === uidNorm);
+          return {
+            ...u,
+            id: String(u.id || ''),
+            lease: String(u.lease || ''),
+            unitId: String(u.unitId || ''),
+            status: String(u.status || ''),
+            statusHistory: DB.parseField(u.statusHistory) || [],
+            comments: DB.parseField(u.comments) || [],
+            overviewComments: DB.parseField(u.overviewComments) || [],
+            manualCoverageDates: ownCoverage.map(r => r.date),
+            manualCoverageRowIds: ownCoverage.reduce((acc, r) => { acc[r.date] = r.id; return acc; }, {})
+          };
+        });
+      } else {
+        // The Manual Coverage fetch itself failed this cycle — rebuild everything else as
+        // usual, but carry each unit's existing in-memory manual coverage forward by unitId
+        // rather than silently dropping it.
+        const existingByUnitId = new Map((state.units || []).map(u => [String(u.unitId || '').trim().toLowerCase(), u]));
+        state.units = units.map(u => {
+          const uidNorm = String(u.unitId || '').trim().toLowerCase();
+          const existing = existingByUnitId.get(uidNorm);
+          return {
+            ...u,
+            id: String(u.id || ''),
+            lease: String(u.lease || ''),
+            unitId: String(u.unitId || ''),
+            status: String(u.status || ''),
+            statusHistory: DB.parseField(u.statusHistory) || [],
+            comments: DB.parseField(u.comments) || [],
+            overviewComments: DB.parseField(u.overviewComments) || [],
+            manualCoverageDates: existing ? existing.manualCoverageDates : [],
+            manualCoverageRowIds: existing ? existing.manualCoverageRowIds : {}
+          };
+        });
+      }
+
+      if(Array.isArray(accrualsRaw)){
+        state.accruals = accrualsRaw.map(a => ({
+          id: String(a.id || ''),
+          unitId: String(a.unitId || ''),
+          lease: String(a.lease || ''),
+          supplier: String(a.supplier || ''),
+          costCenter: String(a.costCenter || ''),
+          status: String(a.status || ''),
+          periodStart: String(a.periodStart || ''),
+          periodEnd: String(a.periodEnd || ''),
+          days: Number(a.days) || 0,
+          accrualMonth: String(a.accrualMonth || ''),
+          accrualYear: String(a.accrualYear || ''),
+          createdAt: String(a.createdAt || '')
+        }));
+      }
+      // else: Accruals fetch failed this cycle — leave state.accruals exactly as it was.
 
       state.leases = leases.map(l => ({
         ...l,
@@ -11947,12 +12006,19 @@ function computeUnitManualCoveragePeriods(unit){
 // closed) accrual — already sitting in "Periods Ready to Accrue" this cycle — and attaches
 // `.priorAccrual` (most recently closed total) to periods with prior closed history.
 function applyAccrualHistoryToRows(rows){
+  // Match on the FULL range (start AND end), not just start — matching on start alone hid the
+  // wrong thing once manual coverage could carve a middle chunk out of an already-open-accrued
+  // gap: the resulting sub-periods still share the original start date, so a start-only match
+  // kept suppressing them even though they're no longer the same range as what's actually
+  // sitting in "Periods Ready to Accrue". Requiring an exact match means ANY change to the
+  // gap's shape (a split, or the gap simply growing) makes it reappear for review rather than
+  // staying silently hidden behind a now-stale accrual reference.
   const openAccrualKeys = new Set(
     (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear)
-      .map(a => a.unitId.toLowerCase() + '|' + a.periodStart)
+      .map(a => a.unitId.toLowerCase() + '|' + a.periodStart + '|' + a.periodEnd)
   );
   const filtered = openAccrualKeys.size
-    ? rows.filter(r => !openAccrualKeys.has(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start)))
+    ? rows.filter(r => !openAccrualKeys.has(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start) + '|' + dateToIsoStr(r.end)))
     : rows;
 
   const lastClosedByKey = new Map();
@@ -12381,6 +12447,28 @@ function syncAccrualsListHeight(){
   }catch(e){}
 }
 
+// Scrolls `el` into view within `container`'s own scrollbar only, by adjusting container's
+// scrollTop directly — unlike Element.scrollIntoView(), this never touches any ancestor beyond
+// `container`, so it can't move the outer page's scroll position. align: 'center' pulls the
+// element to the container's vertical center (used for the coverage calendar's month scroll);
+// 'nearest' only scrolls the minimum needed to bring it fully into view (used for row nav).
+function scrollIntoContainerView(el, container, align){
+  if(!el || !container) return;
+  try{
+    const elRect = el.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    if(align === 'center'){
+      const elCenter = elRect.top + elRect.height / 2;
+      const containerCenter = containerRect.top + containerRect.height / 2;
+      container.scrollTop += (elCenter - containerCenter);
+    } else if(elRect.top < containerRect.top){
+      container.scrollTop -= (containerRect.top - elRect.top);
+    } else if(elRect.bottom > containerRect.bottom){
+      container.scrollTop += (elRect.bottom - containerRect.bottom);
+    }
+  }catch(e){}
+}
+
 function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
   const unit = (state.units || []).find(u => String(u.unitId||'').trim().toLowerCase() === String(unitId||'').trim().toLowerCase());
   const emptyEl = qs('#accrualsPanelEmpty');
@@ -12450,14 +12538,17 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
   buildUnitCoverageGrid(unit, 'accrualsPanelGrid', 'accrualsPanelPopup', true);
   buildUnitStats(unit, 'accrualsPanelStats');
 
-  // Scroll the calendar so the missing period being reviewed is immediately visible.
+  // Scroll the calendar so the missing period being reviewed is immediately visible — scoped to
+  // the panel's own scroll container (see scrollIntoContainerView) rather than a plain
+  // scrollIntoView, which walks every scrollable ancestor including the page itself and was
+  // moving the whole window's scroll position on every row click / Prev-Next step.
   if(typeof focusYear === 'number' && typeof focusMonth === 'number'){
     try{
       const gridEl = qs('#accrualsPanelGrid');
       const targetLabel = new Date(focusYear, focusMonth, 1).toLocaleString('en-US', { month: 'short', year: '2-digit' });
       const gridRows = gridEl ? Array.from(gridEl.querySelectorAll('tr')) : [];
       const match = gridRows.find(tr => { const cell = tr.querySelector('td'); return cell && cell.textContent === targetLabel; });
-      if(match) match.scrollIntoView({ block: 'center' });
+      if(match) scrollIntoContainerView(match, qs('#accrualsPanelScroll'), 'center');
     }catch(e){}
   }
 
@@ -12746,7 +12837,10 @@ function accrualsPanelNavigate(direction){
   if(idx < 0 || idx >= refs.length) return;
   const target = refs[idx];
   target.tr.click();
-  try{ target.tr.scrollIntoView({ block: 'nearest' }); }catch(e){}
+  try{
+    const listContainer = qs(_accrualsActiveSubTab === 'manual' ? '#accrualsManualPeriodsTable' : '#accrualsMissingPeriodsTable');
+    scrollIntoContainerView(target.tr, listContainer, 'nearest');
+  }catch(e){}
 }
 
 const accrualsPanelPrevBtn = qs('#accrualsPanelPrev');
