@@ -5608,11 +5608,9 @@ function isManuallyCovered(unit, year, month, day){
   const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
   return dates.indexOf(dateStr) !== -1;
 }
-// Toggles one date on/off in the unit's manual coverage list and persists it. Returns the new
-// state (true = now manually covered).
-// Sets (doesn't toggle) one date's manual-coverage membership without saving/persisting —
-// used both by a plain click (see toggleManualCoverage) and by click-and-drag, which applies
-// many dates locally while dragging and only persists once, at the end of the drag.
+// Sets (doesn't toggle) one date's manual-coverage membership without saving/persisting — a
+// click or drag applies this locally to however many dates are touched, and persistManualCoverage
+// only runs once the operator clicks "Accept manual coverage" in the panel.
 function setManualCoverageDate(unit, year, month, day, covered){
   unit.manualCoverageDates = Array.isArray(unit.manualCoverageDates) ? unit.manualCoverageDates.slice() : [];
   const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
@@ -5626,26 +5624,30 @@ function persistManualCoverage(unit){
   try{ saveState(); }catch(e){}
   DB.updateUnit(unit).catch(e => console.error('Manual coverage save error:', e));
 }
-function toggleManualCoverage(unit, year, month, day){
-  const nowCovered = !isManuallyCovered(unit, year, month, day);
-  setManualCoverageDate(unit, year, month, day, nowCovered);
-  persistManualCoverage(unit);
-  return nowCovered;
-}
 
 // Click-and-drag support for marking a whole run of blank (or a whole run of manual) squares
 // in one gesture, instead of one click per day. mousedown on an eligible square starts the
 // drag and fixes its "mode" (mark if the square was blank, unmark if it was already manual);
 // dragging over other squares only ever touches ones matching that same starting state, so a
-// drag can't accidentally cross from marking into unmarking or vice versa. Nothing is saved
-// until mouseup, so a long drag doesn't spam saves or re-render the grid mid-gesture.
+// drag can't accidentally cross from marking into unmarking or vice versa.
+//
+// Nothing is saved, or reflected on any other table, until the operator clicks "Accept manual
+// coverage" in the panel — a drag only ever mutates the unit object in memory and repaints the
+// touched squares directly, so marking a run of days doesn't trigger the (comparatively
+// expensive) missing-periods recompute/re-render on every square or every mouseup. While any
+// change is pending, switching units (Prev/Next or picking another row) is blocked so a pending
+// edit can never be silently abandoned or overwritten by a fresh render of a different unit.
 let _accrualsDrag = null;
+let _accrualsPanelUnit = null;
+let _accrualsHasPendingChanges = false;
+let _accrualsPendingDates = new Set();
+
 function applyManualSquareStyle(sq, tdDay, covered){
   if(covered){
     sq.style.background = '#581c87';
     sq.style.color = '#e9d5ff';
     sq.style.border = '1px solid #a855f7';
-    tdDay.title = 'Manually confirmed coverage — click to remove';
+    tdDay.title = 'Manually confirmed coverage (pending) — click to remove';
   } else {
     sq.style.background = '#111827';
     sq.style.color = '#374151';
@@ -5653,13 +5655,48 @@ function applyManualSquareStyle(sq, tdDay, covered){
     tdDay.title = 'Click, or click and drag, to mark as manually covered';
   }
 }
+
+function updateAccrualsAcceptButton(){
+  const btn = qs('#accrualsPanelAcceptBtn');
+  const countEl = qs('#accrualsPanelPendingCount');
+  if(btn){
+    btn.disabled = !_accrualsHasPendingChanges;
+    btn.style.opacity = _accrualsHasPendingChanges ? '1' : '0.4';
+    btn.style.cursor = _accrualsHasPendingChanges ? 'pointer' : 'not-allowed';
+  }
+  if(countEl){
+    countEl.textContent = _accrualsHasPendingChanges
+      ? `${_accrualsPendingDates.size} day(s) pending — accept to save`
+      : 'No pending changes';
+  }
+}
+
+// Blocks switching to a different row/unit while a manual-coverage edit hasn't been accepted
+// yet — called at the top of the row-click and Prev/Next handlers.
+function accrualsPanelBlockedByPending(){
+  if(!_accrualsHasPendingChanges) return false;
+  alert('You have pending manual coverage changes — click "Accept manual coverage" first before switching units.');
+  return true;
+}
+
 function endAccrualsDrag(){
   if(!_accrualsDrag) return;
-  const { unit } = _accrualsDrag;
+  _accrualsDrag.touched.forEach(dateStr => _accrualsPendingDates.add(dateStr));
   _accrualsDrag = null;
+  _accrualsHasPendingChanges = _accrualsPendingDates.size > 0;
+  updateAccrualsAcceptButton();
+}
+
+function acceptAccrualsManualCoverage(){
+  if(!_accrualsHasPendingChanges || !_accrualsPanelUnit) return;
+  const unit = _accrualsPanelUnit;
   persistManualCoverage(unit);
+  _accrualsHasPendingChanges = false;
+  _accrualsPendingDates = new Set();
   if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
 }
+const accrualsPanelAcceptBtnEl = qs('#accrualsPanelAcceptBtn');
+if(accrualsPanelAcceptBtnEl) accrualsPanelAcceptBtnEl.addEventListener('click', acceptAccrualsManualCoverage);
 
 // Render the Unit Overview page: year/month selectors and per-unit day grid
 function renderUnitOverview(){
@@ -11874,7 +11911,11 @@ function renderAccrualsMissingPeriods(forceRecompute){
 
     tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
     tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
-    tr.addEventListener('click', () => {
+    tr.addEventListener('click', (e) => {
+      // e.isTrusted is false for the programmatic .click() calls this same code uses to
+      // restore/auto-select a row after a rebuild — only a real user click should ever be
+      // blocked by a pending manual-coverage edit.
+      if(e.isTrusted && accrualsPanelBlockedByPending()) return;
       Array.from(tbody.querySelectorAll('tr')).forEach(row => { row.dataset.selected = ''; row.style.backgroundColor = ''; });
       tr.dataset.selected = 'true';
       tr.style.backgroundColor = '#e6f0ff';
@@ -11953,6 +11994,14 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
   }
   if(emptyEl) emptyEl.style.display = 'none';
   if(contentEl) contentEl.style.display = 'block';
+
+  // A fresh render always represents the current committed truth for whichever unit is being
+  // shown, so any earlier pending manual-coverage edit is cleared here (accrualsPanelBlockedByPending
+  // already prevents reaching this point while a real pending edit exists for a different unit).
+  _accrualsPanelUnit = unit;
+  _accrualsHasPendingChanges = false;
+  _accrualsPendingDates = new Set();
+  updateAccrualsAcceptButton();
 
   const titleEl = qs('#accrualsPanelTitle');
   if(titleEl) titleEl.textContent = unit.unitId || unitId;
@@ -12058,6 +12107,7 @@ function updateAccrualsPanelNav(){
 // that row's own click handler (highlight + panel render) and scrolling it into view within
 // the table's own scroll container if it isn't already visible.
 function accrualsPanelNavigate(direction){
+  if(accrualsPanelBlockedByPending()) return;
   if(!_accrualsRowRefs.length) return;
   let idx = _accrualsRowRefs.findIndex(x => x.rowKey === _accrualsSelectedRowKey);
   if(idx === -1){ idx = 0; } else { idx += direction; }

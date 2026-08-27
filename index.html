@@ -287,7 +287,7 @@
                verify a missing period against its calendar without leaving this tab. -->
           <div style="display:flex;gap:16px;align-items:flex-start;">
             <div style="flex:1 1 42%;min-width:280px;">
-              <div id="accrualsMissingPeriodsTable" style="overflow:auto;max-height:530px;border:1px solid #eef2f7;border-radius:6px;"></div>
+              <div id="accrualsMissingPeriodsTable" class="no-native-scrollbar" style="overflow:auto;max-height:530px;border:1px solid #eef2f7;border-radius:6px;"></div>
             </div>
             <div style="flex:1 1 58%;min-width:640px;max-width:780px;position:sticky;top:12px;">
               <div id="accrualsCoveragePanel" style="background:#0f1117;border-radius:16px;overflow:hidden;font-family:'DM Sans',system-ui,sans-serif;color:#e8eaf0;box-shadow:0 8px 24px rgba(0,0,0,0.14);">
@@ -306,9 +306,18 @@
                         <button id="accrualsPanelNext" type="button" style="background:#1e2535;border:none;color:#9ca3af;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;">›</button>
                       </div>
                     </div>
-                    <div id="accrualsPanelInfo" style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px 16px;margin-top:14px;"></div>
+                    <div style="display:flex;gap:16px;align-items:stretch;margin-top:14px;">
+                      <div id="accrualsPanelInfo" style="flex:1;min-width:0;display:grid;grid-template-columns:repeat(2,1fr);gap:10px 16px;"></div>
+                      <!-- Manual-coverage actions — only meaningful in this panel: any pending
+                           click/drag marks stay local (not saved, not reflected elsewhere) until
+                           accepted here, one deliberate action instead of a save per square. -->
+                      <div style="flex:0 0 200px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#1e1030;border:1px solid #3b0764;border-radius:8px;padding:10px;">
+                        <span id="accrualsPanelPendingCount" style="font-size:11px;color:#c4b5fd;text-align:center;">No pending changes</span>
+                        <button id="accrualsPanelAcceptBtn" type="button" disabled style="width:100%;padding:8px;border-radius:6px;border:none;background:#581c87;color:#e9d5ff;font-weight:700;font-size:12px;cursor:not-allowed;opacity:0.4;">Accept manual coverage</button>
+                      </div>
+                    </div>
                   </div>
-                  <div id="accrualsPanelScroll" style="padding:16px 20px;height:560px;overflow-y:auto;">
+                  <div id="accrualsPanelScroll" class="no-native-scrollbar" style="padding:16px 20px;height:560px;overflow-y:auto;">
                     <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
                       <span style="font-size:13px;font-weight:600;color:#9ca3af;">📅 Coverage history</span>
                       <span style="font-size:11px;color:#4b5563;">— click a day or month label for invoice details</span>
@@ -321,7 +330,7 @@
                       <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#1e2535;border:1px solid #374151;border-radius:2px;"></div>Pending</div>
                       <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#581c87;border:1px solid #a855f7;border-radius:2px;"></div>Manual coverage</div>
                     </div>
-                    <div id="accrualsPanelGrid" style="overflow-x:auto;"></div>
+                    <div id="accrualsPanelGrid" class="no-native-scrollbar" style="overflow-x:auto;"></div>
                     <div id="accrualsPanelPopup" style="display:none;margin-top:12px;background:#161b27;border:1px solid #1e2535;border-radius:10px;padding:14px;"></div>
                   </div>
                   <div id="accrualsPanelStats" style="background:#161b27;border-top:1px solid #1e2535;display:grid;grid-template-columns:repeat(5,1fr);gap:0;"></div>

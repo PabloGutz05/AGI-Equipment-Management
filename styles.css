@@ -5,6 +5,10 @@
   --muted:#6b7280;
 }
 *{box-sizing:border-box}
+/* Keeps an element scrollable while hiding its native scrollbar track — used where a
+   scrollbar popping in/out on hover was shifting nearby content around. */
+.no-native-scrollbar{scrollbar-width:none;-ms-overflow-style:none;}
+.no-native-scrollbar::-webkit-scrollbar{display:none;width:0;height:0;}
 body{font-family:Segoe UI, Roboto, Arial, sans-serif;background:var(--bg);color:#111;margin:0;padding:0}
 header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:20px;background:linear-gradient(90deg,#0b74de22,transparent);border-bottom:1px solid #e6e9ee;flex-wrap:wrap}
 header h1{margin:0;font-size:18px}
