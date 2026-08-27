@@ -11056,10 +11056,17 @@ function renderUnitDetailModal(unitId) {
   }
 }
 
-function buildUnitCoverageGrid(unit, gridId, popupId) {
+function buildUnitCoverageGrid(unit, gridId, popupId, compact) {
   const gridEl = qs('#' + (gridId || 'unitDetailGrid'));
   const popupEl = qs('#' + (popupId || 'unitDetailPopup'));
   if(!gridEl) return;
+  // Compact mode (Accruals coverage panel only) shrinks the calendar enough that a unit's
+  // whole history usually fits without needing its own scroll, alongside the missing-periods
+  // list — the popup keeps its normal size since it isn't fighting for space with anything.
+  const sqSize = compact ? 12 : 16;
+  const sqFont = compact ? '7px' : '8px';
+  const monthFont = compact ? '10px' : '11px';
+  const tableFont = compact ? '10px' : '11px';
   gridEl.innerHTML = '';
   if(popupEl) popupEl.style.display = 'none';
 
@@ -11109,7 +11116,7 @@ function buildUnitCoverageGrid(unit, gridId, popupId) {
 
   // Build table
   const table = document.createElement('table');
-  table.style.cssText = 'border-collapse:collapse;font-size:11px;min-width:100%;';
+  table.style.cssText = `border-collapse:collapse;font-size:${tableFont};min-width:100%;`;
 
   months.forEach(monthDate => {
     const y = monthDate.getFullYear();
@@ -11121,7 +11128,7 @@ function buildUnitCoverageGrid(unit, gridId, popupId) {
 
     // Month label cell
     const tdMonth = document.createElement('td');
-    tdMonth.style.cssText = 'padding:2px 8px 2px 0;color:#6b7280;font-size:11px;font-weight:600;white-space:nowrap;cursor:pointer;min-width:48px;';
+    tdMonth.style.cssText = `padding:2px ${compact ? 6 : 8}px 2px 0;color:#6b7280;font-size:${monthFont};font-weight:600;white-space:nowrap;cursor:pointer;min-width:${compact ? 38 : 48}px;`;
     tdMonth.textContent = monthLabel;
     tdMonth.title = 'Click to see all invoices this month';
     tdMonth.addEventListener('mouseenter', () => tdMonth.style.color = '#60a5fa');
@@ -11138,9 +11145,9 @@ function buildUnitCoverageGrid(unit, gridId, popupId) {
       const dayState = getDayState(unitIdNorm, y, m, d, registries, invoices, unit);
 
       sq.style.cssText = `
-        width:16px;height:16px;border-radius:2px;
+        width:${sqSize}px;height:${sqSize}px;border-radius:2px;
         display:flex;align-items:center;justify-content:center;
-        font-size:8px;cursor:pointer;transition:transform 0.1s;
+        font-size:${sqFont};cursor:pointer;transition:transform 0.1s;
         font-weight:600;
       `;
       sq.textContent = d;
@@ -11557,6 +11564,11 @@ let _accrualsMissingRowsCache = null;
 // unit + the missing period's own start date (stable across re-sorts, unlike a row index).
 let _accrualsSelectedRowKey = null;
 
+// One entry per currently-rendered row (in on-screen/sorted order): { rowKey, r, tr }. Lets the
+// panel's Prev/Next arrows step through the list and re-use the row's own click handler for
+// highlighting/selection instead of duplicating that logic.
+let _accrualsRowRefs = [];
+
 // Provisional Table 1: every missing coverage period, for every unit, from Jan 1 of the
 // current year through the end of the current month. A day only ever counts as "missing"
 // when the unit was available (not disabled) that day and not rental-covered — see
@@ -11668,11 +11680,13 @@ function renderAccrualsMissingPeriods(forceRecompute){
 
   const tbody = document.createElement('tbody');
   let selectedTr = null;
+  _accrualsRowRefs = [];
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f0f0f0';
     tr.style.cursor = 'pointer';
     const rowKey = r.unitId.toLowerCase() + '|' + r.start.getTime();
+    _accrualsRowRefs.push({ rowKey, r, tr });
 
     tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
     tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
@@ -11682,6 +11696,7 @@ function renderAccrualsMissingPeriods(forceRecompute){
       tr.style.backgroundColor = '#e6f0ff';
       _accrualsSelectedRowKey = rowKey;
       renderAccrualsCoveragePanel(r.unitId, r.start.getFullYear(), r.start.getMonth());
+      updateAccrualsPanelNav();
     });
 
     const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:6px 8px;color:#6b7280;';
@@ -11786,7 +11801,7 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
     `).join('');
   }
 
-  buildUnitCoverageGrid(unit, 'accrualsPanelGrid', 'accrualsPanelPopup');
+  buildUnitCoverageGrid(unit, 'accrualsPanelGrid', 'accrualsPanelPopup', true);
   buildUnitStats(unit, 'accrualsPanelStats');
 
   // Scroll the calendar so the missing period being reviewed is immediately visible.
@@ -11800,6 +11815,36 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
     }catch(e){}
   }
 }
+
+// Updates the panel's "X / Y" counter and Prev/Next arrow enabled state to match whichever
+// row is currently selected in _accrualsRowRefs.
+function updateAccrualsPanelNav(){
+  const navEl = qs('#accrualsPanelNav');
+  const prevBtn = qs('#accrualsPanelPrev');
+  const nextBtn = qs('#accrualsPanelNext');
+  const idx = _accrualsRowRefs.findIndex(x => x.rowKey === _accrualsSelectedRowKey);
+  if(navEl) navEl.textContent = (idx === -1 || _accrualsRowRefs.length === 0) ? '' : `${idx + 1} / ${_accrualsRowRefs.length}`;
+  if(prevBtn) prevBtn.style.opacity = (idx <= 0) ? '0.3' : '1';
+  if(nextBtn) nextBtn.style.opacity = (idx === -1 || idx >= _accrualsRowRefs.length - 1) ? '0.3' : '1';
+}
+
+// Steps the panel to the previous/next row in the list currently shown on the left, reusing
+// that row's own click handler (highlight + panel render) and scrolling it into view within
+// the table's own scroll container if it isn't already visible.
+function accrualsPanelNavigate(direction){
+  if(!_accrualsRowRefs.length) return;
+  let idx = _accrualsRowRefs.findIndex(x => x.rowKey === _accrualsSelectedRowKey);
+  if(idx === -1){ idx = 0; } else { idx += direction; }
+  if(idx < 0 || idx >= _accrualsRowRefs.length) return;
+  const target = _accrualsRowRefs[idx];
+  target.tr.click();
+  try{ target.tr.scrollIntoView({ block: 'nearest' }); }catch(e){}
+}
+
+const accrualsPanelPrevBtn = qs('#accrualsPanelPrev');
+if(accrualsPanelPrevBtn) accrualsPanelPrevBtn.addEventListener('click', () => accrualsPanelNavigate(-1));
+const accrualsPanelNextBtn = qs('#accrualsPanelNext');
+if(accrualsPanelNextBtn) accrualsPanelNextBtn.addEventListener('click', () => accrualsPanelNavigate(1));
 
 // ========== Invoice Tracking tab ==========
 // An entry can only ever be created for a WD Invoice Number that's already posted in the

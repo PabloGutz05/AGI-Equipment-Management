@@ -294,10 +294,17 @@
                 <div id="accrualsPanelEmpty" style="padding:48px 20px;text-align:center;color:#6b7280;font-size:13px;">Select a row from the list to preview its coverage history.</div>
                 <div id="accrualsPanelContent" style="display:none;">
                   <div style="background:#161b27;padding:16px 20px;border-bottom:1px solid #1e2535;">
-                    <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-                      <span style="font-size:16px;">🚛</span>
-                      <span id="accrualsPanelTitle" style="font-size:18px;font-weight:700;letter-spacing:-0.3px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></span>
-                      <span id="accrualsPanelStatus" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;white-space:nowrap;"></span>
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                      <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                        <span style="font-size:16px;">🚛</span>
+                        <span id="accrualsPanelTitle" style="font-size:18px;font-weight:700;letter-spacing:-0.3px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></span>
+                        <span id="accrualsPanelStatus" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;white-space:nowrap;"></span>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+                        <span id="accrualsPanelNav" style="font-size:12px;color:#6b7280;white-space:nowrap;"></span>
+                        <button id="accrualsPanelPrev" type="button" style="background:#1e2535;border:none;color:#9ca3af;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;">‹</button>
+                        <button id="accrualsPanelNext" type="button" style="background:#1e2535;border:none;color:#9ca3af;width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;">›</button>
+                      </div>
                     </div>
                     <div id="accrualsPanelInfo" style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px 16px;margin-top:14px;"></div>
                   </div>
