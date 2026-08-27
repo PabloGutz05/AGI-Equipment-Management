@@ -282,7 +282,45 @@
         <div class="settings-block">
           <h3 class="settings-block-title">Provisional Table 1 — Missing Coverage Periods</h3>
           <div id="accrualsMissingPeriodsSummary" class="small-muted" style="margin-bottom:8px"></div>
-          <div id="accrualsMissingPeriodsTable" style="overflow-x:auto"></div>
+          <!-- Table panel (left) + coverage history panel (right): clicking a row on the left
+               previews that unit's full coverage history on the right, so an operator can
+               verify a missing period against its calendar without leaving this tab. -->
+          <div style="display:flex;gap:16px;align-items:flex-start;">
+            <div style="flex:1 1 62%;min-width:0;">
+              <div id="accrualsMissingPeriodsTable" style="overflow:auto;max-height:710px;border:1px solid #eef2f7;border-radius:6px;"></div>
+            </div>
+            <div style="flex:1 1 38%;min-width:340px;max-width:520px;position:sticky;top:12px;">
+              <div id="accrualsCoveragePanel" style="background:#0f1117;border-radius:16px;overflow:hidden;font-family:'DM Sans',system-ui,sans-serif;color:#e8eaf0;box-shadow:0 8px 24px rgba(0,0,0,0.14);">
+                <div id="accrualsPanelEmpty" style="padding:48px 20px;text-align:center;color:#6b7280;font-size:13px;">Select a row from the list to preview its coverage history.</div>
+                <div id="accrualsPanelContent" style="display:none;">
+                  <div style="background:#161b27;padding:16px 20px;border-bottom:1px solid #1e2535;">
+                    <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+                      <span style="font-size:16px;">🚛</span>
+                      <span id="accrualsPanelTitle" style="font-size:18px;font-weight:700;letter-spacing:-0.3px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></span>
+                      <span id="accrualsPanelStatus" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;white-space:nowrap;"></span>
+                    </div>
+                    <div id="accrualsPanelInfo" style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px 16px;margin-top:14px;"></div>
+                  </div>
+                  <div style="padding:16px 20px;max-height:560px;overflow-y:auto;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+                      <span style="font-size:13px;font-weight:600;color:#9ca3af;">📅 Coverage history</span>
+                      <span style="font-size:11px;color:#4b5563;">— click a day or month label for invoice details</span>
+                    </div>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+                      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#22c55e;border-radius:2px;"></div>Rental charge</div>
+                      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#ef4444;border-radius:2px;opacity:0.6;"></div>Overlap</div>
+                      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;border:2px solid #eab308;border-radius:2px;"></div>Credit</div>
+                      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#dc2626;border-radius:2px;"></div>Disabled</div>
+                      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#1e2535;border:1px solid #374151;border-radius:2px;"></div>Pending</div>
+                    </div>
+                    <div id="accrualsPanelGrid" style="overflow-x:auto;"></div>
+                    <div id="accrualsPanelPopup" style="display:none;margin-top:12px;background:#161b27;border:1px solid #1e2535;border-radius:10px;padding:14px;"></div>
+                  </div>
+                  <div id="accrualsPanelStats" style="background:#161b27;border-top:1px solid #1e2535;display:grid;grid-template-columns:repeat(4,1fr);gap:0;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

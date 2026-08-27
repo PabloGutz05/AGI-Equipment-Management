@@ -11056,9 +11056,9 @@ function renderUnitDetailModal(unitId) {
   }
 }
 
-function buildUnitCoverageGrid(unit) {
-  const gridEl = qs('#unitDetailGrid');
-  const popupEl = qs('#unitDetailPopup');
+function buildUnitCoverageGrid(unit, gridId, popupId) {
+  const gridEl = qs('#' + (gridId || 'unitDetailGrid'));
+  const popupEl = qs('#' + (popupId || 'unitDetailPopup'));
   if(!gridEl) return;
   gridEl.innerHTML = '';
   if(popupEl) popupEl.style.display = 'none';
@@ -11364,8 +11364,8 @@ function showMonthDetail(unit, y, m, popupEl){
   `;
 }
 
-function buildUnitStats(unit){
-  const statsEl = qs('#unitDetailStats');
+function buildUnitStats(unit, statsId){
+  const statsEl = qs('#' + (statsId || 'unitDetailStats'));
   if(!statsEl) return;
 
   const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
@@ -11553,6 +11553,10 @@ let _accrualsMissingSort = { column: 'unitId', ascending: true };
 // the slowness, on top of the per-day registry scan fixed in computeUnitMissingPeriods.
 let _accrualsMissingRowsCache = null;
 
+// Which row's coverage history the panel on the right is currently previewing — identified by
+// unit + the missing period's own start date (stable across re-sorts, unlike a row index).
+let _accrualsSelectedRowKey = null;
+
 // Provisional Table 1: every missing coverage period, for every unit, from Jan 1 of the
 // current year through the end of the current month. A day only ever counts as "missing"
 // when the unit was available (not disabled) that day and not rental-covered — see
@@ -11626,7 +11630,13 @@ function renderAccrualsMissingPeriods(forceRecompute){
   }
 
   tableEl.innerHTML = '';
-  if(rows.length === 0) return;
+  if(rows.length === 0){
+    _accrualsSelectedRowKey = null;
+    const emptyEl = qs('#accrualsPanelEmpty'); const contentEl = qs('#accrualsPanelContent');
+    if(emptyEl) emptyEl.style.display = 'block';
+    if(contentEl) contentEl.style.display = 'none';
+    return;
+  }
 
   const unitIdList = Array.from(new Set(rows.map(r => r.unitId)));
 
@@ -11657,9 +11667,22 @@ function renderAccrualsMissingPeriods(forceRecompute){
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
+  let selectedTr = null;
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f0f0f0';
+    tr.style.cursor = 'pointer';
+    const rowKey = r.unitId.toLowerCase() + '|' + r.start.getTime();
+
+    tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
+    tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
+    tr.addEventListener('click', () => {
+      Array.from(tbody.querySelectorAll('tr')).forEach(row => { row.dataset.selected = ''; row.style.backgroundColor = ''; });
+      tr.dataset.selected = 'true';
+      tr.style.backgroundColor = '#e6f0ff';
+      _accrualsSelectedRowKey = rowKey;
+      renderAccrualsCoveragePanel(r.unitId, r.start.getFullYear(), r.start.getMonth());
+    });
 
     const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:6px 8px;color:#6b7280;';
     tr.appendChild(tdCounter);
@@ -11668,7 +11691,8 @@ function renderAccrualsMissingPeriods(forceRecompute){
     tdUnit.textContent = r.unitId;
     tdUnit.style.cssText = 'padding:6px 8px;color:#0b74de;cursor:pointer;font-weight:600;';
     tdUnit.title = 'View coverage history';
-    tdUnit.addEventListener('click', () => {
+    tdUnit.addEventListener('click', (e) => {
+      e.stopPropagation();
       try{ openUnitWdNumbersModal(r.unitId, r.start.getFullYear(), r.start.getMonth(), unitIdList); }catch(e){}
     });
     tr.appendChild(tdUnit);
@@ -11689,10 +11713,92 @@ function renderAccrualsMissingPeriods(forceRecompute){
     tr.appendChild(tdDays);
 
     tbody.appendChild(tr);
+    if(rowKey === _accrualsSelectedRowKey) selectedTr = tr;
   });
   table.appendChild(tbody);
 
   tableEl.appendChild(table);
+
+  // Restore whichever row was previously selected (e.g. re-render after a sort click); if
+  // none matches anymore (or nothing was selected yet), default to previewing the first row.
+  const targetTr = selectedTr || tbody.querySelector('tr');
+  if(targetTr) targetTr.click();
+}
+
+// Coverage history panel (right side of Provisional Table 1): shows the same interactive
+// day/month calendar as the "Coverage history" popup, but reused inline here (see
+// buildUnitCoverageGrid/buildUnitStats's optional element-id params) so an operator can check
+// a missing period against the actual calendar without leaving the Accruals tab. focusYear/
+// focusMonth (the selected row's own missing period) are used only to scroll that month into
+// view once the grid is built — they don't change what's rendered.
+function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
+  const unit = (state.units || []).find(u => String(u.unitId||'').trim().toLowerCase() === String(unitId||'').trim().toLowerCase());
+  const emptyEl = qs('#accrualsPanelEmpty');
+  const contentEl = qs('#accrualsPanelContent');
+  if(!unit){
+    if(emptyEl) emptyEl.style.display = 'block';
+    if(contentEl) contentEl.style.display = 'none';
+    return;
+  }
+  if(emptyEl) emptyEl.style.display = 'none';
+  if(contentEl) contentEl.style.display = 'block';
+
+  const titleEl = qs('#accrualsPanelTitle');
+  if(titleEl) titleEl.textContent = unit.unitId || unitId;
+
+  const statusEl = qs('#accrualsPanelStatus');
+  if(statusEl){
+    const isDisabled = (unit.status || '').toLowerCase() === 'disabled';
+    const fmtStatusDate = (raw) => {
+      if(!raw) return '';
+      const s = String(raw);
+      const d = new Date(s.includes('T') ? s : s + 'T00:00:00');
+      return isNaN(d) ? '' : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+    };
+    if(isDisabled){
+      const dd = fmtStatusDate(unit.disabledDate);
+      statusEl.textContent = 'Disabled' + (dd ? ' · Disabled Date ' + dd : '');
+      statusEl.style.background = 'rgba(220,38,38,0.2)';
+      statusEl.style.color = '#f87171';
+    } else {
+      const ed = fmtStatusDate(unit.enabledDate);
+      statusEl.textContent = 'Operational' + (ed ? ' · Since ' + ed : '');
+      statusEl.style.background = 'rgba(34,197,94,0.2)';
+      statusEl.style.color = '#4ade80';
+    }
+  }
+
+  const infoEl = qs('#accrualsPanelInfo');
+  if(infoEl){
+    const fields = [
+      { label: 'SUPPLIER', value: unit.supplier || '—' },
+      { label: 'LEASE', value: unit.lease || '—' },
+      { label: 'ARRANGEMENT', value: unit.arrangement || '—' },
+      { label: 'INVOICING', value: unit.invoicing || '—' },
+      { label: 'COST CENTER', value: unit.costCenter || '—' },
+      { label: 'COMPANY', value: unit.company || '—' }
+    ];
+    infoEl.innerHTML = fields.map(f => `
+      <div>
+        <div style="font-size:10px;font-weight:700;color:#4b5563;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:3px;">${f.label}</div>
+        <div style="font-size:13px;font-weight:600;color:#e2e8f0;">${escapeHtml(f.value)}</div>
+      </div>
+    `).join('');
+  }
+
+  buildUnitCoverageGrid(unit, 'accrualsPanelGrid', 'accrualsPanelPopup');
+  buildUnitStats(unit, 'accrualsPanelStats');
+
+  // Scroll the calendar so the missing period being reviewed is immediately visible.
+  if(typeof focusYear === 'number' && typeof focusMonth === 'number'){
+    try{
+      const gridEl = qs('#accrualsPanelGrid');
+      const targetLabel = new Date(focusYear, focusMonth, 1).toLocaleString('en-US', { month: 'short', year: '2-digit' });
+      const gridRows = gridEl ? Array.from(gridEl.querySelectorAll('tr')) : [];
+      const match = gridRows.find(tr => { const cell = tr.querySelector('td'); return cell && cell.textContent === targetLabel; });
+      if(match) match.scrollIntoView({ block: 'center' });
+    }catch(e){}
+  }
 }
 
 // ========== Invoice Tracking tab ==========
