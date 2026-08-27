@@ -11383,8 +11383,13 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
     const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
     if(hist.length > 0){
       const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
-      const d = new Date(firstOp.date);
-      startDate = new Date(d.getFullYear(), d.getMonth(), 1);
+      // isoStrToDate parses "YYYY-MM-DD" using the LOCAL Date(y,m,d) constructor — new
+      // Date(firstOp.date) instead parses a bare date string as UTC midnight, which in any
+      // timezone behind UTC lands on the LOCAL evening of the PREVIOUS day, so getFullYear/
+      // getMonth below would silently roll back a whole month for a 1st-of-month date (this
+      // is what was making the coverage panel's calendar start a month early).
+      const d = isoStrToDate(firstOp.date);
+      startDate = isNaN(d) ? new Date(2025, 0, 1) : new Date(d.getFullYear(), d.getMonth(), 1);
     }
   }catch(e){}
 
