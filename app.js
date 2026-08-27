@@ -11545,17 +11545,36 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
         // reacting to only "the square currently entered" left gaps (some days marked, some
         // not). Each cell in the range is still only touched if it matches the gesture's
         // starting state (blank when marking, already-manual when unmarking); anything else in
-        // the range is left alone.
+        // the range is left alone. Eligibility is checked against unit.manualCoverageDates
+        // LIVE (not each cell's own dayState.manual, which was computed once when the grid was
+        // built and never updates) — otherwise a day this same drag/session already marked
+        // still looks "not manual yet" to this check, and a second pass over it tries to mark
+        // it again instead of recognizing it's already covered.
         if(_accrualsDrag && _accrualsDrag.unit === unit && (e.buttons & 1)){
           const wantCovered = _accrualsDrag.mode === 'mark';
           const lo = Math.min(_accrualsDrag.startIndex, cellIndex);
           const hi = Math.max(_accrualsDrag.startIndex, cellIndex);
+
+          // Anything this drag already touched but that's now outside the current [lo,hi]
+          // range gets reverted back to its pre-drag state — otherwise moving the cursor back
+          // to shrink the selection had no effect, since a cell once marked was never revisited.
+          _accrualsDrag.touched.forEach(dateStr => {
+            const info = _accrualsDrag.touchedInfo.get(dateStr);
+            if(!info || (info.index >= lo && info.index <= hi)) return;
+            setManualCoverageDate(unit, info.y, info.m, info.d, !wantCovered);
+            applyManualSquareStyle(info.sq, info.tdDay, !wantCovered, info.dayState);
+            _accrualsDrag.touched.delete(dateStr);
+            _accrualsDrag.touchedInfo.delete(dateStr);
+          });
+
           for(let idx = lo; idx <= hi; idx++){
             const cell = dayCellsFlat[idx];
             if(!cell || !cell.canToggleManual) continue;
-            const isEligibleForDrag = wantCovered ? !cell.dayState.manual : cell.dayState.manual;
+            const isCurrentlyManual = (unit.manualCoverageDates || []).indexOf(cell.dateStr) !== -1;
+            const isEligibleForDrag = wantCovered ? !isCurrentlyManual : isCurrentlyManual;
             if(isEligibleForDrag && !_accrualsDrag.touched.has(cell.dateStr)){
               _accrualsDrag.touched.add(cell.dateStr);
+              _accrualsDrag.touchedInfo.set(cell.dateStr, { index: idx, y: cell.y, m: cell.m, d: cell.d, sq: cell.sq, tdDay: cell.tdDay, dayState: cell.dayState });
               setManualCoverageDate(unit, cell.y, cell.m, cell.d, wantCovered);
               applyManualSquareStyle(cell.sq, cell.tdDay, wantCovered, cell.dayState);
             }
@@ -11568,8 +11587,17 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
         sq.addEventListener('mousedown', (e) => {
           e.preventDefault();
           const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-          const wantCovered = !dayState.manual;
-          _accrualsDrag = { unit, mode: wantCovered ? 'mark' : 'unmark', touched: new Set([dateStr]), startIndex: cellIndex };
+          // Checked LIVE against unit.manualCoverageDates, not dayState.manual (frozen at grid-
+          // build time) — otherwise clicking a day this same pending session already marked
+          // still looks "not manual yet", so a second click tries to mark it again (a no-op)
+          // instead of unmarking it.
+          const isCurrentlyManual = (unit.manualCoverageDates || []).indexOf(dateStr) !== -1;
+          const wantCovered = !isCurrentlyManual;
+          _accrualsDrag = {
+            unit, mode: wantCovered ? 'mark' : 'unmark', startIndex: cellIndex,
+            touched: new Set([dateStr]),
+            touchedInfo: new Map([[dateStr, { index: cellIndex, y, m, d, sq, tdDay, dayState }]])
+          };
           setManualCoverageDate(unit, y, m, d, wantCovered);
           applyManualSquareStyle(sq, tdDay, wantCovered, dayState);
           document.addEventListener('mouseup', endAccrualsDrag, { once: true });
