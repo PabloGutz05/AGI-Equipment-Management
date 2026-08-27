@@ -11478,7 +11478,7 @@ function buildUnitStats(unit, statsId){
   let cur = new Date(startDate);
   while(cur <= endDate){ months.push(new Date(cur)); cur.setMonth(cur.getMonth()+1); }
 
-  let monthsCovered = 0, monthsMissing = 0, creditMonths = 0, totalDaysBilled = 0;
+  let monthsCovered = 0, monthsMissing = 0, creditMonths = 0, totalDaysBilled = 0, manualCoverageDaysTotal = 0;
 
   months.forEach(monthDate => {
     const y = monthDate.getFullYear();
@@ -11519,10 +11519,13 @@ function buildUnitStats(unit, statsId){
       });
     });
 
-    // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
+    // Manual coverage is tracked separately here (its own "Manual Coverage Days" stat below) —
+    // it deliberately does NOT mark a month as covered or add to Days Billed, so those two
+    // stats stay a read on real, invoice-backed coverage only. A month with only manual days
+    // still falls into Months Missing as a result.
     let manualDays = 0;
     for(let dd = 1; dd <= daysInMonth; dd++){ if(isManuallyCovered(unit, y, m, dd)) manualDays++; }
-    if(manualDays > 0){ hasCoverage = true; totalDaysBilled += manualDays; }
+    manualCoverageDaysTotal += manualDays;
 
     if(hasCoverage) monthsCovered++;
     else monthsMissing++;
@@ -11533,11 +11536,12 @@ function buildUnitStats(unit, statsId){
     { value: monthsCovered, label: 'Months covered', color: '#4ade80' },
     { value: monthsMissing, label: 'Months missing', color: '#f87171' },
     { value: creditMonths, label: 'Credits', color: '#fbbf24' },
-    { value: totalDaysBilled, label: 'Days billed', color: '#60a5fa' }
+    { value: totalDaysBilled, label: 'Days billed', color: '#60a5fa' },
+    { value: manualCoverageDaysTotal, label: 'Manual coverage days', color: '#c084fc' }
   ];
 
   statsEl.innerHTML = stats.map((s, i) => `
-    <div style="padding:14px 16px;text-align:center;${i < 3 ? 'border-right:1px solid #1e2535;' : ''}">
+    <div style="padding:14px 16px;text-align:center;${i < stats.length - 1 ? 'border-right:1px solid #1e2535;' : ''}">
       <div style="font-size:22px;font-weight:800;color:${s.color};letter-spacing:-0.5px;">${s.value}</div>
       <div style="font-size:11px;color:#4b5563;margin-top:3px;font-weight:500;">${s.label}</div>
     </div>
@@ -11821,6 +11825,17 @@ function renderAccrualsMissingPeriods(forceRecompute){
 // a missing period against the actual calendar without leaving the Accruals tab. focusYear/
 // focusMonth (the selected row's own missing period) are used only to scroll that month into
 // view once the grid is built — they don't change what's rendered.
+// Keeps the list's own scroll cap matched to the panel's actual rendered height, so opening
+// the day/month detail popup (which lives inside the panel's own fixed-height scroll area and
+// therefore never changes the panel's total height) never leaves the two looking mismatched.
+function syncAccrualsListHeight(){
+  try{
+    const panelEl = qs('#accrualsCoveragePanel');
+    const listEl = qs('#accrualsMissingPeriodsTable');
+    if(panelEl && listEl && panelEl.offsetHeight > 0) listEl.style.maxHeight = panelEl.offsetHeight + 'px';
+  }catch(e){}
+}
+
 function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
   const unit = (state.units || []).find(u => String(u.unitId||'').trim().toLowerCase() === String(unitId||'').trim().toLowerCase());
   const emptyEl = qs('#accrualsPanelEmpty');
@@ -11828,6 +11843,7 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
   if(!unit){
     if(emptyEl) emptyEl.style.display = 'block';
     if(contentEl) contentEl.style.display = 'none';
+    syncAccrualsListHeight();
     return;
   }
   if(emptyEl) emptyEl.style.display = 'none';
@@ -11889,6 +11905,8 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
       if(match) match.scrollIntoView({ block: 'center' });
     }catch(e){}
   }
+
+  syncAccrualsListHeight();
 }
 
 // After marking/unmarking a day as manually covered, recompute just THIS unit's missing
