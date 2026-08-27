@@ -5610,18 +5610,55 @@ function isManuallyCovered(unit, year, month, day){
 }
 // Toggles one date on/off in the unit's manual coverage list and persists it. Returns the new
 // state (true = now manually covered).
-function toggleManualCoverage(unit, year, month, day){
+// Sets (doesn't toggle) one date's manual-coverage membership without saving/persisting —
+// used both by a plain click (see toggleManualCoverage) and by click-and-drag, which applies
+// many dates locally while dragging and only persists once, at the end of the drag.
+function setManualCoverageDate(unit, year, month, day, covered){
   unit.manualCoverageDates = Array.isArray(unit.manualCoverageDates) ? unit.manualCoverageDates.slice() : [];
   const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
   const idx = unit.manualCoverageDates.indexOf(dateStr);
-  let nowCovered;
-  if(idx === -1){ unit.manualCoverageDates.push(dateStr); nowCovered = true; }
-  else { unit.manualCoverageDates.splice(idx, 1); nowCovered = false; }
+  if(covered && idx === -1) unit.manualCoverageDates.push(dateStr);
+  else if(!covered && idx !== -1) unit.manualCoverageDates.splice(idx, 1);
   const stateIdx = (state.units || []).findIndex(u => u.id === unit.id);
   if(stateIdx !== -1) state.units[stateIdx] = unit;
+}
+function persistManualCoverage(unit){
   try{ saveState(); }catch(e){}
   DB.updateUnit(unit).catch(e => console.error('Manual coverage save error:', e));
+}
+function toggleManualCoverage(unit, year, month, day){
+  const nowCovered = !isManuallyCovered(unit, year, month, day);
+  setManualCoverageDate(unit, year, month, day, nowCovered);
+  persistManualCoverage(unit);
   return nowCovered;
+}
+
+// Click-and-drag support for marking a whole run of blank (or a whole run of manual) squares
+// in one gesture, instead of one click per day. mousedown on an eligible square starts the
+// drag and fixes its "mode" (mark if the square was blank, unmark if it was already manual);
+// dragging over other squares only ever touches ones matching that same starting state, so a
+// drag can't accidentally cross from marking into unmarking or vice versa. Nothing is saved
+// until mouseup, so a long drag doesn't spam saves or re-render the grid mid-gesture.
+let _accrualsDrag = null;
+function applyManualSquareStyle(sq, tdDay, covered){
+  if(covered){
+    sq.style.background = '#581c87';
+    sq.style.color = '#e9d5ff';
+    sq.style.border = '1px solid #a855f7';
+    tdDay.title = 'Manually confirmed coverage — click to remove';
+  } else {
+    sq.style.background = '#111827';
+    sq.style.color = '#374151';
+    sq.style.border = '1px solid #1f2937';
+    tdDay.title = 'Click, or click and drag, to mark as manually covered';
+  }
+}
+function endAccrualsDrag(){
+  if(!_accrualsDrag) return;
+  const { unit } = _accrualsDrag;
+  _accrualsDrag = null;
+  persistManualCoverage(unit);
+  if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
 }
 
 // Render the Unit Overview page: year/month selectors and per-unit day grid
@@ -11242,13 +11279,32 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
         tdDay.title = 'Manually confirmed coverage — click to remove';
       }
 
-      sq.addEventListener('mouseenter', () => { sq.style.transform = 'scale(1.3)'; sq.style.zIndex = '10'; sq.style.position = 'relative'; });
+      sq.addEventListener('mouseenter', (e) => {
+        sq.style.transform = 'scale(1.3)'; sq.style.zIndex = '10'; sq.style.position = 'relative';
+        // Dragging: only paint squares that match the gesture's starting state (blank when
+        // marking, already-manual when unmarking) — anything else is left alone.
+        if(_accrualsDrag && _accrualsDrag.unit === unit && (e.buttons & 1) && canToggleManual){
+          const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          const wantCovered = _accrualsDrag.mode === 'mark';
+          const isEligibleForDrag = wantCovered ? !dayState.manual : dayState.manual;
+          if(isEligibleForDrag && !_accrualsDrag.touched.has(dateStr)){
+            _accrualsDrag.touched.add(dateStr);
+            setManualCoverageDate(unit, y, m, d, wantCovered);
+            applyManualSquareStyle(sq, tdDay, wantCovered);
+          }
+        }
+      });
       sq.addEventListener('mouseleave', () => { sq.style.transform = ''; sq.style.zIndex = ''; sq.style.position = ''; });
       if(canToggleManual){
-        if(!dayState.manual) tdDay.title = 'Click to mark as manually covered';
-        sq.addEventListener('click', () => {
-          toggleManualCoverage(unit, y, m, d);
-          if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
+        if(!dayState.manual) tdDay.title = 'Click, or click and drag, to mark as manually covered';
+        sq.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+          const wantCovered = !dayState.manual;
+          _accrualsDrag = { unit, mode: wantCovered ? 'mark' : 'unmark', touched: new Set([dateStr]) };
+          setManualCoverageDate(unit, y, m, d, wantCovered);
+          applyManualSquareStyle(sq, tdDay, wantCovered);
+          document.addEventListener('mouseup', endAccrualsDrag, { once: true });
         });
       } else {
         sq.addEventListener('click', () => showDayDetail(unit, y, m, d, registries, invoices, popupEl));
