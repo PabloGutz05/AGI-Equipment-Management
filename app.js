@@ -218,7 +218,7 @@ document.querySelectorAll('.tab').forEach(btn => {
         if(typeof showOverviewSection === 'function') showOverviewSection(sec);
       }catch(e){ renderOverview(); }
     } else if(btn.dataset.tab === 'accruals'){
-      try{ if(typeof renderAccrualsMissingPeriods === 'function') renderAccrualsMissingPeriods(true); }catch(e){}
+      try{ if(typeof switchAccrualsSubTab === 'function') switchAccrualsSubTab(_accrualsActiveSubTab || 'missing', true); }catch(e){}
       try{ if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList(); }catch(e){}
     } else {
       renderOverview();
@@ -5696,7 +5696,13 @@ function acceptAccrualsManualCoverage(){
   persistManualCoverage(unit);
   _accrualsHasPendingChanges = false;
   _accrualsPendingDates = new Set();
-  if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
+
+  // Keep Table 1's cache accurate for whenever it's next shown, but only let it repaint/
+  // auto-select (and so hijack the panel) when Table 1 is the sub-tab actually on screen.
+  const onManualTab = _accrualsActiveSubTab === 'manual';
+  if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit, onManualTab);
+  if(onManualTab && typeof renderAccrualsManualPeriods === 'function') renderAccrualsManualPeriods(true);
+
   if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 }
 const accrualsPanelAcceptBtnEl = qs('#accrualsPanelAcceptBtn');
@@ -11822,6 +11828,75 @@ function accrualMonthName(month){
   return ['January','February','March','April','May','June','July','August','September','October','November','December'][month - 1] || '';
 }
 
+// Which of the Accruals tab's sub-tabs is currently on screen — both share the one coverage
+// panel (physically moved between #accrualsPanelSlotMissing/#accrualsPanelSlotManual by
+// switchAccrualsSubTab), so this also decides which row list Prev/Next nav and the height-sync
+// helper should operate on.
+let _accrualsActiveSubTab = 'missing';
+
+// Manual Coverage sub-tab's own row list state — mirrors _accrualsMissingSort/RowsCache/
+// SelectedRowKey/RowRefs above, kept separate so switching sub-tabs doesn't lose either one's
+// place in its own list.
+let _accrualsManualSort = { column: 'unitId', ascending: true };
+let _accrualsManualRowsCache = null;
+let _accrualsManualSelectedRowKey = null;
+let _accrualsManualRowRefs = [];
+
+// Groups an operator's manually-covered dates (Accruals coverage panel click/drag) into
+// contiguous periods, same shape as computeUnitMissingPeriods's output — a manually-covered day
+// counts as covered (see isManuallyCovered), so it stops showing up as "missing" above; this is
+// what lets the Manual Coverage sub-tab still find and list it for review/editing.
+function computeUnitManualCoveragePeriods(unit){
+  const dates = getManualCoverageDates(unit);
+  if(!dates.length) return [];
+  const sorted = Array.from(new Set(dates)).sort();
+  const periods = [];
+  let curStart = null, curEnd = null;
+  sorted.forEach(ds => {
+    const d = isoStrToDate(ds);
+    if(curEnd){
+      const expected = new Date(curEnd); expected.setDate(expected.getDate() + 1);
+      if(d.getTime() === expected.getTime()){ curEnd = d; return; }
+      periods.push({ start: curStart, end: curEnd });
+      curStart = d; curEnd = d;
+    } else {
+      curStart = d; curEnd = d;
+    }
+  });
+  if(curStart) periods.push({ start: curStart, end: curEnd });
+  return periods;
+}
+
+// Shared by the full recompute and the single-unit incremental refresh below, so Table 1 stays
+// consistent no matter which path last touched it: excludes periods with an OPEN (not yet
+// closed) accrual — already sitting in "Periods Ready to Accrue" this cycle — and attaches
+// `.priorAccrual` (most recently closed total) to periods with prior closed history.
+function applyAccrualHistoryToRows(rows){
+  const openAccrualKeys = new Set(
+    (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear)
+      .map(a => a.unitId.toLowerCase() + '|' + a.periodStart)
+  );
+  const filtered = openAccrualKeys.size
+    ? rows.filter(r => !openAccrualKeys.has(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start)))
+    : rows;
+
+  const lastClosedByKey = new Map();
+  (state.accruals || []).filter(a => a.accrualMonth && a.accrualYear).forEach(a => {
+    const key = a.unitId.toLowerCase() + '|' + a.periodStart;
+    const existing = lastClosedByKey.get(key);
+    const endDate = isoStrToDate(a.periodEnd);
+    if(!existing || endDate > existing.endDate){
+      lastClosedByKey.set(key, { days: Number(a.days) || 0, month: Number(a.accrualMonth), year: Number(a.accrualYear), endDate });
+    }
+  });
+  filtered.forEach(r => {
+    const prior = lastClosedByKey.get(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start));
+    r.priorAccrual = prior ? { days: prior.days, label: `${accrualMonthName(prior.month)} ${prior.year}` } : null;
+  });
+
+  return filtered;
+}
+
 // Provisional Table 1: every missing coverage period, for every unit, from Jan 1 of the
 // current year through the end of the current month. A day only ever counts as "missing"
 // when the unit was available (not disabled) that day and not rental-covered — see
@@ -11859,32 +11934,10 @@ function renderAccrualsMissingPeriods(forceRecompute){
     // missing (no invoice/manual coverage arrived since), must keep reappearing here every
     // cycle — its "days" naturally grows each time since computeUnitMissingPeriods always
     // measures from the same original gap start, so re-accruing it folds the prior total in
-    // automatically. Only a period with an OPEN (not yet closed) accrual gets excluded, since
-    // that one is already sitting in "Periods Ready to Accrue" for the current cycle and would
-    // otherwise be double-listed/double-accrued before it's even closed.
-    const openAccrualKeys = new Set(
-      (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear)
-        .map(a => a.unitId.toLowerCase() + '|' + a.periodStart)
-    );
-    const filteredRows = openAccrualKeys.size
-      ? rows.filter(r => !openAccrualKeys.has(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start)))
-      : rows;
-
-    // For a period with prior CLOSED history, surface the most recently closed total so the
-    // operator can see how much this cycle's cumulative figure grew since the last accrual sent.
-    const lastClosedByKey = new Map();
-    (state.accruals || []).filter(a => a.accrualMonth && a.accrualYear).forEach(a => {
-      const key = a.unitId.toLowerCase() + '|' + a.periodStart;
-      const existing = lastClosedByKey.get(key);
-      const endDate = isoStrToDate(a.periodEnd);
-      if(!existing || endDate > existing.endDate){
-        lastClosedByKey.set(key, { days: Number(a.days) || 0, month: Number(a.accrualMonth), year: Number(a.accrualYear), endDate });
-      }
-    });
-    filteredRows.forEach(r => {
-      const prior = lastClosedByKey.get(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start));
-      if(prior) r.priorAccrual = { days: prior.days, label: `${accrualMonthName(prior.month)} ${prior.year}` };
-    });
+    // automatically. applyAccrualHistoryToRows only excludes a period with an OPEN (not yet
+    // closed) accrual, since that one is already sitting in "Periods Ready to Accrue" for the
+    // current cycle and would otherwise be double-listed/double-accrued before it's even closed.
+    const filteredRows = applyAccrualHistoryToRows(rows);
 
     _accrualsMissingRowsCache = { rows: filteredRows, rangeStart, rangeEnd };
   }
@@ -12039,6 +12092,203 @@ function renderAccrualsMissingPeriods(forceRecompute){
   if(targetTr) targetTr.click();
 }
 
+// Manual Coverage sub-tab: every unit's manually-marked (purple) period, so an operator can
+// still find and consult/edit them after they vanish from the missing-periods review list above
+// (a manually-covered day counts as covered, so it stops showing up there — see
+// isManuallyCovered/computeUnitMissingPeriods). Shares the same coverage panel as Table 1 (see
+// switchAccrualsSubTab) but with the Accrue Unit box hidden — this list is for consultation, not
+// accruing.
+function renderAccrualsManualPeriods(forceRecompute){
+  const tableEl = qs('#accrualsManualPeriodsTable');
+  const summaryEl = qs('#accrualsManualPeriodsSummary');
+  if(!tableEl) return;
+
+  if(forceRecompute || !_accrualsManualRowsCache){
+    const rows = [];
+    (state.units || []).forEach(unit => {
+      const uid = (unit.unitId || unit.id || '').toString();
+      if(!uid) return;
+      let periods = [];
+      try{ periods = computeUnitManualCoveragePeriods(unit); }catch(e){ periods = []; }
+      const status = (unit.status || 'Operational').toString();
+      periods.forEach(p => {
+        const days = Math.round((p.end - p.start) / 86400000) + 1;
+        rows.push({ unitId: uid, lease: unit.lease || '', supplier: unit.supplier || '', costCenter: unit.costCenter || '', status, start: p.start, end: p.end, days });
+      });
+    });
+    _accrualsManualRowsCache = { rows };
+  }
+
+  const { rows } = _accrualsManualRowsCache;
+  const fmtMDY = (d) => `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
+
+  const COLUMNS = [
+    { key: 'unitId', label: 'UnitId', get: r => r.unitId },
+    { key: 'lease', label: 'Lease', get: r => r.lease },
+    { key: 'supplier', label: 'Supplier', get: r => r.supplier },
+    { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
+    { key: 'status', label: 'Status', get: r => r.status },
+    { key: 'period', label: 'Manual Period', get: r => r.start, numeric: true },
+    { key: 'days', label: 'Days', get: r => r.days, numeric: true, alignRight: true }
+  ];
+
+  const sortCol = COLUMNS.find(c => c.key === _accrualsManualSort.column) || COLUMNS[0];
+  const ascending = _accrualsManualSort.ascending;
+  rows.sort((a, b) => {
+    const av = sortCol.get(a), bv = sortCol.get(b);
+    let cmp;
+    if(sortCol.numeric){
+      cmp = av - bv;
+    } else {
+      const as = av.toString().toLowerCase(), bs = bv.toString().toLowerCase();
+      cmp = as < bs ? -1 : (as > bs ? 1 : 0);
+    }
+    if(cmp === 0) cmp = a.start - b.start;
+    return ascending ? cmp : -cmp;
+  });
+
+  if(summaryEl){
+    const totalDays = rows.reduce((s, r) => s + r.days, 0);
+    const uniqueUnits = new Set(rows.map(r => r.unitId.toLowerCase())).size;
+    summaryEl.textContent = rows.length === 0
+      ? 'No manually-covered periods found.'
+      : `${rows.length} manual coverage period(s) across ${uniqueUnits} unit(s), ${totalDays} total day(s).`;
+  }
+
+  tableEl.innerHTML = '';
+  if(rows.length === 0){
+    _accrualsManualSelectedRowKey = null;
+    if(_accrualsActiveSubTab === 'manual'){
+      const emptyEl = qs('#accrualsPanelEmpty'); const contentEl = qs('#accrualsPanelContent');
+      if(emptyEl) emptyEl.style.display = 'block';
+      if(contentEl) contentEl.style.display = 'none';
+    }
+    return;
+  }
+
+  const unitIdList = Array.from(new Set(rows.map(r => r.unitId)));
+
+  const table = document.createElement('table');
+  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px;';
+
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+
+  const thCounter = document.createElement('th');
+  thCounter.textContent = '#';
+  thCounter.style.cssText = 'text-align:left;padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
+  headerRow.appendChild(thCounter);
+
+  COLUMNS.forEach(col => {
+    const th = document.createElement('th');
+    th.textContent = col.label + (sortCol.key === col.key ? (ascending ? ' ▲' : ' ▼') : '');
+    th.style.cssText = `text-align:${col.alignRight ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;cursor:pointer;user-select:none;`;
+    th.title = 'Click to sort';
+    th.addEventListener('click', () => {
+      if(_accrualsManualSort.column === col.key) _accrualsManualSort.ascending = !_accrualsManualSort.ascending;
+      else _accrualsManualSort = { column: col.key, ascending: true };
+      renderAccrualsManualPeriods();
+    });
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  let selectedTr = null;
+  _accrualsManualRowRefs = [];
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #f0f0f0';
+    tr.style.cursor = 'pointer';
+    const rowKey = r.unitId.toLowerCase() + '|' + r.start.getTime();
+    _accrualsManualRowRefs.push({ rowKey, r, tr });
+
+    tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
+    tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
+    tr.addEventListener('click', (e) => {
+      if(e.isTrusted && accrualsPanelBlockedByPending()) return;
+      Array.from(tbody.querySelectorAll('tr')).forEach(row => { row.dataset.selected = ''; row.style.backgroundColor = ''; });
+      tr.dataset.selected = 'true';
+      tr.style.backgroundColor = '#e6f0ff';
+      _accrualsManualSelectedRowKey = rowKey;
+      renderAccrualsCoveragePanel(r.unitId, r.start.getFullYear(), r.start.getMonth());
+      updateAccrualsPanelNav();
+    });
+
+    const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:4px 6px;color:#6b7280;';
+    tr.appendChild(tdCounter);
+
+    const tdUnit = document.createElement('td');
+    tdUnit.textContent = r.unitId;
+    tdUnit.style.cssText = 'padding:4px 6px;color:#0b74de;cursor:pointer;font-weight:600;';
+    tdUnit.title = 'View coverage history';
+    tdUnit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      try{ openUnitWdNumbersModal(r.unitId, r.start.getFullYear(), r.start.getMonth(), unitIdList); }catch(e){}
+    });
+    tr.appendChild(tdUnit);
+
+    const tdLease = document.createElement('td'); tdLease.textContent = r.lease; tdLease.style.padding = '4px 6px';
+    tr.appendChild(tdLease);
+    const tdSupplier = document.createElement('td'); tdSupplier.textContent = r.supplier; tdSupplier.style.padding = '4px 6px';
+    tr.appendChild(tdSupplier);
+    const tdCC = document.createElement('td'); tdCC.textContent = r.costCenter; tdCC.style.padding = '4px 6px';
+    tr.appendChild(tdCC);
+    const tdStatus = document.createElement('td');
+    tdStatus.textContent = r.status;
+    tdStatus.style.cssText = `padding:4px 6px;font-weight:600;color:${r.status.toLowerCase() === 'disabled' ? '#dc2626' : '#15803d'};`;
+    tr.appendChild(tdStatus);
+    const tdPeriod = document.createElement('td'); tdPeriod.textContent = `${fmtMDY(r.start)} - ${fmtMDY(r.end)}`; tdPeriod.style.padding = '4px 6px';
+    tr.appendChild(tdPeriod);
+    const tdDays = document.createElement('td'); tdDays.textContent = r.days; tdDays.style.cssText = 'padding:4px 6px;text-align:right;';
+    tr.appendChild(tdDays);
+
+    tbody.appendChild(tr);
+    if(rowKey === _accrualsManualSelectedRowKey) selectedTr = tr;
+  });
+  table.appendChild(tbody);
+
+  tableEl.appendChild(table);
+
+  const targetTr = selectedTr || tbody.querySelector('tr');
+  if(targetTr) targetTr.click();
+}
+
+// Moves the shared coverage panel between the two sub-tabs' own slots, shows/hides the Accrue
+// Unit box (Manual Coverage is consult/edit-only — no accrue feature there), and (re)renders
+// whichever list is now active. forceRecompute is only meaningful for the Missing Periods list
+// (passed through on tab entry); the Manual Coverage list is always recomputed fresh since
+// grouping a unit's manualCoverageDates is cheap — no caching benefit worth the staleness risk.
+function switchAccrualsSubTab(tab, forceRecompute){
+  _accrualsActiveSubTab = tab;
+
+  const missingPanel = qs('#accrualsSubMissing');
+  const manualPanel = qs('#accrualsSubManual');
+  if(missingPanel) missingPanel.style.display = tab === 'manual' ? 'none' : '';
+  if(manualPanel) manualPanel.style.display = tab === 'manual' ? '' : 'none';
+
+  document.querySelectorAll('.accruals-subtab-btn').forEach(b => {
+    const active = b.dataset.subtab === tab;
+    b.style.background = active ? '#0b74de' : '#eef2f7';
+    b.style.color = active ? '#fff' : '#374151';
+  });
+
+  const panelEl = qs('#accrualsCoveragePanel');
+  const targetSlot = qs(tab === 'manual' ? '#accrualsPanelSlotManual' : '#accrualsPanelSlotMissing');
+  if(panelEl && targetSlot && panelEl.parentElement !== targetSlot) targetSlot.appendChild(panelEl);
+
+  const accrueBox = qs('#accrualsAccrueUnitBox');
+  if(accrueBox) accrueBox.style.display = tab === 'manual' ? 'none' : '';
+
+  if(tab === 'manual') renderAccrualsManualPeriods(true);
+  else renderAccrualsMissingPeriods(!!forceRecompute);
+}
+
+document.querySelectorAll('.accruals-subtab-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchAccrualsSubTab(btn.dataset.subtab));
+});
+
 // Coverage history panel (right side of Provisional Table 1): shows the same interactive
 // day/month calendar as the "Coverage history" popup, but reused inline here (see
 // buildUnitCoverageGrid/buildUnitStats's optional element-id params) so an operator can check
@@ -12051,7 +12301,7 @@ function renderAccrualsMissingPeriods(forceRecompute){
 function syncAccrualsListHeight(){
   try{
     const panelEl = qs('#accrualsCoveragePanel');
-    const listEl = qs('#accrualsMissingPeriodsTable');
+    const listEl = qs(_accrualsActiveSubTab === 'manual' ? '#accrualsManualPeriodsTable' : '#accrualsMissingPeriodsTable');
     if(panelEl && listEl && panelEl.offsetHeight > 0) listEl.style.maxHeight = panelEl.offsetHeight + 'px';
   }catch(e){}
 }
@@ -12142,7 +12392,11 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
 // periods (cheap — one unit) and patch them into the existing cache rather than recomputing
 // every unit, then re-render the list. Tries to keep the panel focused on the same unit even
 // if the exact missing-period row it was showing changed shape (split/shrank/disappeared).
-function refreshAccrualsRowsForUnit(unit){
+// skipRender: true when the Manual Coverage sub-tab is the one currently on screen — the cache
+// still needs to be accurate for whenever Table 1 is next shown, but actually re-rendering it
+// here would auto-select one of its own rows and hijack the panel away from what the operator
+// is looking at right now.
+function refreshAccrualsRowsForUnit(unit, skipRender){
   if(!_accrualsMissingRowsCache) return;
   const { rangeStart, rangeEnd } = _accrualsMissingRowsCache;
   const uid = (unit.unitId || unit.id || '').toString();
@@ -12153,17 +12407,18 @@ function refreshAccrualsRowsForUnit(unit){
   let periods = [];
   try{ periods = computeUnitMissingPeriods(unit, rangeStart, rangeEnd); }catch(e){ periods = []; }
   const status = (unit.status || 'Operational').toString();
-  periods.forEach(p => {
+  const newRows = periods.map(p => {
     const days = Math.round((p.end - p.start) / 86400000) + 1;
-    _accrualsMissingRowsCache.rows.push({ unitId: uid, lease: unit.lease || '', supplier: unit.supplier || '', costCenter: unit.costCenter || '', status, start: p.start, end: p.end, days });
+    return { unitId: uid, lease: unit.lease || '', supplier: unit.supplier || '', costCenter: unit.costCenter || '', status, start: p.start, end: p.end, days };
   });
+  _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.concat(applyAccrualHistoryToRows(newRows));
 
   const selectionStillValid = _accrualsMissingRowsCache.rows.some(r => (r.unitId.toLowerCase() + '|' + r.start.getTime()) === _accrualsSelectedRowKey);
   if(!selectionStillValid){
     const firstForUnit = _accrualsMissingRowsCache.rows.find(r => r.unitId.toLowerCase() === uidLower);
     if(firstForUnit) _accrualsSelectedRowKey = firstForUnit.unitId.toLowerCase() + '|' + firstForUnit.start.getTime();
   }
-  renderAccrualsMissingPeriods();
+  if(!skipRender) renderAccrualsMissingPeriods();
 }
 
 // Moves every currently-listed period for the panel's unit out of the review list and into
@@ -12394,22 +12649,26 @@ function updateAccrualsPanelNav(){
   const navEl = qs('#accrualsPanelNav');
   const prevBtn = qs('#accrualsPanelPrev');
   const nextBtn = qs('#accrualsPanelNext');
-  const idx = _accrualsRowRefs.findIndex(x => x.rowKey === _accrualsSelectedRowKey);
-  if(navEl) navEl.textContent = (idx === -1 || _accrualsRowRefs.length === 0) ? '' : `${idx + 1} / ${_accrualsRowRefs.length}`;
+  const refs = _accrualsActiveSubTab === 'manual' ? _accrualsManualRowRefs : _accrualsRowRefs;
+  const selectedKey = _accrualsActiveSubTab === 'manual' ? _accrualsManualSelectedRowKey : _accrualsSelectedRowKey;
+  const idx = refs.findIndex(x => x.rowKey === selectedKey);
+  if(navEl) navEl.textContent = (idx === -1 || refs.length === 0) ? '' : `${idx + 1} / ${refs.length}`;
   if(prevBtn) prevBtn.style.opacity = (idx <= 0) ? '0.3' : '1';
-  if(nextBtn) nextBtn.style.opacity = (idx === -1 || idx >= _accrualsRowRefs.length - 1) ? '0.3' : '1';
+  if(nextBtn) nextBtn.style.opacity = (idx === -1 || idx >= refs.length - 1) ? '0.3' : '1';
 }
 
-// Steps the panel to the previous/next row in the list currently shown on the left, reusing
-// that row's own click handler (highlight + panel render) and scrolling it into view within
-// the table's own scroll container if it isn't already visible.
+// Steps the panel to the previous/next row in whichever sub-tab's list is currently shown on
+// the left, reusing that row's own click handler (highlight + panel render) and scrolling it
+// into view within the table's own scroll container if it isn't already visible.
 function accrualsPanelNavigate(direction){
   if(accrualsPanelBlockedByPending()) return;
-  if(!_accrualsRowRefs.length) return;
-  let idx = _accrualsRowRefs.findIndex(x => x.rowKey === _accrualsSelectedRowKey);
+  const refs = _accrualsActiveSubTab === 'manual' ? _accrualsManualRowRefs : _accrualsRowRefs;
+  const selectedKey = _accrualsActiveSubTab === 'manual' ? _accrualsManualSelectedRowKey : _accrualsSelectedRowKey;
+  if(!refs.length) return;
+  let idx = refs.findIndex(x => x.rowKey === selectedKey);
   if(idx === -1){ idx = 0; } else { idx += direction; }
-  if(idx < 0 || idx >= _accrualsRowRefs.length) return;
-  const target = _accrualsRowRefs[idx];
+  if(idx < 0 || idx >= refs.length) return;
+  const target = refs[idx];
   target.tr.click();
   try{ target.tr.scrollIntoView({ block: 'nearest' }); }catch(e){}
 }

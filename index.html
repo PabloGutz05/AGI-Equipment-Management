@@ -277,8 +277,19 @@
       <div id="accruals" class="tab-panel">
         <h2>Accruals</h2>
 
+        <!-- Missing Periods (review + accrue) vs Manual Coverage (consult/edit periods that
+             were manually marked covered and so no longer show up in the missing-periods list
+             below — see isManuallyCovered/computeUnitMissingPeriods). Both sub-tabs share the
+             one coverage panel on the right (physically relocated between them by
+             switchAccrualsSubTab), just with the Accrue Unit box hidden on Manual Coverage. -->
+        <div style="display:flex;gap:8px;margin-bottom:16px;">
+          <button type="button" class="accruals-subtab-btn" data-subtab="missing" style="padding:8px 16px;border-radius:6px;border:none;font-weight:600;font-size:13px;cursor:pointer;background:#0b74de;color:#fff;">Missing Periods</button>
+          <button type="button" class="accruals-subtab-btn" data-subtab="manual" style="padding:8px 16px;border-radius:6px;border:none;font-weight:600;font-size:13px;cursor:pointer;background:#eef2f7;color:#374151;">Manual Coverage</button>
+        </div>
+
         <!-- Provisional working tables used to extract/clean up the data behind the real
              Accruals view. These are temporary and will be removed once that's built. -->
+        <div id="accrualsSubMissing">
         <div class="settings-block">
           <h3 class="settings-block-title">Provisional Table 1 — Missing Coverage Periods</h3>
           <div id="accrualsMissingPeriodsSummary" class="small-muted" style="margin-bottom:8px"></div>
@@ -289,7 +300,7 @@
             <div style="flex:1 1 42%;min-width:280px;">
               <div id="accrualsMissingPeriodsTable" class="no-native-scrollbar" style="overflow:auto;max-height:530px;border:1px solid #eef2f7;border-radius:6px;"></div>
             </div>
-            <div style="flex:1 1 58%;min-width:640px;max-width:780px;position:sticky;top:12px;">
+            <div id="accrualsPanelSlotMissing" style="flex:1 1 58%;min-width:640px;max-width:780px;position:sticky;top:12px;">
               <div id="accrualsCoveragePanel" style="background:#0f1117;border-radius:16px;overflow:hidden;font-family:'DM Sans',system-ui,sans-serif;color:#e8eaf0;box-shadow:0 8px 24px rgba(0,0,0,0.14);">
                 <div id="accrualsPanelEmpty" style="padding:48px 20px;text-align:center;color:#6b7280;font-size:13px;">Select a row from the list to preview its coverage history.</div>
                 <div id="accrualsPanelContent" style="display:none;">
@@ -316,7 +327,7 @@
                           <span id="accrualsPanelPendingCount" style="font-size:11px;color:#c4b5fd;text-align:center;">No pending changes</span>
                           <button id="accrualsPanelAcceptBtn" type="button" disabled style="width:100%;padding:8px;border-radius:6px;border:none;background:#581c87;color:#e9d5ff;font-weight:700;font-size:12px;cursor:not-allowed;opacity:0.4;">Accept manual coverage</button>
                         </div>
-                        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#0b1f33;border:1px solid #1e3a5f;border-radius:8px;padding:10px;">
+                        <div id="accrualsAccrueUnitBox" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#0b1f33;border:1px solid #1e3a5f;border-radius:8px;padding:10px;">
                           <button id="accrualsAccrueUnitBtn" type="button" style="width:100%;padding:8px;border-radius:6px;border:none;background:#0b74de;color:#fff;font-weight:700;font-size:12px;cursor:pointer;">Accrue Unit</button>
                           <span id="accrualsAccrueUndoLabel" style="display:none;font-size:11px;color:#93c5fd;text-decoration:underline;cursor:pointer;text-align:center;"></span>
                         </div>
@@ -360,6 +371,23 @@
             <div id="accrualsAccruedSummary" class="small-muted" style="margin-bottom:8px;">No periods accrued yet.</div>
             <div id="accrualsAccruedTable" class="no-native-scrollbar" style="overflow:auto;max-height:400px;border:1px solid #eef2f7;border-radius:6px;"></div>
           </div>
+        </div>
+        </div>
+
+        <!-- Manual Coverage sub-tab: every period an operator has manually marked covered
+             (purple), for consultation/editing after it drops out of the missing-periods list
+             above. Same table-panel + coverage-panel layout, no Accrue Unit feature. -->
+        <div id="accrualsSubManual" style="display:none;">
+        <div class="settings-block">
+          <h3 class="settings-block-title">Manual Coverage Periods</h3>
+          <div id="accrualsManualPeriodsSummary" class="small-muted" style="margin-bottom:8px"></div>
+          <div style="display:flex;gap:16px;align-items:flex-start;">
+            <div style="flex:1 1 42%;min-width:280px;">
+              <div id="accrualsManualPeriodsTable" class="no-native-scrollbar" style="overflow:auto;max-height:530px;border:1px solid #eef2f7;border-radius:6px;"></div>
+            </div>
+            <div id="accrualsPanelSlotManual" style="flex:1 1 58%;min-width:640px;max-width:780px;position:sticky;top:12px;"></div>
+          </div>
+        </div>
         </div>
       </div>
 
