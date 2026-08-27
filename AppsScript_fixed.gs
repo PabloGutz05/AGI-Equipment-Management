@@ -73,7 +73,13 @@ function handleRequest(e) {
         result = repairMissingIds(sheet);
         break;
       default:
-        result = { error: 'Unknown action: ' + action };
+        // Throwing here (instead of returning {error: ...} inside a success:true response)
+        // means an action the client knows about but this deployment doesn't yet — e.g. a new
+        // action added to the client before this file was redeployed — fails loudly with a
+        // console error the client actually sees, rather than silently reporting "success"
+        // while doing nothing. That silent-no-op is exactly what made bulkDelete look like it
+        // worked (the UI updated locally) while never actually touching the sheet.
+        throw new Error('Unknown action: ' + action);
     }
 
     return ContentService

@@ -12955,13 +12955,16 @@ function renderAccrualsAccruedList(){
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
   const columnLabels = ['#','UnitId','Lease','Supplier','Cost Center','Status','Missing Period','Days'];
-  // Removing only ever makes sense for the still-open, uncommitted batch — a closed month's
-  // records are locked, same as everywhere else in this workflow.
-  if(isViewingOpenMonth) columnLabels.push('');
+  // Leftmost, ahead of every other column — amount/detail columns are planned for the right
+  // side of this row, so the remove control needs a stable position that won't keep shifting
+  // right as those get added. Removing only ever makes sense for the still-open, uncommitted
+  // batch — a closed month's records are locked, same as everywhere else in this workflow.
+  if(isViewingOpenMonth) columnLabels.unshift('');
   columnLabels.forEach((label, i) => {
     const th = document.createElement('th');
     th.textContent = label;
-    th.style.cssText = `text-align:${i === 7 ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;`;
+    const isDaysCol = label === 'Days';
+    th.style.cssText = `text-align:${isDaysCol ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;`;
     headerRow.appendChild(th);
   });
   thead.appendChild(headerRow);
@@ -12971,12 +12974,6 @@ function renderAccrualsAccruedList(){
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f0f0f0';
-    [String(i + 1), r.unitId, r.lease, r.supplier, r.costCenter, r.status, `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
-      const td = document.createElement('td');
-      td.textContent = val;
-      td.style.cssText = `padding:4px 6px;${ci === 0 ? 'color:#6b7280;' : ''}${ci === 7 ? 'text-align:right;' : ''}`;
-      tr.appendChild(td);
-    });
     if(isViewingOpenMonth){
       const tdRemove = document.createElement('td');
       tdRemove.style.cssText = 'padding:4px 6px;text-align:center;';
@@ -12989,6 +12986,12 @@ function renderAccrualsAccruedList(){
       tdRemove.appendChild(removeBtn);
       tr.appendChild(tdRemove);
     }
+    [String(i + 1), r.unitId, r.lease, r.supplier, r.costCenter, r.status, `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
+      const td = document.createElement('td');
+      td.textContent = val;
+      td.style.cssText = `padding:4px 6px;${ci === 0 ? 'color:#6b7280;' : ''}${ci === 7 ? 'text-align:right;' : ''}`;
+      tr.appendChild(td);
+    });
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
