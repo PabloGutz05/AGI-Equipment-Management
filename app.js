@@ -6214,6 +6214,18 @@ function renderUnitOverview(){
           square.style.color = '#6b7280';
         }
 
+        // Manual coverage (Accruals coverage panel): a day marked manually can only ever be the
+        // sole contributor to a plain single-coverage count (real coverage on the same day
+        // would already show as overlap instead), so replace the green with purple here to make
+        // it easy to tell apart from a real invoice at a glance.
+        if(coverageCount === 1 && !hasCredit && isManuallyCovered(u, year, month, d)){
+          square.style.backgroundColor = '#f3e8ff';
+          square.style.borderColor = '#a855f7';
+          square.style.color = '#6b21a8';
+          square.style.fontWeight = '600';
+          square.title = 'Manually confirmed coverage — no invoice expected';
+        }
+
         // Disputed invoice coverage: pink + bold just on the day number, layered on top of
         // whatever background/border the coverage/overlap/credit/disabled logic above already
         // set, so it never conflicts with those existing status colors.
@@ -7593,6 +7605,13 @@ function renderReport(){
             square.style.backgroundColor = '#fff';
             square.style.color = '#6b7280';
           }
+          if(covered && !overlap && !credit && isManuallyCovered(u, year, month, d)){
+            square.style.backgroundColor = '#f3e8ff';
+            square.style.borderColor = '#a855f7';
+            square.style.color = '#6b21a8';
+            square.style.fontWeight = '600';
+            square.title = 'Manually confirmed coverage — no invoice expected';
+          }
           if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square);
           tr.appendChild(tdDay);
@@ -7826,6 +7845,13 @@ function renderReport(){
             square.style.backgroundColor = '#fff';
             square.style.color = '#6b7280';
           }
+          if(covered && !overlap && !credit && isManuallyCovered(u, year, month, d)){
+            square.style.backgroundColor = '#f3e8ff';
+            square.style.borderColor = '#a855f7';
+            square.style.color = '#6b21a8';
+            square.style.fontWeight = '600';
+            square.title = 'Manually confirmed coverage — no invoice expected';
+          }
           if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square);
           tr.appendChild(tdDay);
@@ -7990,6 +8016,10 @@ function renderReport(){
             square.style.backgroundColor='#ffffff'; square.style.borderColor='#991b1b'; square.style.color='#dc2626'; square.style.fontWeight='600';
           }
           else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
+          if(!overlaps[d-1] && covered[d-1] && isManuallyCovered(u, year, month, d)){
+            square.style.backgroundColor = '#f3e8ff'; square.style.borderColor = '#a855f7'; square.style.color = '#6b21a8'; square.style.fontWeight = '600';
+            square.title = 'Manually confirmed coverage — no invoice expected';
+          }
           if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square); tr.appendChild(tdDay);
         }
@@ -8123,6 +8153,10 @@ function renderReport(){
             else if(counts[d-1] === 1){ square.style.backgroundColor='#dcfce7'; square.style.borderColor='#16a34a'; square.style.color='#15803d'; square.style.fontWeight='600'; }
             else if(isDisabled){ square.style.backgroundColor='#ffffff'; square.style.borderColor='#991b1b'; square.style.color='#dc2626'; square.style.fontWeight='600'; }
             else { square.style.backgroundColor='#fff'; square.style.color='#6b7280'; }
+          }
+          if(!creditDays[d-1] && counts[d-1] === 1 && isManuallyCovered(u, year, month, d)){
+            square.style.backgroundColor = '#f3e8ff'; square.style.borderColor = '#a855f7'; square.style.color = '#6b21a8'; square.style.fontWeight = '600';
+            square.title = 'Manually confirmed coverage — no invoice expected';
           }
           if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
           tdDay.appendChild(square); tr.appendChild(tdDay);
@@ -8377,6 +8411,13 @@ function renderReport(){
             square.style.backgroundColor = '#fff';
             square.style.color = '#6b7280';
           }
+          if(covered && !overlap && !credit && isManuallyCovered(u, year, month, d)){
+            square.style.backgroundColor = '#f3e8ff';
+            square.style.borderColor = '#a855f7';
+            square.style.color = '#6b21a8';
+            square.style.fontWeight = '600';
+            square.title = 'Manually confirmed coverage — no invoice expected';
+          }
           if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
 
           tdDay.appendChild(square); tr.appendChild(tdDay);
@@ -8575,6 +8616,13 @@ function renderReport(){
             } else {
               square.style.backgroundColor = '#fff';
               square.style.color = '#6b7280';
+            }
+            if(covered && !overlap && !credit && isManuallyCovered(u, nextYearFOM, nextMonthFOM, d)){
+              square.style.backgroundColor = '#f3e8ff';
+              square.style.borderColor = '#a855f7';
+              square.style.color = '#6b21a8';
+              square.style.fontWeight = '600';
+              square.title = 'Manually confirmed coverage — no invoice expected';
             }
             if(isDisputed){ square.style.color = '#db2777'; square.style.fontWeight = '800'; square.title = (square.title ? square.title + ' | ' : '') + 'Invoice under dispute for this day'; }
             tdDay.appendChild(square);
@@ -11272,7 +11320,7 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
       // (covered/overlap/credit/disabled) is never selectable here, per the rule that manual
       // marking can't override or hide a real one.
       const canToggleManual = interactive && !dayState.disabled && !dayState.credit && !dayState.overlap && (!dayState.covered || dayState.manual);
-      if(interactive && dayState.manual){
+      if(dayState.manual && !dayState.disabled && !dayState.credit && !dayState.overlap){
         sq.style.background = '#581c87';
         sq.style.color = '#e9d5ff';
         sq.style.border = '1px solid #a855f7';

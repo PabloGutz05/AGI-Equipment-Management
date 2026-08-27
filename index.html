@@ -319,6 +319,7 @@
                       <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;border:2px solid #eab308;border-radius:2px;"></div>Credit</div>
                       <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#dc2626;border-radius:2px;"></div>Disabled</div>
                       <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#1e2535;border:1px solid #374151;border-radius:2px;"></div>Pending</div>
+                      <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#581c87;border:1px solid #a855f7;border-radius:2px;"></div>Manual coverage</div>
                     </div>
                     <div id="accrualsPanelGrid" style="overflow-x:auto;"></div>
                     <div id="accrualsPanelPopup" style="display:none;margin-top:12px;background:#161b27;border:1px solid #1e2535;border-radius:10px;padding:14px;"></div>
@@ -1232,6 +1233,7 @@
           <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;border:2px solid #eab308;border-radius:2px;"></div>Credit</div>
           <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#dc2626;border-radius:2px;"></div>Disabled</div>
           <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#1e2535;border:1px solid #374151;border-radius:2px;"></div>Pending</div>
+          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#9ca3af;"><div style="width:12px;height:12px;background:#581c87;border:1px solid #a855f7;border-radius:2px;"></div>Manual coverage</div>
         </div>
         <!-- Grid -->
         <div id="unitDetailGrid" style="overflow-x:auto;"></div>
@@ -1289,6 +1291,11 @@
                 <div style="width:22px;height:22px;border:1px solid #d1d5db;border-radius:4px;display:flex;align-items:center;justify-content:center;background:#ffffff;color:#111827;font-weight:600;">1</div>
               </div>
               <div><strong>Disabled Unit</strong> — red background</div>
+            </div>
+            <!-- Manual Coverage (Purple, Accruals coverage panel only) -->
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="width:28px;height:28px;border:2px solid #a855f7;border-radius:4px;display:flex;align-items:center;justify-content:center;background:#f3e8ff;color:#6b21a8;font-weight:600;">1</div>
+              <div><strong>Manual Coverage</strong> — purple highlight; an operator confirmed no invoice is expected for this day (Accruals coverage panel)</div>
             </div>
           </div>
         </div>
