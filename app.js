@@ -5594,6 +5594,36 @@ function isDateInDisputedPeriod(year, month, day, disputedPeriods){
   return disputedPeriods.some(p => checkDateStr >= p.from && checkDateStr <= p.to);
 }
 
+// Manual coverage: individual days an operator has confirmed as covered from the Accruals
+// coverage panel even though no registry/invoice actually covers them (e.g. one that hasn't
+// been entered yet). Once marked, a day counts as ordinary rental coverage everywhere in the
+// app — every coverage computation below folds these in through this one shared pair of
+// helpers, so nothing needs its own separate "is this manually covered" logic.
+function getManualCoverageDates(unit){
+  return Array.isArray(unit.manualCoverageDates) ? unit.manualCoverageDates : [];
+}
+function isManuallyCovered(unit, year, month, day){
+  const dates = getManualCoverageDates(unit);
+  if(!dates.length) return false;
+  const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  return dates.indexOf(dateStr) !== -1;
+}
+// Toggles one date on/off in the unit's manual coverage list and persists it. Returns the new
+// state (true = now manually covered).
+function toggleManualCoverage(unit, year, month, day){
+  unit.manualCoverageDates = Array.isArray(unit.manualCoverageDates) ? unit.manualCoverageDates.slice() : [];
+  const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  const idx = unit.manualCoverageDates.indexOf(dateStr);
+  let nowCovered;
+  if(idx === -1){ unit.manualCoverageDates.push(dateStr); nowCovered = true; }
+  else { unit.manualCoverageDates.splice(idx, 1); nowCovered = false; }
+  const stateIdx = (state.units || []).findIndex(u => u.id === unit.id);
+  if(stateIdx !== -1) state.units[stateIdx] = unit;
+  try{ saveState(); }catch(e){}
+  DB.updateUnit(unit).catch(e => console.error('Manual coverage save error:', e));
+  return nowCovered;
+}
+
 // Render the Unit Overview page: year/month selectors and per-unit day grid
 function renderUnitOverview(){
   const el = qs('#unitOverview'); if(!el) return;
@@ -6061,6 +6091,11 @@ function renderUnitOverview(){
           }
         });
       });
+
+      // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
+      for(let dd = 1; dd <= daysInMonth; dd++){
+        if(isManuallyCovered(u, year, month, dd)) coveredDays.set(dd, (coveredDays.get(dd) || 0) + 1);
+      }
 
       // Get disabled periods for this unit
       const disabledPeriods = getDisabledPeriods(u);
@@ -7225,6 +7260,9 @@ function renderReport(){
       }
     });
 
+    // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
+    for(let d = 1; d <= daysInMonth; d++){ if(isManuallyCovered(u, year, month, d)) covered[d-1] = true; }
+
     return covered;
   }
 
@@ -7260,6 +7298,10 @@ function renderReport(){
         }
       });
     });
+
+    // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
+    for(let d = 1; d <= daysInMonth; d++){ if(isManuallyCovered(u, year, month, d)) counts[d-1] += 1; }
+
     return counts;
   }
 
@@ -11056,17 +11098,17 @@ function renderUnitDetailModal(unitId) {
   }
 }
 
-function buildUnitCoverageGrid(unit, gridId, popupId, compact) {
+function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
   const gridEl = qs('#' + (gridId || 'unitDetailGrid'));
   const popupEl = qs('#' + (popupId || 'unitDetailPopup'));
   if(!gridEl) return;
-  // Compact mode (Accruals coverage panel only) shrinks the calendar enough that a unit's
-  // whole history usually fits without needing its own scroll, alongside the missing-periods
-  // list — the popup keeps its normal size since it isn't fighting for space with anything.
-  const sqSize = compact ? 12 : 16;
-  const sqFont = compact ? '7px' : '8px';
-  const monthFont = compact ? '10px' : '11px';
-  const tableFont = compact ? '10px' : '11px';
+  // `interactive` (Accruals coverage panel only) enables click-to-mark manual coverage on
+  // blank days — the calendar itself stays the same size as the popup's; the panel gets more
+  // room by making the missing-periods list next to it narrower instead.
+  const sqSize = 16;
+  const sqFont = '8px';
+  const monthFont = '11px';
+  const tableFont = '11px';
   gridEl.innerHTML = '';
   if(popupEl) popupEl.style.display = 'none';
 
@@ -11128,7 +11170,7 @@ function buildUnitCoverageGrid(unit, gridId, popupId, compact) {
 
     // Month label cell
     const tdMonth = document.createElement('td');
-    tdMonth.style.cssText = `padding:2px ${compact ? 6 : 8}px 2px 0;color:#6b7280;font-size:${monthFont};font-weight:600;white-space:nowrap;cursor:pointer;min-width:${compact ? 38 : 48}px;`;
+    tdMonth.style.cssText = `padding:2px 8px 2px 0;color:#6b7280;font-size:${monthFont};font-weight:600;white-space:nowrap;cursor:pointer;min-width:48px;`;
     tdMonth.textContent = monthLabel;
     tdMonth.title = 'Click to see all invoices this month';
     tdMonth.addEventListener('mouseenter', () => tdMonth.style.color = '#60a5fa');
@@ -11187,9 +11229,30 @@ function buildUnitCoverageGrid(unit, gridId, popupId, compact) {
         tdDay.title = 'Invoice under dispute for this day';
       }
 
+      // Manual coverage marking — Accruals coverage panel only (interactive mode). A day can
+      // only be marked when it currently has no other status at all (blank), or unmarked again
+      // when it's already manual and nothing else also covers it; any day with a real status
+      // (covered/overlap/credit/disabled) is never selectable here, per the rule that manual
+      // marking can't override or hide a real one.
+      const canToggleManual = interactive && !dayState.disabled && !dayState.credit && !dayState.overlap && (!dayState.covered || dayState.manual);
+      if(interactive && dayState.manual){
+        sq.style.background = '#581c87';
+        sq.style.color = '#e9d5ff';
+        sq.style.border = '1px solid #a855f7';
+        tdDay.title = 'Manually confirmed coverage — click to remove';
+      }
+
       sq.addEventListener('mouseenter', () => { sq.style.transform = 'scale(1.3)'; sq.style.zIndex = '10'; sq.style.position = 'relative'; });
       sq.addEventListener('mouseleave', () => { sq.style.transform = ''; sq.style.zIndex = ''; sq.style.position = ''; });
-      sq.addEventListener('click', () => showDayDetail(unit, y, m, d, registries, invoices, popupEl));
+      if(canToggleManual){
+        if(!dayState.manual) tdDay.title = 'Click to mark as manually covered';
+        sq.addEventListener('click', () => {
+          toggleManualCoverage(unit, y, m, d);
+          if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
+        });
+      } else {
+        sq.addEventListener('click', () => showDayDetail(unit, y, m, d, registries, invoices, popupEl));
+      }
 
       tdDay.appendChild(sq);
       tr.appendChild(tdDay);
@@ -11243,6 +11306,11 @@ function getDayState(unitIdNorm, y, m, d, registries, invoices, unit){
       if(cat === 'credit'){ result.credit = true; }
     });
   });
+
+  // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
+  try{
+    if(isManuallyCovered(unit, y, m, d)){ result.rentalCount++; result.covered = true; result.manual = true; }
+  }catch(e){}
 
   if(result.rentalCount > 1) result.overlap = true;
   return result;
@@ -11451,6 +11519,11 @@ function buildUnitStats(unit, statsId){
       });
     });
 
+    // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
+    let manualDays = 0;
+    for(let dd = 1; dd <= daysInMonth; dd++){ if(isManuallyCovered(unit, y, m, dd)) manualDays++; }
+    if(manualDays > 0){ hasCoverage = true; totalDaysBilled += manualDays; }
+
     if(hasCoverage) monthsCovered++;
     else monthsMissing++;
     if(hasCredit) creditMonths++;
@@ -11536,6 +11609,8 @@ function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
     if(!disabled){
       const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
       covered = unitRentalPeriods.some(p => dateStr >= p.start && dateStr <= p.end);
+      // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
+      if(!covered) covered = isManuallyCovered(unit, y, m, d);
     }
     const missing = !disabled && !covered;
     if(missing){
@@ -11653,20 +11728,20 @@ function renderAccrualsMissingPeriods(forceRecompute){
   const unitIdList = Array.from(new Set(rows.map(r => r.unitId)));
 
   const table = document.createElement('table');
-  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;';
+  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px;';
 
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
 
   const thCounter = document.createElement('th');
   thCounter.textContent = '#';
-  thCounter.style.cssText = 'text-align:left;padding:6px 8px;font-size:12px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
+  thCounter.style.cssText = 'text-align:left;padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
   headerRow.appendChild(thCounter);
 
   COLUMNS.forEach(col => {
     const th = document.createElement('th');
     th.textContent = col.label + (sortCol.key === col.key ? (ascending ? ' ▲' : ' ▼') : '');
-    th.style.cssText = `text-align:${col.alignRight ? 'right' : 'left'};padding:6px 8px;font-size:12px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;cursor:pointer;user-select:none;`;
+    th.style.cssText = `text-align:${col.alignRight ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;cursor:pointer;user-select:none;`;
     th.title = 'Click to sort';
     th.addEventListener('click', () => {
       if(_accrualsMissingSort.column === col.key) _accrualsMissingSort.ascending = !_accrualsMissingSort.ascending;
@@ -11699,12 +11774,12 @@ function renderAccrualsMissingPeriods(forceRecompute){
       updateAccrualsPanelNav();
     });
 
-    const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:6px 8px;color:#6b7280;';
+    const tdCounter = document.createElement('td'); tdCounter.textContent = i + 1; tdCounter.style.cssText = 'padding:4px 6px;color:#6b7280;';
     tr.appendChild(tdCounter);
 
     const tdUnit = document.createElement('td');
     tdUnit.textContent = r.unitId;
-    tdUnit.style.cssText = 'padding:6px 8px;color:#0b74de;cursor:pointer;font-weight:600;';
+    tdUnit.style.cssText = 'padding:4px 6px;color:#0b74de;cursor:pointer;font-weight:600;';
     tdUnit.title = 'View coverage history';
     tdUnit.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -11712,19 +11787,19 @@ function renderAccrualsMissingPeriods(forceRecompute){
     });
     tr.appendChild(tdUnit);
 
-    const tdLease = document.createElement('td'); tdLease.textContent = r.lease; tdLease.style.padding = '6px 8px';
+    const tdLease = document.createElement('td'); tdLease.textContent = r.lease; tdLease.style.padding = '4px 6px';
     tr.appendChild(tdLease);
-    const tdSupplier = document.createElement('td'); tdSupplier.textContent = r.supplier; tdSupplier.style.padding = '6px 8px';
+    const tdSupplier = document.createElement('td'); tdSupplier.textContent = r.supplier; tdSupplier.style.padding = '4px 6px';
     tr.appendChild(tdSupplier);
-    const tdCC = document.createElement('td'); tdCC.textContent = r.costCenter; tdCC.style.padding = '6px 8px';
+    const tdCC = document.createElement('td'); tdCC.textContent = r.costCenter; tdCC.style.padding = '4px 6px';
     tr.appendChild(tdCC);
     const tdStatus = document.createElement('td');
     tdStatus.textContent = r.status;
-    tdStatus.style.cssText = `padding:6px 8px;font-weight:600;color:${r.status.toLowerCase() === 'disabled' ? '#dc2626' : '#15803d'};`;
+    tdStatus.style.cssText = `padding:4px 6px;font-weight:600;color:${r.status.toLowerCase() === 'disabled' ? '#dc2626' : '#15803d'};`;
     tr.appendChild(tdStatus);
-    const tdPeriod = document.createElement('td'); tdPeriod.textContent = `${fmtMDY(r.start)} - ${fmtMDY(r.end)}`; tdPeriod.style.padding = '6px 8px';
+    const tdPeriod = document.createElement('td'); tdPeriod.textContent = `${fmtMDY(r.start)} - ${fmtMDY(r.end)}`; tdPeriod.style.padding = '4px 6px';
     tr.appendChild(tdPeriod);
-    const tdDays = document.createElement('td'); tdDays.textContent = r.days; tdDays.style.cssText = 'padding:6px 8px;text-align:right;';
+    const tdDays = document.createElement('td'); tdDays.textContent = r.days; tdDays.style.cssText = 'padding:4px 6px;text-align:right;';
     tr.appendChild(tdDays);
 
     tbody.appendChild(tr);
@@ -11814,6 +11889,34 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
       if(match) match.scrollIntoView({ block: 'center' });
     }catch(e){}
   }
+}
+
+// After marking/unmarking a day as manually covered, recompute just THIS unit's missing
+// periods (cheap — one unit) and patch them into the existing cache rather than recomputing
+// every unit, then re-render the list. Tries to keep the panel focused on the same unit even
+// if the exact missing-period row it was showing changed shape (split/shrank/disappeared).
+function refreshAccrualsRowsForUnit(unit){
+  if(!_accrualsMissingRowsCache) return;
+  const { rangeStart, rangeEnd } = _accrualsMissingRowsCache;
+  const uid = (unit.unitId || unit.id || '').toString();
+  if(!uid) return;
+  const uidLower = uid.toLowerCase();
+
+  _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter(r => r.unitId.toLowerCase() !== uidLower);
+  let periods = [];
+  try{ periods = computeUnitMissingPeriods(unit, rangeStart, rangeEnd); }catch(e){ periods = []; }
+  const status = (unit.status || 'Operational').toString();
+  periods.forEach(p => {
+    const days = Math.round((p.end - p.start) / 86400000) + 1;
+    _accrualsMissingRowsCache.rows.push({ unitId: uid, lease: unit.lease || '', supplier: unit.supplier || '', costCenter: unit.costCenter || '', status, start: p.start, end: p.end, days });
+  });
+
+  const selectionStillValid = _accrualsMissingRowsCache.rows.some(r => (r.unitId.toLowerCase() + '|' + r.start.getTime()) === _accrualsSelectedRowKey);
+  if(!selectionStillValid){
+    const firstForUnit = _accrualsMissingRowsCache.rows.find(r => r.unitId.toLowerCase() === uidLower);
+    if(firstForUnit) _accrualsSelectedRowKey = firstForUnit.unitId.toLowerCase() + '|' + firstForUnit.start.getTime();
+  }
+  renderAccrualsMissingPeriods();
 }
 
 // Updates the panel's "X / Y" counter and Prev/Next arrow enabled state to match whichever

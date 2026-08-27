@@ -163,6 +163,7 @@ const DB = {
         statusHistory: (()=>{ const v = DB.parseField(u.statusHistory); return Array.isArray(v) ? v : []; })(),
         comments: DB.parseField(u.comments) || [],
         overviewComments: DB.parseField(u.overviewComments) || [],
+        manualCoverageDates: (()=>{ const v = DB.parseField(u.manualCoverageDates); return Array.isArray(v) ? v : []; })(),
         createdAt: String(u.createdAt || '')
       }));
 
@@ -289,7 +290,8 @@ const DB = {
       ...record,
       statusHistory: Array.isArray(record.statusHistory) ? JSON.stringify(record.statusHistory) : (record.statusHistory || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]'),
-      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]')
+      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]'),
+      manualCoverageDates: Array.isArray(record.manualCoverageDates) ? JSON.stringify(record.manualCoverageDates) : (record.manualCoverageDates || '[]')
     };
     return DB.post({ action: 'save', sheet: 'units', data });
   },
@@ -299,7 +301,8 @@ const DB = {
       ...record,
       statusHistory: Array.isArray(record.statusHistory) ? JSON.stringify(record.statusHistory) : (record.statusHistory || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]'),
-      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]')
+      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]'),
+      manualCoverageDates: Array.isArray(record.manualCoverageDates) ? JSON.stringify(record.manualCoverageDates) : (record.manualCoverageDates || '[]')
     };
     return DB.post({ action: 'update', sheet: 'units', id: record.id, data });
   },
