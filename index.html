@@ -308,12 +308,18 @@
                     </div>
                     <div style="display:flex;gap:16px;align-items:stretch;margin-top:14px;">
                       <div id="accrualsPanelInfo" style="flex:1;min-width:0;display:grid;grid-template-columns:repeat(2,1fr);gap:10px 16px;"></div>
-                      <!-- Manual-coverage actions — only meaningful in this panel: any pending
-                           click/drag marks stay local (not saved, not reflected elsewhere) until
-                           accepted here, one deliberate action instead of a save per square. -->
-                      <div style="flex:0 0 200px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#1e1030;border:1px solid #3b0764;border-radius:8px;padding:10px;">
-                        <span id="accrualsPanelPendingCount" style="font-size:11px;color:#c4b5fd;text-align:center;">No pending changes</span>
-                        <button id="accrualsPanelAcceptBtn" type="button" disabled style="width:100%;padding:8px;border-radius:6px;border:none;background:#581c87;color:#e9d5ff;font-weight:700;font-size:12px;cursor:not-allowed;opacity:0.4;">Accept manual coverage</button>
+                      <!-- Panel-only actions: manual-coverage accept (pending click/drag marks
+                           stay local until accepted) and accrue (moves this unit's periods out of
+                           the review list below once they're settled). -->
+                      <div style="flex:0 0 210px;display:flex;flex-direction:column;gap:8px;">
+                        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#1e1030;border:1px solid #3b0764;border-radius:8px;padding:10px;">
+                          <span id="accrualsPanelPendingCount" style="font-size:11px;color:#c4b5fd;text-align:center;">No pending changes</span>
+                          <button id="accrualsPanelAcceptBtn" type="button" disabled style="width:100%;padding:8px;border-radius:6px;border:none;background:#581c87;color:#e9d5ff;font-weight:700;font-size:12px;cursor:not-allowed;opacity:0.4;">Accept manual coverage</button>
+                        </div>
+                        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#0b1f33;border:1px solid #1e3a5f;border-radius:8px;padding:10px;">
+                          <button id="accrualsAccrueUnitBtn" type="button" style="width:100%;padding:8px;border-radius:6px;border:none;background:#0b74de;color:#fff;font-weight:700;font-size:12px;cursor:pointer;">Accrue Unit</button>
+                          <span id="accrualsAccrueUndoLabel" style="display:none;font-size:11px;color:#93c5fd;text-decoration:underline;cursor:pointer;text-align:center;"></span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -337,6 +343,22 @@
                 </div>
               </div>
             </div>
+          </div>
+
+          <!-- Periods moved out of the review list above via "Accrue Unit" — a unit's periods
+               land here once they're settled and ready to be delivered as part of the accrual
+               document. Columns match the review list for now; amounts/format TBD. -->
+          <div style="margin-top:20px;padding-top:16px;border-top:1px solid #e6e9ee;">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+              <h3 class="settings-block-title" style="margin:0;">Periods Ready to Accrue</h3>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <select id="accrualsAccrueMonthSelect" style="font-size:12px;padding:4px 8px;height:auto;"></select>
+                <select id="accrualsAccrueYearSelect" style="font-size:12px;padding:4px 8px;height:auto;"></select>
+                <button id="accrualsCloseMonthBtn" type="button" style="padding:6px 12px;border-radius:6px;border:none;background:#b91c1c;color:#fff;font-weight:700;font-size:12px;cursor:pointer;">Close Month Accruals</button>
+              </div>
+            </div>
+            <div id="accrualsAccruedSummary" class="small-muted" style="margin-bottom:8px;">No periods accrued yet.</div>
+            <div id="accrualsAccruedTable" class="no-native-scrollbar" style="overflow:auto;max-height:400px;border:1px solid #eef2f7;border-radius:6px;"></div>
           </div>
         </div>
       </div>

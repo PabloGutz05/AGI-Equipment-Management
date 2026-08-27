@@ -102,7 +102,7 @@ const DB = {
   async loadAll() {
     try {
       showLoadingOverlay('Loading your data...');
-      const [registries, units, leases, users, ccCentersRaw, invoiceTrackingRaw, meta] = await Promise.all([
+      const [registries, units, leases, users, ccCentersRaw, invoiceTrackingRaw, accrualsRaw, meta] = await Promise.all([
         DB.get({ action: 'getAll', sheet: 'invoices' }),
         DB.get({ action: 'getAll', sheet: 'units' }),
         DB.get({ action: 'getAll', sheet: 'leases' }),
@@ -113,6 +113,10 @@ const DB = {
         // whole Promise.all and block the entire app from loading over one optional sheet.
         DB.get({ action: 'getAll', sheet: 'Invoice Tracking' }).catch(e => {
           console.warn('Invoice Tracking sheet failed to load (falling back to empty) — verify the tab is named exactly "Invoice Tracking":', e.message);
+          return [];
+        }),
+        DB.get({ action: 'getAll', sheet: 'Accruals' }).catch(e => {
+          console.warn('Accruals sheet failed to load (falling back to empty) — verify the tab is named exactly "Accruals":', e.message);
           return [];
         }),
         DB.get({ action: 'getMeta' })
@@ -215,6 +219,24 @@ const DB = {
 
       const parsedInvoiceTracking = (Array.isArray(invoiceTrackingRaw) ? invoiceTrackingRaw : []).map(_invoiceTrackingFromSheetRow);
 
+      // Accruals: a period stays "open" (editable, undoable) while accrualMonth/accrualYear
+      // are blank; "Close Month Accruals" stamps both and locks it — see accrueCurrentUnit/
+      // closeAccrualsMonth in app.js.
+      const parsedAccruals = (Array.isArray(accrualsRaw) ? accrualsRaw : []).map(a => ({
+        id: String(a.id || ''),
+        unitId: String(a.unitId || ''),
+        lease: String(a.lease || ''),
+        supplier: String(a.supplier || ''),
+        costCenter: String(a.costCenter || ''),
+        status: String(a.status || ''),
+        periodStart: String(a.periodStart || ''),
+        periodEnd: String(a.periodEnd || ''),
+        days: Number(a.days) || 0,
+        accrualMonth: String(a.accrualMonth || ''),
+        accrualYear: String(a.accrualYear || ''),
+        createdAt: String(a.createdAt || '')
+      }));
+
       const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges'];
       arrayFields.forEach(f => {
         const v = sanitizedMeta[f];
@@ -234,6 +256,7 @@ const DB = {
         users: parsedUsers,
         ccCenters: parsedCCCenters,
         invoiceTracking: parsedInvoiceTracking,
+        accruals: parsedAccruals,
         comments: {},
         meta: sanitizedMeta
       };
@@ -345,6 +368,18 @@ const DB = {
 
   async deleteInvoiceTracking(id) {
     return DB.post({ action: 'delete', sheet: 'Invoice Tracking', id });
+  },
+
+  async saveAccrual(record) {
+    return DB.post({ action: 'save', sheet: 'Accruals', data: record });
+  },
+
+  async updateAccrual(record) {
+    return DB.post({ action: 'update', sheet: 'Accruals', id: record.id, data: record });
+  },
+
+  async deleteAccrual(id) {
+    return DB.post({ action: 'delete', sheet: 'Accruals', id });
   },
 
   async saveUser(record) {

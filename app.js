@@ -9,6 +9,7 @@ const defaultData = {
   registries: [],
   ccCenters: [],
   invoiceTracking: [],
+  accruals: [],
   comments: {}, // Store comments by unitId
   meta: { createdAt: new Date().toISOString(), registrySeq: 0 }
 };
@@ -218,6 +219,7 @@ document.querySelectorAll('.tab').forEach(btn => {
       }catch(e){ renderOverview(); }
     } else if(btn.dataset.tab === 'accruals'){
       try{ if(typeof renderAccrualsMissingPeriods === 'function') renderAccrualsMissingPeriods(true); }catch(e){}
+      try{ if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList(); }catch(e){}
     } else {
       renderOverview();
     }
@@ -5685,6 +5687,7 @@ function endAccrualsDrag(){
   _accrualsDrag = null;
   _accrualsHasPendingChanges = _accrualsPendingDates.size > 0;
   updateAccrualsAcceptButton();
+  if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 }
 
 function acceptAccrualsManualCoverage(){
@@ -5694,6 +5697,7 @@ function acceptAccrualsManualCoverage(){
   _accrualsHasPendingChanges = false;
   _accrualsPendingDates = new Set();
   if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
+  if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 }
 const accrualsPanelAcceptBtnEl = qs('#accrualsPanelAcceptBtn');
 if(accrualsPanelAcceptBtnEl) accrualsPanelAcceptBtnEl.addEventListener('click', acceptAccrualsManualCoverage);
@@ -11790,6 +11794,34 @@ let _accrualsSelectedRowKey = null;
 // highlighting/selection instead of duplicating that logic.
 let _accrualsRowRefs = [];
 
+// The single most recent accrue action, so the "Undo" label can put it straight back — cleared
+// whenever a month gets closed, since a closed record can no longer be edited/undone.
+let _accrualsLastAccruedUnitId = null;
+let _accrualsLastAccruedMissingRows = null; // original {unitId,lease,...,start,end,days} shape, for undo
+let _accrualsLastAccruedIds = null; // the state.accruals record ids created by that same action
+// Which month/year the "Periods Ready to Accrue" list is currently showing — defaults to
+// whichever month is presently open (see getAccrualsOpenMonthYear) whenever the tab is entered.
+let _accrualsViewMonth = null;
+let _accrualsViewYear = null;
+
+function dateToIsoStr(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function isoStrToDate(s){
+  const p = String(s || '').split('-');
+  if(p.length < 3) return new Date(NaN);
+  return new Date(parseInt(p[0],10), parseInt(p[1],10) - 1, parseInt(p[2],10));
+}
+// The accrual "month" currently accepting new Accrue Unit actions — 1-12/year. Starts at
+// August 2026 per how this accrual initiative began; advances by one each time a month is
+// closed (see closeAccrualsMonth), independent of the real calendar date.
+function getAccrualsOpenMonthYear(){
+  const month = Number(state.meta.accrualsOpenMonth) || 8;
+  const year = Number(state.meta.accrualsOpenYear) || 2026;
+  return { month, year };
+}
+function accrualMonthName(month){
+  return ['January','February','March','April','May','June','July','August','September','October','November','December'][month - 1] || '';
+}
+
 // Provisional Table 1: every missing coverage period, for every unit, from Jan 1 of the
 // current year through the end of the current month. A day only ever counts as "missing"
 // when the unit was available (not disabled) that day and not rental-covered — see
@@ -11823,7 +11855,38 @@ function renderAccrualsMissingPeriods(forceRecompute){
       });
     });
 
-    _accrualsMissingRowsCache = { rows, rangeStart, rangeEnd };
+    // Accruals are cumulative: a period that was already accrued and closed, but is STILL
+    // missing (no invoice/manual coverage arrived since), must keep reappearing here every
+    // cycle — its "days" naturally grows each time since computeUnitMissingPeriods always
+    // measures from the same original gap start, so re-accruing it folds the prior total in
+    // automatically. Only a period with an OPEN (not yet closed) accrual gets excluded, since
+    // that one is already sitting in "Periods Ready to Accrue" for the current cycle and would
+    // otherwise be double-listed/double-accrued before it's even closed.
+    const openAccrualKeys = new Set(
+      (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear)
+        .map(a => a.unitId.toLowerCase() + '|' + a.periodStart)
+    );
+    const filteredRows = openAccrualKeys.size
+      ? rows.filter(r => !openAccrualKeys.has(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start)))
+      : rows;
+
+    // For a period with prior CLOSED history, surface the most recently closed total so the
+    // operator can see how much this cycle's cumulative figure grew since the last accrual sent.
+    const lastClosedByKey = new Map();
+    (state.accruals || []).filter(a => a.accrualMonth && a.accrualYear).forEach(a => {
+      const key = a.unitId.toLowerCase() + '|' + a.periodStart;
+      const existing = lastClosedByKey.get(key);
+      const endDate = isoStrToDate(a.periodEnd);
+      if(!existing || endDate > existing.endDate){
+        lastClosedByKey.set(key, { days: Number(a.days) || 0, month: Number(a.accrualMonth), year: Number(a.accrualYear), endDate });
+      }
+    });
+    filteredRows.forEach(r => {
+      const prior = lastClosedByKey.get(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start));
+      if(prior) r.priorAccrual = { days: prior.days, label: `${accrualMonthName(prior.month)} ${prior.year}` };
+    });
+
+    _accrualsMissingRowsCache = { rows: filteredRows, rangeStart, rangeEnd };
   }
 
   const { rows, rangeStart, rangeEnd } = _accrualsMissingRowsCache;
@@ -11836,7 +11899,8 @@ function renderAccrualsMissingPeriods(forceRecompute){
     { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
     { key: 'status', label: 'Status', get: r => r.status },
     { key: 'period', label: 'Missing Period', get: r => r.start, numeric: true },
-    { key: 'days', label: 'Days', get: r => r.days, numeric: true, alignRight: true }
+    { key: 'days', label: 'Days', get: r => r.days, numeric: true, alignRight: true },
+    { key: 'priorAccrual', label: 'Prior Accrual', get: r => (r.priorAccrual ? r.priorAccrual.days : -1), numeric: true, alignRight: true }
   ];
 
   const sortCol = COLUMNS.find(c => c.key === _accrualsMissingSort.column) || COLUMNS[0];
@@ -11951,6 +12015,16 @@ function renderAccrualsMissingPeriods(forceRecompute){
     tr.appendChild(tdPeriod);
     const tdDays = document.createElement('td'); tdDays.textContent = r.days; tdDays.style.cssText = 'padding:4px 6px;text-align:right;';
     tr.appendChild(tdDays);
+    const tdPrior = document.createElement('td');
+    if(r.priorAccrual){
+      tdPrior.textContent = `${r.priorAccrual.days}d`;
+      tdPrior.title = `Already sent as of ${r.priorAccrual.label} closing — this cycle's Days figure is the cumulative total including that.`;
+      tdPrior.style.cssText = 'padding:4px 6px;text-align:right;color:#9333ea;font-weight:600;';
+    } else {
+      tdPrior.textContent = '—';
+      tdPrior.style.cssText = 'padding:4px 6px;text-align:right;color:#9ca3af;';
+    }
+    tr.appendChild(tdPrior);
 
     tbody.appendChild(tr);
     if(rowKey === _accrualsSelectedRowKey) selectedTr = tr;
@@ -12002,6 +12076,7 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
   _accrualsHasPendingChanges = false;
   _accrualsPendingDates = new Set();
   updateAccrualsAcceptButton();
+  if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 
   const titleEl = qs('#accrualsPanelTitle');
   if(titleEl) titleEl.textContent = unit.unitId || unitId;
@@ -12090,6 +12165,228 @@ function refreshAccrualsRowsForUnit(unit){
   }
   renderAccrualsMissingPeriods();
 }
+
+// Moves every currently-listed period for the panel's unit out of the review list and into
+// "Periods Ready to Accrue" below, saved to the Accruals sheet as open (accrualMonth/Year
+// blank) records — the whole point being an empty review list once every unit is either
+// resolved (manual coverage) or accrued. Blocked while a manual-coverage edit is still pending,
+// so nothing gets accrued out from under an unsaved change.
+function accrueCurrentUnit(){
+  if(accrualsPanelBlockedByPending()) return;
+  if(!_accrualsPanelUnit || !_accrualsMissingRowsCache) return;
+  const uid = (_accrualsPanelUnit.unitId || _accrualsPanelUnit.id || '').toString();
+  if(!uid) return;
+  const uidLower = uid.toLowerCase();
+
+  const movedRows = _accrualsMissingRowsCache.rows.filter(r => r.unitId.toLowerCase() === uidLower);
+  if(movedRows.length === 0) return;
+
+  _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter(r => r.unitId.toLowerCase() !== uidLower);
+
+  const newRecords = movedRows.map(r => ({
+    id: id(),
+    unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
+    periodStart: dateToIsoStr(r.start), periodEnd: dateToIsoStr(r.end), days: r.days,
+    accrualMonth: '', accrualYear: '', createdAt: new Date().toISOString()
+  }));
+  state.accruals = (state.accruals || []).concat(newRecords);
+  newRecords.forEach(rec => DB.saveAccrual(rec).catch(e => console.error('Accrual save error:', e)));
+  try{ saveState(); }catch(e){}
+
+  _accrualsLastAccruedUnitId = uid;
+  _accrualsLastAccruedMissingRows = movedRows;
+  _accrualsLastAccruedIds = newRecords.map(r => r.id);
+
+  // Jump the "Periods Ready to Accrue" view to the currently-open month so the operator
+  // immediately sees what they just accrued land in the list.
+  const openMY = getAccrualsOpenMonthYear();
+  _accrualsViewMonth = openMY.month; _accrualsViewYear = openMY.year;
+
+  renderAccrualsMissingPeriods();
+  renderAccrualsAccruedList();
+  updateAccrueUnitButton();
+}
+
+// Puts the most recently accrued unit's periods straight back into the review list and deletes
+// the just-created Accruals rows — a single safety-net level of undo, not a full history;
+// accruing a different unit (or closing the month) replaces/clears the target.
+function undoAccrueUnit(){
+  if(!_accrualsLastAccruedMissingRows || !_accrualsLastAccruedUnitId || !_accrualsLastAccruedIds) return;
+  const idsToRemove = new Set(_accrualsLastAccruedIds);
+  _accrualsLastAccruedIds.forEach(recId => DB.deleteAccrual(recId).catch(e => console.error('Accrual undo/delete error:', e)));
+  state.accruals = (state.accruals || []).filter(a => !idsToRemove.has(a.id));
+  try{ saveState(); }catch(e){}
+
+  if(_accrualsMissingRowsCache) _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.concat(_accrualsLastAccruedMissingRows);
+  _accrualsLastAccruedUnitId = null;
+  _accrualsLastAccruedMissingRows = null;
+  _accrualsLastAccruedIds = null;
+
+  renderAccrualsMissingPeriods();
+  renderAccrualsAccruedList();
+  updateAccrueUnitButton();
+}
+
+// Locks in every currently-open accrual as the tracked open month's document, then advances
+// the tracker to the next month — irreversible (matches "once closed there's no more editions"),
+// so this asks for confirmation first and clears the Undo label (a closed record can't be
+// undone from here anymore).
+function closeAccrualsMonth(){
+  const { month, year } = getAccrualsOpenMonthYear();
+  const openRecords = (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear);
+  const monthLabel = `${accrualMonthName(month)} ${year}`;
+  const confirmMsg = openRecords.length > 0
+    ? `Close ${monthLabel}'s accrual batch? This will lock ${openRecords.length} period(s) as ${monthLabel} — no further edits after this. New accruals will start going to ${accrualMonthName(month === 12 ? 1 : month + 1)} ${month === 12 ? year + 1 : year}.`
+    : `Close ${monthLabel} with no periods accrued, and move to ${accrualMonthName(month === 12 ? 1 : month + 1)} ${month === 12 ? year + 1 : year}?`;
+  if(!confirm(confirmMsg)) return;
+
+  openRecords.forEach(rec => {
+    rec.accrualMonth = String(month);
+    rec.accrualYear = String(year);
+    DB.updateAccrual(rec).catch(e => console.error('Accrual close error:', e));
+  });
+
+  let nextMonth = month + 1, nextYear = year;
+  if(nextMonth > 12){ nextMonth = 1; nextYear += 1; }
+  state.meta.accrualsOpenMonth = nextMonth;
+  state.meta.accrualsOpenYear = nextYear;
+  try{ saveState(); }catch(e){}
+
+  // The Undo label only ever makes sense for still-open records — anything it pointed to just
+  // got closed above.
+  _accrualsLastAccruedUnitId = null;
+  _accrualsLastAccruedMissingRows = null;
+  _accrualsLastAccruedIds = null;
+
+  // Follow the view to the newly-open (empty) month so it's obvious the close succeeded.
+  _accrualsViewMonth = nextMonth; _accrualsViewYear = nextYear;
+
+  renderAccrualsAccruedList();
+  updateAccrueUnitButton();
+}
+
+// Enables/disables "Accrue Unit" for whatever unit the panel currently shows, and shows/hides
+// the "Undo" label for the most recent accrue action.
+function updateAccrueUnitButton(){
+  const btn = qs('#accrualsAccrueUnitBtn');
+  if(btn){
+    const uid = _accrualsPanelUnit ? (_accrualsPanelUnit.unitId || _accrualsPanelUnit.id || '').toString().toLowerCase() : '';
+    const hasRows = !!(uid && _accrualsMissingRowsCache && _accrualsMissingRowsCache.rows.some(r => r.unitId.toLowerCase() === uid));
+    const enabled = hasRows && !_accrualsHasPendingChanges;
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? '1' : '0.4';
+    btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+  }
+  const undoLabel = qs('#accrualsAccrueUndoLabel');
+  if(undoLabel){
+    if(_accrualsLastAccruedUnitId){
+      undoLabel.style.display = 'block';
+      undoLabel.textContent = `Undo — restore ${_accrualsLastAccruedUnitId}'s period(s)`;
+    } else {
+      undoLabel.style.display = 'none';
+      undoLabel.textContent = '';
+    }
+  }
+}
+
+// "Periods Ready to Accrue" — a month/year-driven view like Unit Overview's. Selecting the
+// currently-open month shows the live, still-editable (Undo-able) batch; selecting an earlier,
+// already-closed month shows that batch read-only, exactly as it was sent.
+function renderAccrualsAccruedList(){
+  const tableEl = qs('#accrualsAccruedTable');
+  const summaryEl = qs('#accrualsAccruedSummary');
+  const monthSelectEl = qs('#accrualsAccrueMonthSelect');
+  const yearSelectEl = qs('#accrualsAccrueYearSelect');
+  const closeBtn = qs('#accrualsCloseMonthBtn');
+  if(!tableEl) return;
+
+  const openMY = getAccrualsOpenMonthYear();
+  if(_accrualsViewMonth === null || _accrualsViewYear === null){ _accrualsViewMonth = openMY.month; _accrualsViewYear = openMY.year; }
+  const isViewingOpenMonth = _accrualsViewMonth === openMY.month && _accrualsViewYear === openMY.year;
+
+  // Populate the month/year pickers once; keep them synced to the current view afterward.
+  if(monthSelectEl && !monthSelectEl.dataset.wired){
+    monthSelectEl.dataset.wired = 'true';
+    for(let m = 1; m <= 12; m++){
+      const opt = document.createElement('option'); opt.value = m; opt.textContent = accrualMonthName(m);
+      monthSelectEl.appendChild(opt);
+    }
+    monthSelectEl.addEventListener('change', () => {
+      _accrualsViewMonth = parseInt(monthSelectEl.value, 10);
+      renderAccrualsAccruedList();
+    });
+  }
+  if(yearSelectEl && !yearSelectEl.dataset.wired){
+    yearSelectEl.dataset.wired = 'true';
+    // A handful of years around the open one — plenty of headroom either direction.
+    for(let y = openMY.year - 2; y <= openMY.year + 2; y++){
+      const opt = document.createElement('option'); opt.value = y; opt.textContent = String(y);
+      yearSelectEl.appendChild(opt);
+    }
+    yearSelectEl.addEventListener('change', () => {
+      _accrualsViewYear = parseInt(yearSelectEl.value, 10);
+      renderAccrualsAccruedList();
+    });
+  }
+  if(monthSelectEl) monthSelectEl.value = String(_accrualsViewMonth);
+  if(yearSelectEl) yearSelectEl.value = String(_accrualsViewYear);
+  if(closeBtn){
+    closeBtn.style.display = isViewingOpenMonth ? 'inline-block' : 'none';
+  }
+
+  const rows = (state.accruals || []).filter(a => {
+    if(isViewingOpenMonth) return !a.accrualMonth && !a.accrualYear;
+    return Number(a.accrualMonth) === _accrualsViewMonth && Number(a.accrualYear) === _accrualsViewYear;
+  });
+  const fmtMDY = (iso) => { const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
+
+  if(summaryEl){
+    const label = `${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}`;
+    summaryEl.textContent = isViewingOpenMonth
+      ? (rows.length === 0 ? `${label} (open) — no periods accrued yet.` : `${label} (open) — ${rows.length} period(s) accrued so far, not yet closed.`)
+      : (rows.length === 0 ? `${label} — no accrual record found.` : `${label} — closed, ${rows.length} period(s).`);
+  }
+
+  tableEl.innerHTML = '';
+  if(rows.length === 0) return;
+
+  const table = document.createElement('table');
+  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px;';
+
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  ['#','UnitId','Lease','Supplier','Cost Center','Status','Missing Period','Days'].forEach((label, i) => {
+    const th = document.createElement('th');
+    th.textContent = label;
+    th.style.cssText = `text-align:${i === 7 ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;`;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #f0f0f0';
+    [String(i + 1), r.unitId, r.lease, r.supplier, r.costCenter, r.status, `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
+      const td = document.createElement('td');
+      td.textContent = val;
+      td.style.cssText = `padding:4px 6px;${ci === 0 ? 'color:#6b7280;' : ''}${ci === 7 ? 'text-align:right;' : ''}`;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  tableEl.appendChild(table);
+}
+
+const accrualsAccrueUnitBtnEl = qs('#accrualsAccrueUnitBtn');
+if(accrualsAccrueUnitBtnEl) accrualsAccrueUnitBtnEl.addEventListener('click', accrueCurrentUnit);
+const accrualsCloseMonthBtnEl = qs('#accrualsCloseMonthBtn');
+if(accrualsCloseMonthBtnEl) accrualsCloseMonthBtnEl.addEventListener('click', closeAccrualsMonth);
+const accrualsAccrueUndoLabelEl = qs('#accrualsAccrueUndoLabel');
+if(accrualsAccrueUndoLabelEl) accrualsAccrueUndoLabelEl.addEventListener('click', undoAccrueUnit);
 
 // Updates the panel's "X / Y" counter and Prev/Next arrow enabled state to match whichever
 // row is currently selected in _accrualsRowRefs.
