@@ -5005,6 +5005,11 @@ function startAutoRefresh(){
     // "Registry not found" error on save if the modal stays open past this 60s interval.
     const registryModal = qs('#registryEditModal');
     if(registryModal && getComputedStyle(registryModal).display !== 'none') return;
+    // Same idea for a pending (not-yet-accepted) manual-coverage edit in the Accruals panel:
+    // replacing state.units mid-edit would silently overwrite the in-progress local changes
+    // with whatever's still on the sheet (this edit hasn't been saved there yet), discarding
+    // the operator's unsaved clicks/drags the moment this interval happens to fire.
+    if(typeof _accrualsHasPendingChanges !== 'undefined' && _accrualsHasPendingChanges) return;
 
     _refreshRunning = true;
     try{
@@ -5154,7 +5159,16 @@ function startAutoRefresh(){
       // Keep snapshot in sync — safe because config fields are already protected above
       _updateSheetConfigSnapshot();
 
-      // Silent state update only — no renderAll() to avoid freezing large datasets
+      // Silent state update only — no renderAll() to avoid freezing large datasets. The one
+      // exception is the Accruals tab: it caches its computed rows (see
+      // _accrualsMissingRowsCache/_accrualsManualRowsCache) rather than recomputing from state
+      // on every render, so a change from another session (a new invoice, a status change)
+      // pulled in above would otherwise sit in `state` correctly updated but never actually
+      // reach the screen until the operator happened to navigate away and back. This repaints
+      // it in place, preserving whatever row/unit is currently selected, only when that tab is
+      // actually the one on screen right now.
+      if(typeof silentlyRefreshAccrualsIfVisible === 'function') silentlyRefreshAccrualsIfVisible();
+
       updateTimestamp();
 
     }catch(e){
@@ -5800,11 +5814,17 @@ function applyManualSquareStyle(sq, tdDay, covered, dayState){
 
 function updateAccrualsAcceptButton(){
   const btn = qs('#accrualsPanelAcceptBtn');
+  const clearBtn = qs('#accrualsPanelClearBtn');
   const countEl = qs('#accrualsPanelPendingCount');
   if(btn){
     btn.disabled = !_accrualsHasPendingChanges;
     btn.style.opacity = _accrualsHasPendingChanges ? '1' : '0.4';
     btn.style.cursor = _accrualsHasPendingChanges ? 'pointer' : 'not-allowed';
+  }
+  if(clearBtn){
+    clearBtn.disabled = !_accrualsHasPendingChanges;
+    clearBtn.style.opacity = _accrualsHasPendingChanges ? '1' : '0.4';
+    clearBtn.style.cursor = _accrualsHasPendingChanges ? 'pointer' : 'not-allowed';
   }
   if(countEl){
     countEl.textContent = _accrualsHasPendingChanges
@@ -5845,10 +5865,53 @@ function acceptAccrualsManualCoverage(){
   if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
   if(typeof renderAccrualsManualPeriods === 'function') renderAccrualsManualPeriods(true);
 
+  // Point Manual Coverage's OWN selection at the unit just edited. Table 1 already does the
+  // equivalent for itself (refreshAccrualsRowsForUnit re-targets _accrualsSelectedRowKey when
+  // the old one stops matching a row for this unit) — but Manual Coverage's previous selection
+  // is for a completely unrelated unit and stays perfectly valid, so without this it silently
+  // keeps showing whatever was selected there before. That's what made a just-accepted period
+  // look like it "isn't marked": the operator was looking at a stale, different unit's row,
+  // not the one they'd just worked on.
+  if(_accrualsManualRowsCache){
+    const uidLower = (unit.unitId || unit.id || '').toString().toLowerCase();
+    const matchForUnit = _accrualsManualRowsCache.rows.find(r => r.unitId.toLowerCase() === uidLower);
+    _accrualsManualSelectedRowKey = matchForUnit ? (matchForUnit.unitId.toLowerCase() + '|' + matchForUnit.start.getTime()) : null;
+  }
+
   if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 }
+// Discards every pending (not-yet-accepted) click/drag from this session, reverting each
+// touched date back to whatever it was when the panel was last freshly opened for this unit
+// (_accrualsSessionOriginalDates) — a day that was already manually covered from an earlier,
+// already-accepted session is left exactly as it was unless THIS session touched it. Purely
+// local: nothing was ever saved to the sheet for a pending edit, so there's nothing to undo
+// remotely, just a plain in-memory revert + repaint.
+function clearAccrualsPendingSelection(){
+  if(!_accrualsHasPendingChanges || !_accrualsPanelUnit) return;
+  const unit = _accrualsPanelUnit;
+  unit.manualCoverageDates = Array.isArray(unit.manualCoverageDates) ? unit.manualCoverageDates.slice() : [];
+
+  _accrualsPendingDates.forEach(dateStr => {
+    const wasCovered = _accrualsSessionOriginalDates.has(dateStr);
+    const idx = unit.manualCoverageDates.indexOf(dateStr);
+    if(wasCovered && idx === -1) unit.manualCoverageDates.push(dateStr);
+    else if(!wasCovered && idx !== -1) unit.manualCoverageDates.splice(idx, 1);
+  });
+
+  _accrualsPendingDates = new Set();
+  _accrualsHasPendingChanges = false;
+  updateAccrualsAcceptButton();
+  if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
+
+  // Repaint the grid/stats so the squares reflect the reverted state immediately.
+  buildUnitCoverageGrid(unit, 'accrualsPanelGrid', 'accrualsPanelPopup', true);
+  buildUnitStats(unit, 'accrualsPanelStats');
+}
+
 const accrualsPanelAcceptBtnEl = qs('#accrualsPanelAcceptBtn');
 if(accrualsPanelAcceptBtnEl) accrualsPanelAcceptBtnEl.addEventListener('click', acceptAccrualsManualCoverage);
+const accrualsPanelClearBtnEl = qs('#accrualsPanelClearBtn');
+if(accrualsPanelClearBtnEl) accrualsPanelClearBtnEl.addEventListener('click', clearAccrualsPendingSelection);
 
 // Render the Unit Overview page: year/month selectors and per-unit day grid
 function renderUnitOverview(){
@@ -12513,6 +12576,38 @@ document.querySelectorAll('.accruals-subtab-btn').forEach(btn => {
   btn.addEventListener('click', () => switchAccrualsSubTab(btn.dataset.subtab));
 });
 
+// Called after the background auto-refresh (startAutoRefresh, every 60s) pulls in changes from
+// other sessions — a new invoice, a status change, another operator's own accrual/manual-
+// coverage edit. Everything else in the app renders straight from `state` on demand, so those
+// changes show up the next time the operator interacts with that view; the Accruals tab is the
+// one place that caches its computed rows instead (see _accrualsMissingRowsCache/
+// _accrualsManualRowsCache), so without this it would keep showing whatever was true when the
+// tab was last entered, indefinitely, until the operator happened to leave and come back.
+// Only touches the screen when the Accruals tab is actually the one visible right now, and the
+// auto-refresh interval already skips this entire cycle while a manual-coverage edit is
+// pending (see startAutoRefresh) — so this can never interrupt or discard in-progress work.
+function silentlyRefreshAccrualsIfVisible(){
+  try{
+    const panel = qs('#accruals');
+    if(!panel || !panel.classList.contains('active')) return;
+
+    // Rebuilding a list's <table> resets its own scroll container back to the top — fine for
+    // a render the operator just triggered themselves, but a background refresh doing that
+    // every 60s while they're reviewing row 200 of 342 would be exactly the kind of disruption
+    // this is supposed to avoid. Snapshot and restore each list's scroll position around it.
+    const missingList = qs('#accrualsMissingPeriodsTable');
+    const manualList = qs('#accrualsManualPeriodsTable');
+    const missingScroll = missingList ? missingList.scrollTop : 0;
+    const manualScroll = manualList ? manualList.scrollTop : 0;
+
+    switchAccrualsSubTab(_accrualsActiveSubTab || 'missing', true);
+    if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList();
+
+    if(missingList) missingList.scrollTop = missingScroll;
+    if(manualList) manualList.scrollTop = manualScroll;
+  }catch(e){}
+}
+
 // Coverage history panel (right side of Provisional Table 1): shows the same interactive
 // day/month calendar as the "Coverage history" popup, but reused inline here (see
 // buildUnitCoverageGrid/buildUnitStats's optional element-id params) so an operator can check
@@ -12859,7 +12954,11 @@ function renderAccrualsAccruedList(){
 
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
-  ['#','UnitId','Lease','Supplier','Cost Center','Status','Missing Period','Days'].forEach((label, i) => {
+  const columnLabels = ['#','UnitId','Lease','Supplier','Cost Center','Status','Missing Period','Days'];
+  // Removing only ever makes sense for the still-open, uncommitted batch — a closed month's
+  // records are locked, same as everywhere else in this workflow.
+  if(isViewingOpenMonth) columnLabels.push('');
+  columnLabels.forEach((label, i) => {
     const th = document.createElement('th');
     th.textContent = label;
     th.style.cssText = `text-align:${i === 7 ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;`;
@@ -12878,11 +12977,49 @@ function renderAccrualsAccruedList(){
       td.style.cssText = `padding:4px 6px;${ci === 0 ? 'color:#6b7280;' : ''}${ci === 7 ? 'text-align:right;' : ''}`;
       tr.appendChild(td);
     });
+    if(isViewingOpenMonth){
+      const tdRemove = document.createElement('td');
+      tdRemove.style.cssText = 'padding:4px 6px;text-align:center;';
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.textContent = '−';
+      removeBtn.title = 'Remove — sends this period back to the missing-periods review list';
+      removeBtn.style.cssText = 'width:18px;height:18px;line-height:14px;padding:0;border-radius:4px;border:1px solid #dc2626;background:transparent;color:#dc2626;font-weight:700;font-size:13px;cursor:pointer;';
+      removeBtn.addEventListener('click', () => removeAccrualRecord(r.id));
+      tdRemove.appendChild(removeBtn);
+      tr.appendChild(tdRemove);
+    }
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
 
   tableEl.appendChild(table);
+}
+
+// Removes a single accrual record from "Periods Ready to Accrue" (open batch only — see the
+// isViewingOpenMonth gate above) and sends it back to the missing-periods review list, since
+// it once again represents an open, un-accrued period. Unlike the single most-recent "Undo"
+// label, this works on ANY row in the open batch, not just the last one accrued — so any
+// stale reference that label was tracking is cleared here rather than left dangling.
+function removeAccrualRecord(recordId){
+  const idx = (state.accruals || []).findIndex(a => a.id === recordId);
+  if(idx === -1) return;
+  const record = state.accruals[idx];
+  state.accruals = state.accruals.filter(a => a.id !== recordId);
+  DB.deleteAccrual(recordId).catch(e => console.error('Accrual remove error:', e));
+  try{ saveState(); }catch(e){}
+
+  if(_accrualsLastAccruedIds && _accrualsLastAccruedIds.indexOf(recordId) !== -1){
+    _accrualsLastAccruedUnitId = null;
+    _accrualsLastAccruedMissingRows = null;
+    _accrualsLastAccruedIds = null;
+  }
+
+  const unit = (state.units || []).find(u => String(u.unitId || '').trim().toLowerCase() === String(record.unitId || '').trim().toLowerCase());
+  if(unit && typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
+
+  renderAccrualsAccruedList();
+  if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 }
 
 const accrualsAccrueUnitBtnEl = qs('#accrualsAccrueUnitBtn');
