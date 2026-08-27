@@ -300,6 +300,13 @@ function bulkSave(sheetName, dataArray) {
 // bulkSave, for the same reason: deleting many rows one request at a time (e.g. un-marking a
 // wide manual-coverage drag) means that many separate lock-acquire-and-write cycles, which
 // doesn't hold up under a large batch the way one bulk pass does.
+//
+// Rewrites the whole data range in one setValues() call instead of calling sheet.deleteRow()
+// once per row: each deleteRow() triggers a full sheet reflow, so a loop of ~100+ of them for
+// one wide un-mark drag could run long enough to blow past the client's 30s request timeout —
+// the delete would still be mid-flight server-side if the operator refreshed right after
+// Accept, which looks exactly like the delete silently didn't happen (the sheet briefly still
+// has the old rows). One read + one write is dramatically faster regardless of row count.
 function bulkDelete(sheetName, ids) {
   if (!ids || ids.length === 0) return { deleted: 0 };
   const sheet = getSheet(sheetName);
@@ -308,13 +315,22 @@ function bulkDelete(sheetName, ids) {
   const headers = allData[0];
   const idCol = headers.indexOf('id');
   if (idCol === -1) throw new Error('No id column found');
+
+  const keptRows = [];
   let deleted = 0;
-  // Walk bottom-up so deleting a row doesn't shift the indices of rows still to be checked.
-  for (let i = allData.length - 1; i >= 1; i--) {
+  for (let i = 1; i < allData.length; i++) {
     if (idSet.has(String(allData[i][idCol]))) {
-      sheet.deleteRow(i + 1);
       deleted++;
+    } else {
+      keptRows.push(allData[i]);
     }
+  }
+  if (deleted === 0) return { deleted: 0 };
+
+  const numCols = headers.length;
+  sheet.getRange(2, 1, allData.length - 1, numCols).clearContent();
+  if (keptRows.length > 0) {
+    sheet.getRange(2, 1, keptRows.length, numCols).setValues(keptRows);
   }
   return { deleted: deleted };
 }

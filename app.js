@@ -5010,6 +5010,11 @@ function startAutoRefresh(){
     // with whatever's still on the sheet (this edit hasn't been saved there yet), discarding
     // the operator's unsaved clicks/drags the moment this interval happens to fire.
     if(typeof _accrualsHasPendingChanges !== 'undefined' && _accrualsHasPendingChanges) return;
+    // And even after Accept, the save/delete request itself is still in flight for a moment —
+    // a re-fetch of "Manual Coverage" that lands before that request finishes would see the
+    // sheet exactly as it was before the edit and silently overwrite the just-accepted local
+    // state right back to it.
+    if(typeof _accrualsSyncInFlight !== 'undefined' && _accrualsSyncInFlight) return;
 
     _refreshRunning = true;
     try{
@@ -5706,6 +5711,13 @@ function setManualCoverageDate(unit, year, month, day, covered){
 // was this session", so it only ever calls the network for an actual net change.
 let _accrualsSessionOriginalDates = new Set();
 
+// True from the moment Accept fires the save/delete network calls until they actually finish
+// (success or failure) — separate from _accrualsHasPendingChanges, which goes false the
+// instant Accept is clicked, well before the request completes. The background auto-refresh
+// checks THIS flag too, so it can never swap in a stale re-fetch of "Manual Coverage" while a
+// save/delete for this exact data is still in flight (see startAutoRefresh).
+let _accrualsSyncInFlight = false;
+
 // Saves/deletes exactly the dates that actually changed since the panel was opened for this
 // unit — each manually-covered date is its own row in the "Manual Coverage" sheet (see
 // db.js's bulkSaveManualCoverage/bulkDeleteManualCoverage), so this never touches any other
@@ -5745,11 +5757,16 @@ function persistManualCoverage(unit){
     // session (e.g. marked then unmarked before Accept) — nothing to reconcile remotely.
   });
 
+  const pending = [];
   if(toSave.length > 0){
-    DB.bulkSaveManualCoverage(toSave).catch(e => console.error('Manual coverage bulk save error:', e));
+    pending.push(DB.bulkSaveManualCoverage(toSave).catch(e => console.error('Manual coverage bulk save error:', e)));
   }
   if(toDeleteIds.length > 0){
-    DB.bulkDeleteManualCoverage(toDeleteIds).catch(e => console.error('Manual coverage bulk delete error:', e));
+    pending.push(DB.bulkDeleteManualCoverage(toDeleteIds).catch(e => console.error('Manual coverage bulk delete error:', e)));
+  }
+  if(pending.length > 0){
+    _accrualsSyncInFlight = true;
+    Promise.allSettled(pending).finally(() => { _accrualsSyncInFlight = false; });
   }
 
   _accrualsSessionOriginalDates = new Set(current);
