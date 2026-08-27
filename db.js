@@ -102,7 +102,7 @@ const DB = {
   async loadAll() {
     try {
       showLoadingOverlay('Loading your data...');
-      const [registries, units, leases, users, ccCentersRaw, invoiceTrackingRaw, accrualsRaw, meta] = await Promise.all([
+      const [registries, units, leases, users, ccCentersRaw, invoiceTrackingRaw, accrualsRaw, manualCoverageRaw, meta] = await Promise.all([
         DB.get({ action: 'getAll', sheet: 'invoices' }),
         DB.get({ action: 'getAll', sheet: 'units' }),
         DB.get({ action: 'getAll', sheet: 'leases' }),
@@ -117,6 +117,16 @@ const DB = {
         }),
         DB.get({ action: 'getAll', sheet: 'Accruals' }).catch(e => {
           console.warn('Accruals sheet failed to load (falling back to empty) — verify the tab is named exactly "Accruals":', e.message);
+          return [];
+        }),
+        // Manual coverage used to be a JSON blob column on the units sheet, saved via the same
+        // full-record DB.updateUnit() call every other unit edit (comments, status, etc.) also
+        // uses — any of those other calls could silently clobber it with a stale snapshot taken
+        // before the manual-coverage edit, which is what was making marks disappear after a
+        // refresh. Each date is now its own row here, saved/deleted independently of anything
+        // else touching the unit.
+        DB.get({ action: 'getAll', sheet: 'Manual Coverage' }).catch(e => {
+          console.warn('Manual Coverage sheet failed to load (falling back to empty) — verify the tab is named exactly "Manual Coverage":', e.message);
           return [];
         }),
         DB.get({ action: 'getMeta' })
@@ -148,28 +158,46 @@ const DB = {
         comments: DB.parseField(r.comments) || []
       }));
 
-      const parsedUnits = units.map(u => ({
-        ...u,
-        id: String(u.id || ''),
-        lease: String(u.lease || ''),
-        company: String(u.company || ''),
-        costCenter: String(u.costCenter || ''),
-        supplier: String(u.supplier || ''),
-        arrangement: String(u.arrangement || ''),
-        invoicing: String(u.invoicing || ''),
-        unitId: String(u.unitId || ''),
-        monthly: String(u.monthly || ''),
-        description: String(u.description || ''),
-        notes: String(u.notes || ''),
-        status: String(u.status || ''),
-        disabledDate: String(u.disabledDate || ''),
-        enabledDate: String(u.enabledDate || ''),
-        statusHistory: (()=>{ const v = DB.parseField(u.statusHistory); return Array.isArray(v) ? v : []; })(),
-        comments: DB.parseField(u.comments) || [],
-        overviewComments: DB.parseField(u.overviewComments) || [],
-        manualCoverageDates: (()=>{ const v = DB.parseField(u.manualCoverageDates); return Array.isArray(v) ? v : []; })(),
-        createdAt: String(u.createdAt || '')
+      // Manual Coverage sheet: one row per manually-covered date, {id, unitId, date, createdAt}.
+      // Grouped by unitId (case/whitespace-insensitive, matching how the rest of the app looks
+      // units up) so each unit gets its own plain date-string array (manualCoverageDates, read
+      // everywhere coverage is computed) plus a date->rowId map (manualCoverageRowIds, internal
+      // bookkeeping only — lets setManualCoverageDate/persistManualCoverage save or delete
+      // exactly the right row later without a full-sheet scan).
+      const parsedManualCoverage = (Array.isArray(manualCoverageRaw) ? manualCoverageRaw : []).map(mc => ({
+        id: String(mc.id || ''),
+        unitId: String(mc.unitId || ''),
+        date: String(mc.date || ''),
+        createdAt: String(mc.createdAt || '')
       }));
+
+      const parsedUnits = units.map(u => {
+        const uidNorm = String(u.unitId || '').trim().toLowerCase();
+        const ownCoverage = parsedManualCoverage.filter(mc => mc.unitId.trim().toLowerCase() === uidNorm);
+        return {
+          ...u,
+          id: String(u.id || ''),
+          lease: String(u.lease || ''),
+          company: String(u.company || ''),
+          costCenter: String(u.costCenter || ''),
+          supplier: String(u.supplier || ''),
+          arrangement: String(u.arrangement || ''),
+          invoicing: String(u.invoicing || ''),
+          unitId: String(u.unitId || ''),
+          monthly: String(u.monthly || ''),
+          description: String(u.description || ''),
+          notes: String(u.notes || ''),
+          status: String(u.status || ''),
+          disabledDate: String(u.disabledDate || ''),
+          enabledDate: String(u.enabledDate || ''),
+          statusHistory: (()=>{ const v = DB.parseField(u.statusHistory); return Array.isArray(v) ? v : []; })(),
+          comments: DB.parseField(u.comments) || [],
+          overviewComments: DB.parseField(u.overviewComments) || [],
+          manualCoverageDates: ownCoverage.map(r => r.date),
+          manualCoverageRowIds: ownCoverage.reduce((acc, r) => { acc[r.date] = r.id; return acc; }, {}),
+          createdAt: String(u.createdAt || '')
+        };
+      });
 
       const parsedLeases = leases.map(l => ({
         ...l,
@@ -313,9 +341,14 @@ const DB = {
       ...record,
       statusHistory: Array.isArray(record.statusHistory) ? JSON.stringify(record.statusHistory) : (record.statusHistory || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]'),
-      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]'),
-      manualCoverageDates: Array.isArray(record.manualCoverageDates) ? JSON.stringify(record.manualCoverageDates) : (record.manualCoverageDates || '[]')
+      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]')
     };
+    // Manual coverage now lives entirely in its own "Manual Coverage" sheet (see
+    // saveManualCoverage/deleteManualCoverage) — never write it back onto the units row here,
+    // both to avoid an array value going straight into a Sheets cell and to keep this the one
+    // source of truth (see loadAll's comment on why the old blob-column approach lost data).
+    delete data.manualCoverageDates;
+    delete data.manualCoverageRowIds;
     return DB.post({ action: 'save', sheet: 'units', data });
   },
 
@@ -324,14 +357,22 @@ const DB = {
       ...record,
       statusHistory: Array.isArray(record.statusHistory) ? JSON.stringify(record.statusHistory) : (record.statusHistory || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]'),
-      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]'),
-      manualCoverageDates: Array.isArray(record.manualCoverageDates) ? JSON.stringify(record.manualCoverageDates) : (record.manualCoverageDates || '[]')
+      overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]')
     };
+    delete data.manualCoverageDates;
+    delete data.manualCoverageRowIds;
     return DB.post({ action: 'update', sheet: 'units', id: record.id, data });
   },
 
   async deleteUnit(id) {
     return DB.post({ action: 'delete', sheet: 'units', id });
+  },
+
+  async saveManualCoverage(record) {
+    return DB.post({ action: 'save', sheet: 'Manual Coverage', data: record });
+  },
+  async deleteManualCoverage(id) {
+    return DB.post({ action: 'delete', sheet: 'Manual Coverage', id });
   },
 
   async saveLease(record) {

@@ -5615,16 +5615,58 @@ function isManuallyCovered(unit, year, month, day){
 // only runs once the operator clicks "Accept manual coverage" in the panel.
 function setManualCoverageDate(unit, year, month, day, covered){
   unit.manualCoverageDates = Array.isArray(unit.manualCoverageDates) ? unit.manualCoverageDates.slice() : [];
+  unit.manualCoverageRowIds = (unit.manualCoverageRowIds && typeof unit.manualCoverageRowIds === 'object') ? unit.manualCoverageRowIds : {};
   const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
   const idx = unit.manualCoverageDates.indexOf(dateStr);
   if(covered && idx === -1) unit.manualCoverageDates.push(dateStr);
   else if(!covered && idx !== -1) unit.manualCoverageDates.splice(idx, 1);
-  const stateIdx = (state.units || []).findIndex(u => u.id === unit.id);
+  // Match by unitId (not the generic sheet "id", which can be blank on older rows) — two units
+  // that both happen to have a blank "id" would otherwise match the same findIndex result and
+  // silently clobber each other's slot in state.units.
+  const uidNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
+  const stateIdx = (state.units || []).findIndex(u => String(u.unitId || u.id || '').trim().toLowerCase() === uidNorm);
   if(stateIdx !== -1) state.units[stateIdx] = unit;
 }
+// Snapshot of a unit's manual-coverage dates exactly as they were durably saved when the panel
+// was last freshly rendered for it (see renderAccrualsCoveragePanel) — lets persistManualCoverage
+// tell "genuinely new/removed since last Accept" apart from "toggled back to what it already
+// was this session", so it only ever calls the network for an actual net change.
+let _accrualsSessionOriginalDates = new Set();
+
+// Saves/deletes exactly the dates that actually changed since the panel was opened for this
+// unit — each manually-covered date is its own row in the "Manual Coverage" sheet (see
+// db.js's saveManualCoverage/deleteManualCoverage), so this never touches any other unit field.
+// This replaces an earlier version that called DB.updateUnit(unit) with the unit's *entire*
+// record: any other in-flight edit to the same unit (a comment, a status change) sends its own
+// full snapshot too, and whichever write reached the sheet last silently won — if that snapshot
+// was taken before the manual-coverage edit, it wiped the mark back out. Per-date rows can't
+// collide like that, since nothing else in the app ever touches this sheet.
 function persistManualCoverage(unit){
   try{ saveState(); }catch(e){}
-  DB.updateUnit(unit).catch(e => console.error('Manual coverage save error:', e));
+  unit.manualCoverageRowIds = (unit.manualCoverageRowIds && typeof unit.manualCoverageRowIds === 'object') ? unit.manualCoverageRowIds : {};
+  const uid = (unit.unitId || unit.id || '').toString();
+  const current = new Set(unit.manualCoverageDates || []);
+
+  _accrualsPendingDates.forEach(dateStr => {
+    const nowCovered = current.has(dateStr);
+    const wasCovered = _accrualsSessionOriginalDates.has(dateStr);
+    if(nowCovered && !wasCovered){
+      const rowId = unit.manualCoverageRowIds[dateStr] || id();
+      unit.manualCoverageRowIds[dateStr] = rowId;
+      DB.saveManualCoverage({ id: rowId, unitId: uid, date: dateStr, createdAt: new Date().toISOString() })
+        .catch(e => console.error('Manual coverage save error:', e));
+    } else if(!nowCovered && wasCovered){
+      const rowId = unit.manualCoverageRowIds[dateStr];
+      if(rowId){
+        DB.deleteManualCoverage(rowId).catch(e => console.error('Manual coverage delete error:', e));
+      }
+      delete unit.manualCoverageRowIds[dateStr];
+    }
+    // nowCovered === wasCovered: toggled back to its original state within this same pending
+    // session (e.g. marked then unmarked before Accept) — nothing to reconcile remotely.
+  });
+
+  _accrualsSessionOriginalDates = new Set(current);
 }
 
 // Click-and-drag support for marking a whole run of blank (or a whole run of manual) squares
@@ -5644,18 +5686,44 @@ let _accrualsPanelUnit = null;
 let _accrualsHasPendingChanges = false;
 let _accrualsPendingDates = new Set();
 
-function applyManualSquareStyle(sq, tdDay, covered){
+function applyManualSquareStyle(sq, tdDay, covered, dayState){
   if(covered){
     sq.style.background = '#581c87';
     sq.style.color = '#e9d5ff';
     sq.style.border = '1px solid #a855f7';
     tdDay.title = 'Manually confirmed coverage (pending) — click to remove';
+    return;
+  }
+  // Un-marking: dayState was computed while the manual mark still counted toward coverage (see
+  // getDayState), so back its contribution out before repainting — otherwise a day whose ONLY
+  // coverage was the manual mark itself would incorrectly keep showing green/red after being
+  // unmarked, and a day that ALSO has a real invoice would incorrectly flash blank/black instead
+  // of reverting to that real status's color.
+  const realCount = (dayState ? dayState.rentalCount : 0) - (dayState && dayState.manual ? 1 : 0);
+  const realCovered = realCount > 0;
+  const realOverlap = realCount > 1;
+  if(dayState && dayState.disabled){
+    sq.style.background = realCovered ? '#166534' : '#1c0a0a';
+    sq.style.color = realCovered ? '#4ade80' : '#f87171';
+    sq.style.border = realCovered ? '1px solid #22c55e' : '1px solid #7f1d1d';
+  } else if(dayState && dayState.credit){
+    sq.style.background = realOverlap ? '#fee2e2' : (realCovered ? '#dcfce7' : '#fff');
+    sq.style.border = '2px solid #eab308';
+    sq.style.color = '#eab308';
+  } else if(realOverlap){
+    sq.style.background = '#7f1d1d';
+    sq.style.color = '#fca5a5';
+    sq.style.border = '1px solid #ef4444';
+  } else if(realCovered){
+    sq.style.background = '#14532d';
+    sq.style.color = '#4ade80';
+    sq.style.border = '1px solid #166534';
   } else {
     sq.style.background = '#111827';
     sq.style.color = '#374151';
     sq.style.border = '1px solid #1f2937';
-    tdDay.title = 'Click, or click and drag, to mark as manually covered';
   }
+  tdDay.title = 'Click, or click and drag, to mark as manually covered';
 }
 
 function updateAccrualsAcceptButton(){
@@ -11361,17 +11429,24 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
         tdDay.title = 'Invoice under dispute for this day';
       }
 
-      // Manual coverage marking — Accruals coverage panel only (interactive mode). A day can
-      // only be marked when it currently has no other status at all (blank), or unmarked again
-      // when it's already manual and nothing else also covers it; any day with a real status
-      // (covered/overlap/credit/disabled) is never selectable here, per the rule that manual
-      // marking can't override or hide a real one.
-      const canToggleManual = interactive && !dayState.disabled && !dayState.credit && !dayState.overlap && (!dayState.covered || dayState.manual);
+      // Manual coverage marking — Accruals coverage panel only (interactive mode). A NEW mark
+      // can only be placed when the day currently has no other status at all (blank), per the
+      // rule that manual marking can't override or hide a real one. But REMOVING an existing
+      // manual mark must always be possible, even if the day has since also picked up a real
+      // status (e.g. an invoice arrived later covering the same day, turning it into an
+      // overlap) — otherwise that mark becomes permanently stuck once it collides with
+      // anything else, which is exactly the "can't unselect some dates" bug this guards against.
+      const isBlankDay = !dayState.disabled && !dayState.credit && !dayState.overlap && !dayState.covered;
+      const canToggleManual = interactive && (dayState.manual || isBlankDay);
       if(dayState.manual && !dayState.disabled && !dayState.credit && !dayState.overlap){
         sq.style.background = '#581c87';
         sq.style.color = '#e9d5ff';
         sq.style.border = '1px solid #a855f7';
         tdDay.title = 'Manually confirmed coverage — click to remove';
+      } else if(dayState.manual){
+        // Still manually marked, but a real status (overlap/credit/disabled) now takes visual
+        // priority above — the square keeps that color, but stays clickable to remove the mark.
+        tdDay.title = 'Manually confirmed coverage (overlapping with a real status) — click to remove';
       }
 
       sq.addEventListener('mouseenter', (e) => {
@@ -11385,7 +11460,7 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
           if(isEligibleForDrag && !_accrualsDrag.touched.has(dateStr)){
             _accrualsDrag.touched.add(dateStr);
             setManualCoverageDate(unit, y, m, d, wantCovered);
-            applyManualSquareStyle(sq, tdDay, wantCovered);
+            applyManualSquareStyle(sq, tdDay, wantCovered, dayState);
           }
         }
       });
@@ -11398,7 +11473,7 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
           const wantCovered = !dayState.manual;
           _accrualsDrag = { unit, mode: wantCovered ? 'mark' : 'unmark', touched: new Set([dateStr]) };
           setManualCoverageDate(unit, y, m, d, wantCovered);
-          applyManualSquareStyle(sq, tdDay, wantCovered);
+          applyManualSquareStyle(sq, tdDay, wantCovered, dayState);
           document.addEventListener('mouseup', endAccrualsDrag, { once: true });
         });
       } else {
@@ -12325,6 +12400,7 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
   _accrualsPanelUnit = unit;
   _accrualsHasPendingChanges = false;
   _accrualsPendingDates = new Set();
+  _accrualsSessionOriginalDates = new Set(unit.manualCoverageDates || []);
   updateAccrualsAcceptButton();
   if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 
