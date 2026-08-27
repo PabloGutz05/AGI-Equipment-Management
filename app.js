@@ -11421,6 +11421,14 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
   const table = document.createElement('table');
   table.style.cssText = `border-collapse:collapse;font-size:${tableFont};min-width:100%;`;
 
+  // Flat, chronologically-ordered list of every day cell built below — lets a drag fill in
+  // every day between its start and wherever the mouse currently is (see the mouseenter
+  // handler), rather than relying solely on a mouseenter event having fired for each square
+  // individually. A fast drag can skip squares the browser never dispatches mouseenter for
+  // (16px squares are easy to outrun), which used to leave gaps in the marked range — some
+  // days stuck, some silently didn't.
+  const dayCellsFlat = [];
+
   months.forEach(monthDate => {
     const y = monthDate.getFullYear();
     const m = monthDate.getMonth();
@@ -11499,6 +11507,8 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
       // anything else, which is exactly the "can't unselect some dates" bug this guards against.
       const isBlankDay = !dayState.disabled && !dayState.credit && !dayState.overlap && !dayState.covered;
       const canToggleManual = interactive && (dayState.manual || isBlankDay);
+      const cellIndex = dayCellsFlat.length;
+      dayCellsFlat.push({ dateStr: `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, y, m, d, sq, tdDay, dayState, canToggleManual });
       if(dayState.manual && !dayState.disabled && !dayState.credit && !dayState.overlap){
         sq.style.background = '#581c87';
         sq.style.color = '#e9d5ff';
@@ -11512,16 +11522,25 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
 
       sq.addEventListener('mouseenter', (e) => {
         sq.style.transform = 'scale(1.3)'; sq.style.zIndex = '10'; sq.style.position = 'relative';
-        // Dragging: only paint squares that match the gesture's starting state (blank when
-        // marking, already-manual when unmarking) — anything else is left alone.
-        if(_accrualsDrag && _accrualsDrag.unit === unit && (e.buttons & 1) && canToggleManual){
-          const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        // Dragging: fill in every day between the drag's start and wherever the mouse is now,
+        // not just this one square — a fast drag can skip mouseenter for squares in between, so
+        // reacting to only "the square currently entered" left gaps (some days marked, some
+        // not). Each cell in the range is still only touched if it matches the gesture's
+        // starting state (blank when marking, already-manual when unmarking); anything else in
+        // the range is left alone.
+        if(_accrualsDrag && _accrualsDrag.unit === unit && (e.buttons & 1)){
           const wantCovered = _accrualsDrag.mode === 'mark';
-          const isEligibleForDrag = wantCovered ? !dayState.manual : dayState.manual;
-          if(isEligibleForDrag && !_accrualsDrag.touched.has(dateStr)){
-            _accrualsDrag.touched.add(dateStr);
-            setManualCoverageDate(unit, y, m, d, wantCovered);
-            applyManualSquareStyle(sq, tdDay, wantCovered, dayState);
+          const lo = Math.min(_accrualsDrag.startIndex, cellIndex);
+          const hi = Math.max(_accrualsDrag.startIndex, cellIndex);
+          for(let idx = lo; idx <= hi; idx++){
+            const cell = dayCellsFlat[idx];
+            if(!cell || !cell.canToggleManual) continue;
+            const isEligibleForDrag = wantCovered ? !cell.dayState.manual : cell.dayState.manual;
+            if(isEligibleForDrag && !_accrualsDrag.touched.has(cell.dateStr)){
+              _accrualsDrag.touched.add(cell.dateStr);
+              setManualCoverageDate(unit, cell.y, cell.m, cell.d, wantCovered);
+              applyManualSquareStyle(cell.sq, cell.tdDay, wantCovered, cell.dayState);
+            }
           }
         }
       });
@@ -11532,7 +11551,7 @@ function buildUnitCoverageGrid(unit, gridId, popupId, interactive) {
           e.preventDefault();
           const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
           const wantCovered = !dayState.manual;
-          _accrualsDrag = { unit, mode: wantCovered ? 'mark' : 'unmark', touched: new Set([dateStr]) };
+          _accrualsDrag = { unit, mode: wantCovered ? 'mark' : 'unmark', touched: new Set([dateStr]), startIndex: cellIndex };
           setManualCoverageDate(unit, y, m, d, wantCovered);
           applyManualSquareStyle(sq, tdDay, wantCovered, dayState);
           document.addEventListener('mouseup', endAccrualsDrag, { once: true });
