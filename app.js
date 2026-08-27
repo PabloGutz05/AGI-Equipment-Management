@@ -5824,11 +5824,13 @@ function acceptAccrualsManualCoverage(){
   _accrualsHasPendingChanges = false;
   _accrualsPendingDates = new Set();
 
-  // Keep Table 1's cache accurate for whenever it's next shown, but only let it repaint/
-  // auto-select (and so hijack the panel) when Table 1 is the sub-tab actually on screen.
-  const onManualTab = _accrualsActiveSubTab === 'manual';
-  if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit, onManualTab);
-  if(onManualTab && typeof renderAccrualsManualPeriods === 'function') renderAccrualsManualPeriods(true);
+  // A manual-coverage edit can move a period between these two lists in either direction, so
+  // both need refreshing regardless of which sub-tab is currently visible — each render
+  // function only auto-selects/drives the shared panel when its own sub-tab is the one
+  // actually on screen (see renderAccrualsMissingPeriods/renderAccrualsManualPeriods), so
+  // refreshing the one that's hidden can never hijack the panel away from what's showing.
+  if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
+  if(typeof renderAccrualsManualPeriods === 'function') renderAccrualsManualPeriods(true);
 
   if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 }
@@ -12123,9 +12125,14 @@ function renderAccrualsMissingPeriods(forceRecompute){
   tableEl.innerHTML = '';
   if(rows.length === 0){
     _accrualsSelectedRowKey = null;
-    const emptyEl = qs('#accrualsPanelEmpty'); const contentEl = qs('#accrualsPanelContent');
-    if(emptyEl) emptyEl.style.display = 'block';
-    if(contentEl) contentEl.style.display = 'none';
+    // Only touch the shared panel's empty state when Table 1 is actually the sub-tab on
+    // screen — otherwise this would force the panel into "select a row" even while the
+    // operator is looking at (and has a valid selection in) Manual Coverage.
+    if(_accrualsActiveSubTab === 'missing'){
+      const emptyEl = qs('#accrualsPanelEmpty'); const contentEl = qs('#accrualsPanelContent');
+      if(emptyEl) emptyEl.style.display = 'block';
+      if(contentEl) contentEl.style.display = 'none';
+    }
     return;
   }
 
@@ -12229,8 +12236,14 @@ function renderAccrualsMissingPeriods(forceRecompute){
 
   // Restore whichever row was previously selected (e.g. re-render after a sort click); if
   // none matches anymore (or nothing was selected yet), default to previewing the first row.
-  const targetTr = selectedTr || tbody.querySelector('tr');
-  if(targetTr) targetTr.click();
+  // Only actually drives the shared coverage panel when Table 1 is the sub-tab currently on
+  // screen — this render can also run purely to keep the table/cache accurate while Manual
+  // Coverage is what's actually visible (e.g. right after accepting an edit from there), and
+  // auto-clicking here would otherwise yank the panel away from whatever that list is showing.
+  if(_accrualsActiveSubTab === 'missing'){
+    const targetTr = selectedTr || tbody.querySelector('tr');
+    if(targetTr) targetTr.click();
+  }
 }
 
 // Manual Coverage sub-tab: every unit's manually-marked (purple) period, so an operator can
@@ -12392,8 +12405,13 @@ function renderAccrualsManualPeriods(forceRecompute){
 
   tableEl.appendChild(table);
 
-  const targetTr = selectedTr || tbody.querySelector('tr');
-  if(targetTr) targetTr.click();
+  // Only drives the shared panel when Manual Coverage is actually the sub-tab on screen — this
+  // render can also run purely to keep the list/cache accurate while Missing Periods is what's
+  // visible (e.g. right after accepting an edit from there).
+  if(_accrualsActiveSubTab === 'manual'){
+    const targetTr = selectedTr || tbody.querySelector('tr');
+    if(targetTr) targetTr.click();
+  }
 }
 
 // Moves the shared coverage panel between the two sub-tabs' own slots, shows/hides the Accrue
@@ -12559,11 +12577,10 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
 // periods (cheap — one unit) and patch them into the existing cache rather than recomputing
 // every unit, then re-render the list. Tries to keep the panel focused on the same unit even
 // if the exact missing-period row it was showing changed shape (split/shrank/disappeared).
-// skipRender: true when the Manual Coverage sub-tab is the one currently on screen — the cache
-// still needs to be accurate for whenever Table 1 is next shown, but actually re-rendering it
-// here would auto-select one of its own rows and hijack the panel away from what the operator
-// is looking at right now.
-function refreshAccrualsRowsForUnit(unit, skipRender){
+// Always safe to re-render here regardless of which sub-tab is currently on screen —
+// renderAccrualsMissingPeriods only auto-selects/drives the shared panel when Table 1 is
+// actually the visible sub-tab, so this can never hijack the panel away from Manual Coverage.
+function refreshAccrualsRowsForUnit(unit){
   if(!_accrualsMissingRowsCache) return;
   const { rangeStart, rangeEnd } = _accrualsMissingRowsCache;
   const uid = (unit.unitId || unit.id || '').toString();
@@ -12585,7 +12602,7 @@ function refreshAccrualsRowsForUnit(unit, skipRender){
     const firstForUnit = _accrualsMissingRowsCache.rows.find(r => r.unitId.toLowerCase() === uidLower);
     if(firstForUnit) _accrualsSelectedRowKey = firstForUnit.unitId.toLowerCase() + '|' + firstForUnit.start.getTime();
   }
-  if(!skipRender) renderAccrualsMissingPeriods();
+  renderAccrualsMissingPeriods();
 }
 
 // Moves every currently-listed period for the panel's unit out of the review list and into
