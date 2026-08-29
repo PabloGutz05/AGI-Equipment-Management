@@ -86,15 +86,18 @@
     return null;
   }
 
-  // Every detail line item is exactly 10 whitespace-separated tokens: barcode, fleet code,
-  // model, service type, start date, end date, est/act/avg use, amount — immediately followed
-  // by a second row ending in "Labour"/"Parts"/"Usage" that says which of the three this line
-  // is. Section-header rows ("BELTLOADER/GASOLINE"), the repeated page header row, and the
-  // Document Overview page's summary rows never start with a barcode-shaped token, so they're
-  // skipped without needing special-casing. Anything that DOES start with a barcode-shaped
-  // token but doesn't fully match the expected shape (bad dates/amount) — or whose category
-  // can't be identified from the row below it — is never silently dropped: it's recorded as an
-  // "issue" for the operator to review/complete at the top of the screen instead. An
+  // Every detail line item is a barcode followed by a variable number of descriptive tokens
+  // (fleet code/model/description word count differ by invoice and GSE type), then a start
+  // date and end date back-to-back, then an amount as the row's very last token — sometimes
+  // immediately followed by a second row ending in "Labour"/"Parts"/"Usage" that says which of
+  // the three this line is (some invoice variants never break usage out that way at all — see
+  // hasAnyCategoryLine below). Section-header rows ("BELTLOADER/GASOLINE"), the repeated page
+  // header row, and the Document Overview page's summary rows never start with a
+  // barcode-shaped token, so they're skipped without needing special-casing. Anything that DOES
+  // start with a barcode-shaped token but doesn't fully match the expected shape (bad dates/
+  // amount) — or whose category can't be identified from the row below it, on an invoice that
+  // otherwise does use the Labour/Parts/Usage split — is never silently dropped: it's recorded
+  // as an "issue" for the operator to review/complete at the top of the screen instead. An
   // unidentified category still defaults into Usage (rent) so nothing is silently missing from
   // the totals while it's still flagged.
   function parseDetailRows(rows){
@@ -104,14 +107,27 @@
     let issueSeq = 0;
     let totalCandidates = 0;
 
-    // Real detail lines only ever appear under the "Document Details ADV" section banner —
+    // Real detail lines only ever appear under the "Document Detail(s)" section banner —
     // everything before it (bill-to address, bank/wire/routing numbers, FEIN, customer/billing
-    // document numbers) can contain barcode-shaped numbers purely by coincidence. Starting the
-    // scan after that banner rules those false positives out without changing anything about
-    // how an actual detail line is recognized or categorized once we're past it. Falls back to
-    // scanning everything if the banner isn't found, rather than silently parsing nothing.
-    const bannerIdx = rows.findIndex(r => /Document Details ADV/i.test(r));
+    // document numbers, street addresses) can contain barcode-shaped numbers purely by
+    // coincidence. Starting the scan after that banner rules those false positives out without
+    // changing anything about how an actual detail line is recognized or categorized once we're
+    // past it. Matches both "Document Details ADV" and the plain "Document Detail" banner some
+    // invoices use. Falls back to scanning everything if the banner isn't found, rather than
+    // silently parsing nothing.
+    const bannerIdx = rows.findIndex(r => /Document Detail/i.test(r));
     const scanStart = bannerIdx === -1 ? 0 : bannerIdx + 1;
+
+    // Some invoice variants never print a Labour/Parts/Usage line at all — they're pure GSE
+    // rental with nothing else billed alongside it. Checked once up front so a totally
+    // uncategorized row on one of those invoices doesn't get flagged as an "issue" for every
+    // single line item: there's nothing genuinely ambiguous to review when the split simply
+    // doesn't exist anywhere in the document.
+    const hasAnyCategoryLine = rows.some(r => {
+      const t = r.split(' ');
+      const last = t[t.length - 1];
+      return t.length >= 2 && ['Labour','Parts','Usage'].indexOf(last) !== -1;
+    });
 
     for(let i = scanStart; i < rows.length; i++){
       const tokens = rows[i].split(' ');
@@ -119,9 +135,14 @@
       totalCandidates++;
       const barcode = tokens[0];
 
-      const validShape = tokens.length === 10
-        && /^\d{2}\/\d{2}\/\d{4}$/.test(tokens[4]) && /^\d{2}\/\d{2}\/\d{4}$/.test(tokens[5])
-        && /^[\d,]+\.\d{2}$/.test(tokens[9]);
+      // Locate the start/end date pair wherever it falls (position varies with how many
+      // description words precede it) rather than assuming a fixed token index.
+      let dateIdx = -1;
+      for(let k = 1; k < tokens.length - 1; k++){
+        if(/^\d{2}\/\d{2}\/\d{4}$/.test(tokens[k]) && /^\d{2}\/\d{2}\/\d{4}$/.test(tokens[k+1])){ dateIdx = k; break; }
+      }
+      const lastToken = tokens[tokens.length - 1];
+      const validShape = dateIdx !== -1 && (dateIdx + 1) < (tokens.length - 1) && /^[\d,]+\.\d{2}$/.test(lastToken);
 
       if(!validShape){
         const mk = looseMonthKey(tokens);
@@ -132,17 +153,25 @@
         continue;
       }
 
-      const mk = monthKeyFromMDY(tokens[4]);
-      const amt = parseFloat(tokens[9].replace(/,/g,''));
+      const mk = monthKeyFromMDY(tokens[dateIdx]);
+      const amt = parseFloat(lastToken.replace(/,/g,''));
       monthRanges[mk.key] = { from: mk.from, to: mk.to };
 
       const category = findCategoryAhead(rows, i);
 
       if(!category){
-        issues.push({
-          id: 'iss' + (++issueSeq), unit: barcode, monthKey: mk.key, category: 'Usage', amount: amt,
-          rawText: rows[i], reason: 'Could not identify Labour/Parts/Usage from the line below it — defaulted to Usage (rent).'
-        });
+        if(hasAnyCategoryLine){
+          issues.push({
+            id: 'iss' + (++issueSeq), unit: barcode, monthKey: mk.key, category: 'Usage', amount: amt,
+            rawText: rows[i], reason: 'Could not identify Labour/Parts/Usage from the line below it — defaulted to Usage (rent).'
+          });
+          continue;
+        }
+        // No line anywhere in this document ever breaks out Labour/Parts/Usage, so this is a
+        // pure-rental invoice — default straight to Usage without flagging it for review.
+        unitMonthCat[barcode] = unitMonthCat[barcode] || {};
+        unitMonthCat[barcode][mk.key] = unitMonthCat[barcode][mk.key] || { Labour:0, Parts:0, Usage:0 };
+        unitMonthCat[barcode][mk.key].Usage += amt;
         continue;
       }
 

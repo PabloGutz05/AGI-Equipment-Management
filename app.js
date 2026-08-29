@@ -12879,8 +12879,14 @@ function renderAccrualsCoveragePanel(unitId, focusYear, focusMonth){
 
 // After marking/unmarking a day as manually covered, recompute just THIS unit's missing
 // periods (cheap — one unit) and patch them into the existing cache rather than recomputing
-// every unit, then re-render the list. Tries to keep the panel focused on the same unit even
-// if the exact missing-period row it was showing changed shape (split/shrank/disappeared).
+// every unit, then re-render the list. If the exact row it was showing is now gone entirely
+// (split/shrank/resolved), _accrualsSelectedRowKey is deliberately left as-is here — that's
+// what lets renderAccrualsMissingPeriods's own fallback advance to whatever now sits at that
+// same LIST POSITION (the next period in the operator's current review order), instead of this
+// function hunting for and re-targeting some OTHER, unrelated row that happens to belong to
+// the same unit (e.g. a second, still-open gap for the same unit further down the list) — that
+// used to jump the panel sideways to a different period of the same unit rather than moving
+// on to the next one in order, which broke reviewing the list top-to-bottom.
 // Always safe to re-render here regardless of which sub-tab is currently on screen —
 // renderAccrualsMissingPeriods only auto-selects/drives the shared panel when Table 1 is
 // actually the visible sub-tab, so this can never hijack the panel away from Manual Coverage.
@@ -12901,11 +12907,6 @@ function refreshAccrualsRowsForUnit(unit){
   });
   _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.concat(applyAccrualHistoryToRows(newRows));
 
-  const selectionStillValid = _accrualsMissingRowsCache.rows.some(r => (r.unitId.toLowerCase() + '|' + r.start.getTime()) === _accrualsSelectedRowKey);
-  if(!selectionStillValid){
-    const firstForUnit = _accrualsMissingRowsCache.rows.find(r => r.unitId.toLowerCase() === uidLower);
-    if(firstForUnit) _accrualsSelectedRowKey = firstForUnit.unitId.toLowerCase() + '|' + firstForUnit.start.getTime();
-  }
   renderAccrualsMissingPeriods();
 }
 
@@ -13324,9 +13325,11 @@ if(itAmountInDisputeEl) itAmountInDisputeEl.addEventListener('input', updateInvo
 
 // Renders one read-only row per unit on the matched registry — Company/UnitId/Lease/Cost
 // Center (the same shared column set as Invoice Registration) plus that unit's actual, locked
-// Tax/Other Charges/Amount/Total Charge — with a leading checkbox to mark it disputed. A row
-// is highlighted red if that same unit is already tracked as in dispute against this same WD
-// number in an existing entry, so nothing gets disputed twice by mistake.
+// Tax/Other Charges/Amount/Total Charge — with a leading checkbox to mark it disputed. Every
+// unit here is freely selectable regardless of any other dispute entry — the WD Invoice Number
+// itself is what's checked for duplicates (see lookupInvoiceTrackingWd), since a new invoice
+// against a unit that's already been disputed before is exactly the kind of thing that must
+// still get tracked. A row is only ever locked out for being Disabled.
 function renderInvoiceTrackingUnitBreakdown(){
   const wrap = qs('#itUnitAmountBreakdown'); if(!wrap) return;
   const registry = _itMatchedRegistry;
@@ -13343,18 +13346,6 @@ function renderInvoiceTrackingUnitBreakdown(){
     wrap.style.display = 'none';
     return;
   }
-
-  const wdVal = (registry.wdNumber || '').toString().trim().toLowerCase();
-  // Excludes whichever entry is currently being edited (if any) — otherwise re-opening an
-  // existing dispute for editing would see its own already-checked units as "duplicates" and
-  // lock the operator out of saving it again with the same selection.
-  const editingId = (qs('#invoiceTrackingForm') || {}).dataset ? qs('#invoiceTrackingForm').dataset.editingId : null;
-  const alreadyDisputedUnits = new Set();
-  (state.invoiceTracking || []).forEach(t => {
-    if(editingId && t.id === editingId) return;
-    if((t.wdInvoiceNum || '').toString().trim().toLowerCase() !== wdVal) return;
-    (Array.isArray(t.unitsInDispute) ? t.unitsInDispute : []).forEach(u => alreadyDisputedUnits.add(u.toString().trim().toLowerCase()));
-  });
 
   const AMOUNT_COLS = [['tax', 'Tax', 110], ['other', 'Other Charges', 120], ['charge', 'Amount', 110], ['rowTotal', 'Total Charge', 110]];
 
@@ -13398,24 +13389,13 @@ function renderInvoiceTrackingUnitBreakdown(){
     row.dataset.otherChargeDetails = JSON.stringify(d.otherChargeDetails || []);
 
     const isDisabled = unitRec && (unitRec.status || '').toLowerCase() === 'disabled';
-    const isAlreadyDisputed = alreadyDisputedUnits.has(uid.toString().trim().toLowerCase());
-    if(isAlreadyDisputed || isDisabled){
+    if(isDisabled){
       row.style.background = '#fee2e2';
-      row.title = [
-        // Same unit, same WD invoice = blocked (a duplicate of an existing dispute). The
-        // same unit under a DIFFERENT WD invoice (e.g. the same issue recurring next month)
-        // is a legitimate, separate dispute and stays fully selectable.
-        isAlreadyDisputed ? 'This unit is already tracked as in dispute for this exact WD invoice — cannot be disputed again for the same invoice' : '',
-        isDisabled ? 'This unit is Disabled' : ''
-      ].filter(Boolean).join(' — ');
+      row.title = 'This unit is Disabled';
     }
 
     const cbCell = document.createElement('div'); cbCell.style.cssText = 'flex:0 0 60px;display:flex;align-items:center;';
     const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'itb-dispute-checkbox'; cb.style.cursor = 'pointer';
-    if(isAlreadyDisputed){
-      cb.disabled = true;
-      cb.style.cursor = 'not-allowed';
-    }
     cb.addEventListener('change', () => {
       row.classList.toggle('selected', cb.checked);
       updateInvoiceTrackingDisputeAmountFromChecked();
@@ -13483,9 +13463,26 @@ function renderInvoiceTrackingUnitBreakdown(){
   wrap.style.display = 'block';
 }
 
+// Returns the OTHER (non-currently-editing) invoice tracking entry already using this exact
+// WD Invoice Number, if any. One WD invoice can only ever have a single dispute-tracking
+// entry — a new invoice against a unit that's already been disputed before must still get
+// tracked, so the duplicate check lives on the invoice number itself, not on which units are
+// checked. Adding more disputed units to an already-tracked invoice means editing that same
+// entry, not creating a second one alongside it.
+function findExistingInvoiceTrackingForWd(wdVal, excludeId){
+  const wd = (wdVal || '').toString().trim().toLowerCase();
+  if(!wd) return null;
+  return (state.invoiceTracking || []).find(t =>
+    (!excludeId || t.id !== excludeId) &&
+    (t.wdInvoiceNum || '').toString().trim().toLowerCase() === wd
+  ) || null;
+}
+
 // Looks the typed WD number up against the invoice registries: an invoice must already be
 // posted before it can be tracked as a dispute, so a non-match clears and locks everything
-// below rather than letting the operator fill it in by hand.
+// below rather than letting the operator fill it in by hand. Also blocks on a WD number
+// that's already tracked as a dispute elsewhere (see findExistingInvoiceTrackingForWd) — that
+// invoice's existing entry should be edited instead of creating a duplicate.
 function lookupInvoiceTrackingWd(){
   const wdInput = qs('#itWdInvoiceNum');
   const wdDateField = qs('#itWdInvoiceDate');
@@ -13524,6 +13521,19 @@ function lookupInvoiceTrackingWd(){
     if(wdDateField) wdDateField.value = 'Not Submitted';
     if(noteEl){
       noteEl.textContent = 'No posted invoice found for this WD Invoice Num — it must already be registered (Invoices tab) before it can be tracked here.';
+      noteEl.style.color = '#dc2626';
+      noteEl.style.fontWeight = '600';
+    }
+    return;
+  }
+
+  const editingId = (qs('#invoiceTrackingForm') || {}).dataset ? qs('#invoiceTrackingForm').dataset.editingId : null;
+  const dupTracking = findExistingInvoiceTrackingForWd(wdVal, editingId);
+  if(dupTracking){
+    clearAll();
+    if(wdDateField) wdDateField.value = '';
+    if(noteEl){
+      noteEl.textContent = 'This WD Invoice Number is already tracked as a dispute — edit that existing entry to add more disputed units instead of creating a new one.';
       noteEl.style.color = '#dc2626';
       noteEl.style.fontWeight = '600';
     }
@@ -13690,6 +13700,17 @@ if(invoiceTrackingForm){
   invoiceTrackingForm.addEventListener('submit', (e) => {
     e.preventDefault();
 
+    // Defense-in-depth: the lookup already blocks a WD number that's already tracked elsewhere
+    // (see findExistingInvoiceTrackingForWd), but re-check here too in case the field changed
+    // without a fresh lookup running.
+    const submitEditingId = invoiceTrackingForm.dataset.editingId || null;
+    const wdVal = ((qs('#itWdInvoiceNum') || {}).value || '').trim();
+    const dupTracking = findExistingInvoiceTrackingForWd(wdVal, submitEditingId);
+    if(dupTracking){
+      alert('This WD Invoice Number is already tracked as a dispute. Edit that existing entry to add more disputed units instead of creating a new one.');
+      return;
+    }
+
     // The invoice must already be posted (matched via WD Invoice Num lookup) and at least
     // one of its units must be checked as disputed — there's nothing left to type by hand.
     if(!_itMatchedRegistry){
@@ -13699,22 +13720,6 @@ if(invoiceTrackingForm){
     const checkedUnits = getInvoiceTrackingCheckedUnits();
     if(checkedUnits.length === 0){
       alert('Check at least one unit above to mark it as disputed.');
-      return;
-    }
-
-    // Defense-in-depth: the same unit can't be disputed twice against the exact same WD
-    // invoice (checkboxes for that are disabled already), but the same unit recurring under a
-    // DIFFERENT WD invoice each month is expected and allowed.
-    const submitEditingId = invoiceTrackingForm.dataset.editingId || null;
-    const wdVal = ((qs('#itWdInvoiceNum') || {}).value || '').trim().toLowerCase();
-    const duplicateUnits = checkedUnits.filter(uid => (state.invoiceTracking || []).some(t =>
-      (!submitEditingId || t.id !== submitEditingId) &&
-      (t.wdInvoiceNum || '').toString().trim().toLowerCase() === wdVal &&
-      Array.isArray(t.unitsInDispute) &&
-      t.unitsInDispute.some(u => u.toString().trim().toLowerCase() === uid.toString().trim().toLowerCase())
-    ));
-    if(duplicateUnits.length > 0){
-      alert('Already tracked as in dispute for this exact WD invoice: ' + duplicateUnits.join(', ') + '. Uncheck to continue.');
       return;
     }
 
