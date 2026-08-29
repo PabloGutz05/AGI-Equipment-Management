@@ -1,5 +1,5 @@
 // db.js — Google Sheets Database Layer for AGI Vehicle Lease Management
-const DB_URL = 'https://script.google.com/macros/s/AKfycbxCETj689oe4msZ4e60q0Q345Nnj7qp_EPn5ZLwZpqjSlm5V7OmQznqfF_WCoTrAD7sxw/exec';
+const DB_URL = 'https://script.google.com/macros/s/AKfycbwDucOuepk0hudhuFKvHmgguaf9-zhHxqXIUpB9xNOUco9JXaLxz0-TRvWSNpcR6WVFuw/exec';
 const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
 // The Invoice Tracking sheet's header row uses the exact human-readable labels shown in the
@@ -84,12 +84,21 @@ const DB = {
     return data.data;
   },
 
-  async post(payload) {
+  // timeoutMs lets a caller override the default 30s client-side timeout — the "Manual
+  // Coverage"/"Accruals" bulk actions read and rewrite their entire sheet in one pass server
+  // side, so as those sheets grow (Manual Coverage stores one row per manually-covered day per
+  // unit, so it's the one that grows fastest), that single request genuinely takes longer,
+  // even though nothing is actually wrong. Without a longer allowance here, the client gives up
+  // and reports a (silent, console-only) failure while Apps Script keeps running in the
+  // background and completes the write moments later — which looks exactly like "the delete
+  // didn't take" if the operator refreshes in that window, when it actually just hadn't
+  // finished yet.
+  async post(payload, timeoutMs) {
     const res = await DB._fetchWithTimeout(fetch(DB_URL, {
       method: 'POST',
       body: JSON.stringify({...payload, secret: DB_SECRET}),
       headers: { 'Content-Type': 'text/plain' }
-    }));
+    }), timeoutMs);
     return DB._parseResponse(res);
   },
 
@@ -380,11 +389,14 @@ const DB = {
   // silently fail. These batch everything from one Accept into one request each.
   async bulkSaveManualCoverage(records) {
     if (!records || records.length === 0) return { saved: 0 };
-    return DB.post({ action: 'bulkSave', sheet: 'Manual Coverage', data: records });
+    // 120s: "Manual Coverage" holds one row per manually-covered day per unit, so it's grown
+    // into the largest sheet by far — bulkSave/bulkDelete against it can legitimately take
+    // longer than the default 30s as it keeps growing (see DB.post's comment).
+    return DB.post({ action: 'bulkSave', sheet: 'Manual Coverage', data: records }, 120000);
   },
   async bulkDeleteManualCoverage(ids) {
     if (!ids || ids.length === 0) return { deleted: 0 };
-    return DB.post({ action: 'bulkDelete', sheet: 'Manual Coverage', ids });
+    return DB.post({ action: 'bulkDelete', sheet: 'Manual Coverage', ids }, 120000);
   },
 
   async saveLease(record) {
@@ -439,11 +451,11 @@ const DB = {
   // bulkSaveManualCoverage/bulkDeleteManualCoverage.
   async bulkSaveAccruals(records) {
     if (!records || records.length === 0) return { saved: 0 };
-    return DB.post({ action: 'bulkSave', sheet: 'Accruals', data: records });
+    return DB.post({ action: 'bulkSave', sheet: 'Accruals', data: records }, 120000);
   },
   async bulkDeleteAccruals(ids) {
     if (!ids || ids.length === 0) return { deleted: 0 };
-    return DB.post({ action: 'bulkDelete', sheet: 'Accruals', ids });
+    return DB.post({ action: 'bulkDelete', sheet: 'Accruals', ids }, 120000);
   },
 
   async saveUser(record) {
