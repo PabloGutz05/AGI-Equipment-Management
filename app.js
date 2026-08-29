@@ -5896,10 +5896,18 @@ function acceptAccrualsManualCoverage(){
   // directly from the unit's own dates (not the list cache, which isn't rebuilt until the
   // render call below) so the render's own trailing auto-select picks the right row on its
   // first pass instead of falling back to whatever was selected before.
+  //
+  // Only reassigns when the edited unit STILL has a manual-coverage period — if it was just
+  // fully unmarked (periods.length === 0), its own row is gone and there's nothing to point
+  // at here; leaving the key untouched lets renderAccrualsManualPeriods's own "advance to the
+  // next remaining row" fallback do its job using the stale (but still meaningful) key,
+  // instead of this unconditionally nulling it out and forcing a jump to the first row.
   try{
     const periods = computeUnitManualCoveragePeriods(unit);
-    const uidLower = (unit.unitId || unit.id || '').toString().toLowerCase();
-    _accrualsManualSelectedRowKey = periods.length > 0 ? (uidLower + '|' + periods[0].start.getTime()) : null;
+    if(periods.length > 0){
+      const uidLower = (unit.unitId || unit.id || '').toString().toLowerCase();
+      _accrualsManualSelectedRowKey = uidLower + '|' + periods[0].start.getTime();
+    }
   }catch(e){}
 
   // A manual-coverage edit can move a period between these two lists in either direction, so
@@ -11900,8 +11908,13 @@ function buildUnitStats(unit, statsId){
     const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
     if(hist.length > 0){
       const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
-      const d = new Date(firstOp.date);
-      startDate = new Date(d.getFullYear(), d.getMonth(), 1);
+      // isoStrToDate parses "YYYY-MM-DD" via the LOCAL Date(y,m,d) constructor — new
+      // Date(firstOp.date) instead parses a bare date string as UTC midnight, which in any
+      // timezone behind UTC lands on the local evening of the PREVIOUS day, silently rolling
+      // this stat panel's own start date back by one (same bug already fixed for the coverage
+      // grid's start date and computeUnitMissingPeriods's own clamp — this was a third copy).
+      const d = isoStrToDate(firstOp.date);
+      if(!isNaN(d)) startDate = new Date(d.getFullYear(), d.getMonth(), 1);
     }
   }catch(e){}
 
@@ -12062,9 +12075,15 @@ function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
     const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
     if(hist.length > 0){
       const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
-      const d = new Date(firstOp.date);
-      const firstOpDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      if(firstOpDate > effectiveStart) effectiveStart = firstOpDate;
+      // See buildUnitStats/buildUnitCoverageGrid for the same fix and why: new Date(dateStr)
+      // parses a bare "YYYY-MM-DD" as UTC midnight, which in any timezone behind UTC rolls
+      // back to the local evening of the previous day — silently starting this unit's missing-
+      // period scan one day before it actually became operational.
+      const d = isoStrToDate(firstOp.date);
+      if(!isNaN(d)){
+        const firstOpDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        if(firstOpDate > effectiveStart) effectiveStart = firstOpDate;
+      }
     }
   }catch(e){}
 
@@ -12233,9 +12252,25 @@ function renderAccrualsMissingPeriods(forceRecompute){
 
   if(forceRecompute || !_accrualsMissingRowsCache){
     const now = new Date();
-    // Fixed anchor for this accrual initiative — always 01/01/2026, not "start of current
-    // year" (which would silently roll forward to 2027 once the calendar turns over).
-    const rangeStart = new Date(2026, 0, 1);
+    // Extends as far back as any unit's own operational history goes — matching what that
+    // unit's own coverage calendar/stats panel already shows — rather than a fixed cutoff.
+    // A gap that started before this initiative's original Jan-2026 anchor is still a real,
+    // reviewable gap; computeUnitMissingPeriods already clamps each unit's OWN scan to its own
+    // first-Operational date, so this is only the outer floor, never artificially later than
+    // any unit's real history (and never earlier than Jan 2026 either, so nothing regresses
+    // for units whose history doesn't reach back further).
+    let rangeStart = new Date(2026, 0, 1);
+    (state.units || []).forEach(unit => {
+      try{
+        const hist = (unit.statusHistory || []).filter(h => h.status === 'Operational');
+        if(hist.length === 0) return;
+        const firstOp = hist.sort((a,b) => new Date(a.date) - new Date(b.date))[0];
+        const d = isoStrToDate(firstOp.date);
+        if(isNaN(d)) return;
+        const firstOpMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+        if(firstOpMonth < rangeStart) rangeStart = firstOpMonth;
+      }catch(e){}
+    });
     const rangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
     const rows = [];
@@ -12352,6 +12387,14 @@ function renderAccrualsMissingPeriods(forceRecompute){
   thead.appendChild(headerRow);
   table.appendChild(thead);
 
+  // Where the previously-selected row sat in the list, captured from the OLD _accrualsRowRefs
+  // before it gets replaced below — used in the fallback further down so that if that row is
+  // gone entirely (its period got fully resolved this cycle), the panel advances to whatever
+  // now sits at that same position (the next remaining period in sort order) instead of
+  // jumping to the first row of the whole list, which could belong to a completely unrelated
+  // unit.
+  const previousIndex = _accrualsRowRefs.findIndex(x => x.rowKey === _accrualsSelectedRowKey);
+
   const tbody = document.createElement('tbody');
   let selectedTr = null;
   _accrualsRowRefs = [];
@@ -12422,14 +12465,21 @@ function renderAccrualsMissingPeriods(forceRecompute){
 
   tableEl.appendChild(table);
 
-  // Restore whichever row was previously selected (e.g. re-render after a sort click); if
-  // none matches anymore (or nothing was selected yet), default to previewing the first row.
+  // Restore whichever row was previously selected (e.g. re-render after a sort click); if it's
+  // gone (its period was fully resolved this cycle), advance to whatever now occupies that
+  // same position — the next remaining period in the current sort order — rather than jumping
+  // to the first row in the whole list. Only falls all the way back to "first row" when there
+  // was no previous selection to advance from at all (e.g. the very first render).
   // Only actually drives the shared coverage panel when Table 1 is the sub-tab currently on
   // screen — this render can also run purely to keep the table/cache accurate while Manual
   // Coverage is what's actually visible (e.g. right after accepting an edit from there), and
   // auto-clicking here would otherwise yank the panel away from whatever that list is showing.
   if(_accrualsActiveSubTab === 'missing'){
-    const targetTr = selectedTr || tbody.querySelector('tr');
+    let targetTr = selectedTr;
+    if(!targetTr && previousIndex !== -1 && _accrualsRowRefs.length > 0){
+      targetTr = _accrualsRowRefs[Math.min(previousIndex, _accrualsRowRefs.length - 1)].tr;
+    }
+    if(!targetTr) targetTr = tbody.querySelector('tr');
     if(targetTr) targetTr.click();
   }
 }
@@ -12545,6 +12595,12 @@ function renderAccrualsManualPeriods(forceRecompute){
   thead.appendChild(headerRow);
   table.appendChild(thead);
 
+  // Same reasoning as renderAccrualsMissingPeriods's equivalent capture: lets the fallback
+  // below advance to the next remaining period at the same position instead of jumping to the
+  // first row of the whole list when the previously-selected one disappears entirely (e.g. its
+  // last manually-covered date got unmarked and accepted).
+  const previousIndex = _accrualsManualRowRefs.findIndex(x => x.rowKey === _accrualsManualSelectedRowKey);
+
   const tbody = document.createElement('tbody');
   let selectedTr = null;
   _accrualsManualRowRefs = [];
@@ -12606,7 +12662,11 @@ function renderAccrualsManualPeriods(forceRecompute){
   // render can also run purely to keep the list/cache accurate while Missing Periods is what's
   // visible (e.g. right after accepting an edit from there).
   if(_accrualsActiveSubTab === 'manual'){
-    const targetTr = selectedTr || tbody.querySelector('tr');
+    let targetTr = selectedTr;
+    if(!targetTr && previousIndex !== -1 && _accrualsManualRowRefs.length > 0){
+      targetTr = _accrualsManualRowRefs[Math.min(previousIndex, _accrualsManualRowRefs.length - 1)].tr;
+    }
+    if(!targetTr) targetTr = tbody.querySelector('tr');
     if(targetTr) targetTr.click();
   }
 }
