@@ -218,8 +218,18 @@ document.querySelectorAll('.tab').forEach(btn => {
         if(typeof showOverviewSection === 'function') showOverviewSection(sec);
       }catch(e){ renderOverview(); }
     } else if(btn.dataset.tab === 'accruals'){
-      try{ if(typeof switchAccrualsSubTab === 'function') switchAccrualsSubTab(_accrualsActiveSubTab || 'missing', true); }catch(e){}
-      try{ if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList(); }catch(e){}
+      // A forced recompute here calls into renderAccrualsCoveragePanel via each list's own
+      // trailing auto-select, which unconditionally resets pending manual-coverage tracking —
+      // skip the refresh (not the tab switch itself) while there's unsaved work, so navigating
+      // away and back can never silently discard it. The tab panel still becomes visible with
+      // whatever it was last showing; accrualsPanelBlockedByPending() also alerts the operator.
+      if(typeof accrualsPanelBlockedByPending === 'function' && accrualsPanelBlockedByPending()){
+        // still ensure the accrued list (independent of pending state) reflects reality
+        try{ if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList(); }catch(e){}
+      } else {
+        try{ if(typeof switchAccrualsSubTab === 'function') switchAccrualsSubTab(_accrualsActiveSubTab || 'missing', true); }catch(e){}
+        try{ if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList(); }catch(e){}
+      }
     } else {
       renderOverview();
     }
@@ -5711,11 +5721,13 @@ function setManualCoverageDate(unit, year, month, day, covered){
 // was this session", so it only ever calls the network for an actual net change.
 let _accrualsSessionOriginalDates = new Set();
 
-// True from the moment Accept fires the save/delete network calls until they actually finish
-// (success or failure) — separate from _accrualsHasPendingChanges, which goes false the
-// instant Accept is clicked, well before the request completes. The background auto-refresh
-// checks THIS flag too, so it can never swap in a stale re-fetch of "Manual Coverage" while a
-// save/delete for this exact data is still in flight (see startAutoRefresh).
+// True from the moment ANY Accruals-tab action (manual-coverage accept, Accrue Unit, its Undo,
+// Close Month Accruals, or the per-row Remove button) fires its save/update/delete network
+// call(s), until they actually finish (success or failure) — separate from
+// _accrualsHasPendingChanges, which goes false the instant Accept is clicked, well before the
+// request completes. The background auto-refresh checks THIS flag too and skips its entire
+// cycle while it's true, so a re-fetch of "Manual Coverage"/"Accruals"/meta can never land
+// mid-save and silently revert whichever of those actions is still in flight.
 let _accrualsSyncInFlight = false;
 
 // Saves/deletes exactly the dates that actually changed since the panel was opened for this
@@ -5874,6 +5886,22 @@ function acceptAccrualsManualCoverage(){
   _accrualsHasPendingChanges = false;
   _accrualsPendingDates = new Set();
 
+  // Point Manual Coverage's OWN selection at the unit just edited BEFORE rendering it below —
+  // Table 1 already does the equivalent for itself (refreshAccrualsRowsForUnit re-targets
+  // _accrualsSelectedRowKey when the old one stops matching a row for this unit), but Manual
+  // Coverage's previous selection is for a completely unrelated unit and stays perfectly
+  // valid, so without this it silently keeps pointing at whatever was selected there before.
+  // That's what made a just-accepted period look like it "isn't marked": the operator was
+  // looking at a stale, different unit's row, not the one they'd just worked on. Computed
+  // directly from the unit's own dates (not the list cache, which isn't rebuilt until the
+  // render call below) so the render's own trailing auto-select picks the right row on its
+  // first pass instead of falling back to whatever was selected before.
+  try{
+    const periods = computeUnitManualCoveragePeriods(unit);
+    const uidLower = (unit.unitId || unit.id || '').toString().toLowerCase();
+    _accrualsManualSelectedRowKey = periods.length > 0 ? (uidLower + '|' + periods[0].start.getTime()) : null;
+  }catch(e){}
+
   // A manual-coverage edit can move a period between these two lists in either direction, so
   // both need refreshing regardless of which sub-tab is currently visible — each render
   // function only auto-selects/drives the shared panel when its own sub-tab is the one
@@ -5881,19 +5909,6 @@ function acceptAccrualsManualCoverage(){
   // refreshing the one that's hidden can never hijack the panel away from what's showing.
   if(typeof refreshAccrualsRowsForUnit === 'function') refreshAccrualsRowsForUnit(unit);
   if(typeof renderAccrualsManualPeriods === 'function') renderAccrualsManualPeriods(true);
-
-  // Point Manual Coverage's OWN selection at the unit just edited. Table 1 already does the
-  // equivalent for itself (refreshAccrualsRowsForUnit re-targets _accrualsSelectedRowKey when
-  // the old one stops matching a row for this unit) — but Manual Coverage's previous selection
-  // is for a completely unrelated unit and stays perfectly valid, so without this it silently
-  // keeps showing whatever was selected there before. That's what made a just-accepted period
-  // look like it "isn't marked": the operator was looking at a stale, different unit's row,
-  // not the one they'd just worked on.
-  if(_accrualsManualRowsCache){
-    const uidLower = (unit.unitId || unit.id || '').toString().toLowerCase();
-    const matchForUnit = _accrualsManualRowsCache.rows.find(r => r.unitId.toLowerCase() === uidLower);
-    _accrualsManualSelectedRowKey = matchForUnit ? (matchForUnit.unitId.toLowerCase() + '|' + matchForUnit.start.getTime()) : null;
-  }
 
   if(typeof updateAccrueUnitButton === 'function') updateAccrueUnitButton();
 }
@@ -11912,6 +11927,18 @@ function buildUnitStats(unit, statsId){
 
   let monthsCovered = 0, monthsMissing = 0, creditMonths = 0, totalDaysBilled = 0, manualCoverageDaysTotal = 0;
 
+  // The day-granular truth Table 1 itself is built from — reused here so "Months missing"
+  // can never disagree with what Table 1 actually lists for this unit/range. The month-level
+  // check below (manualDays === 0) used to be the only gate, which dropped a month out of
+  // "Months missing" entirely the moment it had even ONE manually-covered day, even with many
+  // other genuinely-uncovered days left in that same month.
+  let missingPeriodsForStats = [];
+  try{ missingPeriodsForStats = computeUnitMissingPeriods(unit, startDate, endDate); }catch(e){}
+  const isDayStillMissing = (y, m, d) => {
+    const t = new Date(y, m, d).getTime();
+    return missingPeriodsForStats.some(p => t >= p.start.getTime() && t <= p.end.getTime());
+  };
+
   months.forEach(monthDate => {
     const y = monthDate.getFullYear();
     const m = monthDate.getMonth();
@@ -11957,11 +11984,17 @@ function buildUnitStats(unit, statsId){
     // they've decided no invoice is actually expected for that period, so a month resolved
     // that way should stop counting as Months Missing too — it just isn't Covered either.
     let manualDays = 0;
-    for(let dd = 1; dd <= daysInMonth; dd++){ if(isManuallyCovered(unit, y, m, dd)) manualDays++; }
+    let monthStillHasMissingDay = false;
+    for(let dd = 1; dd <= daysInMonth; dd++){
+      if(isManuallyCovered(unit, y, m, dd)) manualDays++;
+      if(!monthStillHasMissingDay && isDayStillMissing(y, m, dd)) monthStillHasMissingDay = true;
+    }
     manualCoverageDaysTotal += manualDays;
 
     if(hasCoverage) monthsCovered++;
-    else if(manualDays === 0) monthsMissing++;
+    else if(monthStillHasMissingDay) monthsMissing++;
+    // else: every day this month is either disabled or manually covered — fully resolved,
+    // counts toward neither stat.
     if(hasCredit) creditMonths++;
   });
 
@@ -12270,6 +12303,12 @@ function renderAccrualsMissingPeriods(forceRecompute){
   tableEl.innerHTML = '';
   if(rows.length === 0){
     _accrualsSelectedRowKey = null;
+    // Also clear the row-ref list and its nav state — left stale otherwise (only cleared
+    // further down, on a path this early return skips), so Prev/Next would still see a
+    // non-empty ref list pointing at a detached <tr> from the row that just disappeared and
+    // "navigate" back to it, resurrecting an already-resolved period into the panel.
+    _accrualsRowRefs = [];
+    if(typeof updateAccrualsPanelNav === 'function') updateAccrualsPanelNav();
     // Only touch the shared panel's empty state when Table 1 is actually the sub-tab on
     // screen — otherwise this would force the panel into "select a row" even while the
     // operator is looking at (and has a valid selection in) Manual Coverage.
@@ -12300,6 +12339,10 @@ function renderAccrualsMissingPeriods(forceRecompute){
     th.style.cssText = `text-align:${col.alignRight ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;cursor:pointer;user-select:none;`;
     th.title = 'Click to sort';
     th.addEventListener('click', () => {
+      // Re-sorting rebuilds the table and re-selects a row via a programmatic (untrusted)
+      // click, which would otherwise bypass the pending-edit guard on the row's own click
+      // handler and silently discard an in-progress manual-coverage edit.
+      if(accrualsPanelBlockedByPending()) return;
       if(_accrualsMissingSort.column === col.key) _accrualsMissingSort.ascending = !_accrualsMissingSort.ascending;
       else _accrualsMissingSort = { column: col.key, ascending: true };
       renderAccrualsMissingPeriods();
@@ -12457,6 +12500,11 @@ function renderAccrualsManualPeriods(forceRecompute){
   tableEl.innerHTML = '';
   if(rows.length === 0){
     _accrualsManualSelectedRowKey = null;
+    // Same reason as the equivalent branch in renderAccrualsMissingPeriods: without this,
+    // Prev/Next would still see a stale ref list pointing at a detached <tr> and could
+    // "navigate" back to a period that no longer has any manual coverage at all.
+    _accrualsManualRowRefs = [];
+    if(typeof updateAccrualsPanelNav === 'function') updateAccrualsPanelNav();
     if(_accrualsActiveSubTab === 'manual'){
       const emptyEl = qs('#accrualsPanelEmpty'); const contentEl = qs('#accrualsPanelContent');
       if(emptyEl) emptyEl.style.display = 'block';
@@ -12484,6 +12532,10 @@ function renderAccrualsManualPeriods(forceRecompute){
     th.style.cssText = `text-align:${col.alignRight ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;cursor:pointer;user-select:none;`;
     th.title = 'Click to sort';
     th.addEventListener('click', () => {
+      // Same reason as Table 1's sort handler: rebuilding this table re-selects a row via a
+      // programmatic (untrusted) click, which would otherwise skip the pending-edit guard and
+      // silently discard an in-progress manual-coverage edit.
+      if(accrualsPanelBlockedByPending()) return;
       if(_accrualsManualSort.column === col.key) _accrualsManualSort.ascending = !_accrualsManualSort.ascending;
       else _accrualsManualSort = { column: col.key, ascending: true };
       renderAccrualsManualPeriods();
@@ -12590,7 +12642,14 @@ function switchAccrualsSubTab(tab, forceRecompute){
 }
 
 document.querySelectorAll('.accruals-subtab-btn').forEach(btn => {
-  btn.addEventListener('click', () => switchAccrualsSubTab(btn.dataset.subtab));
+  btn.addEventListener('click', () => {
+    // Switching sub-tabs forces the target list to recompute, whose trailing auto-select
+    // (a programmatic, untrusted click) reaches renderAccrualsCoveragePanel and unconditionally
+    // resets pending manual-coverage tracking — block it here the same way row clicks and
+    // Prev/Next already are, so a pending edit can't be silently discarded by switching lists.
+    if(accrualsPanelBlockedByPending()) return;
+    switchAccrualsSubTab(btn.dataset.subtab);
+  });
 });
 
 // Called after the background auto-refresh (startAutoRefresh, every 60s) pulls in changes from
@@ -12607,6 +12666,14 @@ function silentlyRefreshAccrualsIfVisible(){
   try{
     const panel = qs('#accruals');
     if(!panel || !panel.classList.contains('active')) return;
+    // startAutoRefresh's own guard only checks these flags BEFORE its network fetch — an edit
+    // that started mid-fetch (a real, if narrow, window) wouldn't be caught there. Re-checking
+    // here, right before touching the DOM, closes that gap: state.units/state.accruals may
+    // already have been replaced by the caller by this point, but skipping the repaint at
+    // least stops it from also visibly resetting the panel's pending-edit UI out from under
+    // whatever the operator is doing right now.
+    if(typeof _accrualsHasPendingChanges !== 'undefined' && _accrualsHasPendingChanges) return;
+    if(typeof _accrualsSyncInFlight !== 'undefined' && _accrualsSyncInFlight) return;
 
     // Rebuilding a list's <table> resets its own scroll container back to the top — fine for
     // a render the operator just triggered themselves, but a background refresh doing that
@@ -12806,7 +12873,14 @@ function accrueCurrentUnit(){
     accrualMonth: '', accrualYear: '', createdAt: new Date().toISOString()
   }));
   state.accruals = (state.accruals || []).concat(newRecords);
-  newRecords.forEach(rec => DB.saveAccrual(rec).catch(e => console.error('Accrual save error:', e)));
+  // Batched into one request (same reasoning as manual coverage's bulkSave — a unit with
+  // several open missing periods would otherwise fire one request per record). Tracked via
+  // _accrualsSyncInFlight the same way persistManualCoverage tracks its own saves — the 60s
+  // background auto-refresh checks this flag and skips its cycle entirely while it's true, so
+  // a re-fetch of "Accruals" can never land mid-save and silently revert these records back
+  // out of state.accruals before they've actually landed on the sheet.
+  _accrualsSyncInFlight = true;
+  DB.bulkSaveAccruals(newRecords).catch(e => console.error('Accrual save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
   try{ saveState(); }catch(e){}
 
   _accrualsLastAccruedUnitId = uid;
@@ -12829,7 +12903,8 @@ function accrueCurrentUnit(){
 function undoAccrueUnit(){
   if(!_accrualsLastAccruedMissingRows || !_accrualsLastAccruedUnitId || !_accrualsLastAccruedIds) return;
   const idsToRemove = new Set(_accrualsLastAccruedIds);
-  _accrualsLastAccruedIds.forEach(recId => DB.deleteAccrual(recId).catch(e => console.error('Accrual undo/delete error:', e)));
+  _accrualsSyncInFlight = true;
+  DB.bulkDeleteAccruals(_accrualsLastAccruedIds).catch(e => console.error('Accrual undo/delete error:', e)).finally(() => { _accrualsSyncInFlight = false; });
   state.accruals = (state.accruals || []).filter(a => !idsToRemove.has(a.id));
   try{ saveState(); }catch(e){}
 
@@ -12856,16 +12931,24 @@ function closeAccrualsMonth(){
     : `Close ${monthLabel} with no periods accrued, and move to ${accrualMonthName(month === 12 ? 1 : month + 1)} ${month === 12 ? year + 1 : year}?`;
   if(!confirm(confirmMsg)) return;
 
-  openRecords.forEach(rec => {
+  const updateCalls = openRecords.map(rec => {
     rec.accrualMonth = String(month);
     rec.accrualYear = String(year);
-    DB.updateAccrual(rec).catch(e => console.error('Accrual close error:', e));
+    return DB.updateAccrual(rec).catch(e => console.error('Accrual close error:', e));
   });
 
   let nextMonth = month + 1, nextYear = year;
   if(nextMonth > 12){ nextMonth = 1; nextYear += 1; }
   state.meta.accrualsOpenMonth = nextMonth;
   state.meta.accrualsOpenYear = nextYear;
+  // Also explicitly tracked (redundant with the saveState() call below, which pushes the same
+  // meta): a re-fetch of getMeta() from the 60s auto-refresh racing this specific save would
+  // silently revert the just-closed month's tracker back to the prior (still-open) month —
+  // confusing since "Close Month Accruals" would then look like it never happened. Kept in the
+  // SAME in-flight window as the record updates above, not a separate one.
+  updateCalls.push(DB.saveAll(state).catch(e => console.error('Accrual close meta save error:', e)));
+  _accrualsSyncInFlight = true;
+  Promise.allSettled(updateCalls).finally(() => { _accrualsSyncInFlight = false; });
   try{ saveState(); }catch(e){}
 
   // The Undo label only ever makes sense for still-open records — anything it pointed to just
@@ -12934,15 +13017,30 @@ function renderAccrualsAccruedList(){
   }
   if(yearSelectEl && !yearSelectEl.dataset.wired){
     yearSelectEl.dataset.wired = 'true';
-    // A handful of years around the open one — plenty of headroom either direction.
-    for(let y = openMY.year - 2; y <= openMY.year + 2; y++){
-      const opt = document.createElement('option'); opt.value = y; opt.textContent = String(y);
-      yearSelectEl.appendChild(opt);
-    }
     yearSelectEl.addEventListener('change', () => {
       _accrualsViewYear = parseInt(yearSelectEl.value, 10);
       renderAccrualsAccruedList();
     });
+  }
+  if(yearSelectEl){
+    // Rebuilt whenever the needed range isn't already covered (cheap either way — a handful
+    // of <option>s) rather than populated once and left fixed: closing enough months within
+    // one continuous session can push accrualsOpenYear past the ±2 window that was there the
+    // first time this rendered, which used to leave the dropdown showing blank/unselected
+    // even though _accrualsViewYear (and the actual row filtering, which reads that variable
+    // directly) was still correct.
+    const existingYears = new Set(Array.from(yearSelectEl.options).map(o => Number(o.value)));
+    const neededMin = Math.min(openMY.year, _accrualsViewYear) - 2;
+    const neededMax = Math.max(openMY.year, _accrualsViewYear) + 2;
+    let rangeOk = true;
+    for(let y = neededMin; y <= neededMax; y++){ if(!existingYears.has(y)){ rangeOk = false; break; } }
+    if(!rangeOk){
+      yearSelectEl.innerHTML = '';
+      for(let y = neededMin; y <= neededMax; y++){
+        const opt = document.createElement('option'); opt.value = y; opt.textContent = String(y);
+        yearSelectEl.appendChild(opt);
+      }
+    }
   }
   if(monthSelectEl) monthSelectEl.value = String(_accrualsViewMonth);
   if(yearSelectEl) yearSelectEl.value = String(_accrualsViewYear);
@@ -13026,7 +13124,8 @@ function removeAccrualRecord(recordId){
   if(idx === -1) return;
   const record = state.accruals[idx];
   state.accruals = state.accruals.filter(a => a.id !== recordId);
-  DB.deleteAccrual(recordId).catch(e => console.error('Accrual remove error:', e));
+  _accrualsSyncInFlight = true;
+  DB.deleteAccrual(recordId).catch(e => console.error('Accrual remove error:', e)).finally(() => { _accrualsSyncInFlight = false; });
   try{ saveState(); }catch(e){}
 
   if(_accrualsLastAccruedIds && _accrualsLastAccruedIds.indexOf(recordId) !== -1){

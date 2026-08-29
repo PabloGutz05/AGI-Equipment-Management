@@ -434,6 +434,17 @@ const DB = {
   async deleteAccrual(id) {
     return DB.post({ action: 'delete', sheet: 'Accruals', id });
   },
+  // A single "Accrue Unit"/undo click can touch several records at once (a unit with more than
+  // one open missing period) — batched into one request each, same reasoning as
+  // bulkSaveManualCoverage/bulkDeleteManualCoverage.
+  async bulkSaveAccruals(records) {
+    if (!records || records.length === 0) return { saved: 0 };
+    return DB.post({ action: 'bulkSave', sheet: 'Accruals', data: records });
+  },
+  async bulkDeleteAccruals(ids) {
+    if (!ids || ids.length === 0) return { deleted: 0 };
+    return DB.post({ action: 'bulkDelete', sheet: 'Accruals', ids });
+  },
 
   async saveUser(record) {
     return DB.post({ action: 'save', sheet: 'users', data: record });
