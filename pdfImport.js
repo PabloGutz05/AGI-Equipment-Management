@@ -187,14 +187,35 @@
     rows.forEach(text => {
       let m;
       if(!info.docNumber && (m = text.match(/^Invoice:\s*(\S+)/))) info.docNumber = m[1];
-      if(!info.leaseNumber && (m = text.match(/Reference Number\s+(.+)$/i))) info.leaseNumber = m[1].replace(/^FSRA\s*/i,'').trim();
+      // The field label varies by invoice variant ("Reference Number FSRA123456" vs. this
+      // format's plain "Reference ATS MCO - CO20220520 and CO20220729" — a customer label
+      // followed by one or more lease codes). Pull out just the first lease-code-shaped token
+      // (an existing lease number in this system, e.g. "CO20220520" or a bare "20190311") when
+      // one is present, so the customer-label prefix and any additional lease codes after
+      // "and" don't end up baked into the match; falls back to the whole (FSRA-stripped)
+      // string when nothing code-shaped is found, preserving the original format's behavior.
+      if(!info.leaseNumber && (m = text.match(/Reference(?:\s+Number)?\s+(.+)$/i))){
+        const raw = m[1].replace(/^FSRA\s*/i,'').trim();
+        const codeMatch = raw.match(/\b(?:CO)?\d{8}\b/i);
+        info.leaseNumber = codeMatch ? codeMatch[0] : raw;
+      }
       if(!info.invoiceDateIso && (m = text.match(/\bDate:\s*([A-Za-z]+ \d{1,2},\s*\d{4})/))){
         const d = new Date(m[1]);
         if(!isNaN(d.getTime())) info.invoiceDateIso = d.toISOString().slice(0,10);
       }
+      // Same field, numeric MM/DD/YYYY layout (this invoice variant never uses a month-name
+      // date anywhere) — checked as a separate fallback rather than folded into the regex
+      // above so the month-name path (and whichever format relies on it) is untouched.
+      if(!info.invoiceDateIso && (m = text.match(/\bDate:\s*(\d{2})\/(\d{2})\/(\d{4})\b/))){
+        info.invoiceDateIso = `${m[3]}-${m[1]}-${m[2]}`;
+      }
       if(info.subtotalAmount === null && (m = text.match(/Subtotal Amount\s+([\d,]+\.\d{2})/i))) info.subtotalAmount = parseFloat(m[1].replace(/,/g,''));
       if(info.tax === null && (m = text.match(/^Tax\s+([\d,]+\.\d{2})/))) info.tax = parseFloat(m[1].replace(/,/g,''));
-      if(info.totalAmount === null && (m = text.match(/Total Amount\s+([\d,]+\.\d{2})/i))) info.totalAmount = parseFloat(m[1].replace(/,/g,''));
+      // Anchored to the start of the row (like the Tax match below) — "Total Amount" is
+      // otherwise also a literal substring of "Subtotal Amount" ("Sub" + "total Amount"), so an
+      // unanchored match picks up the Subtotal row's own number first and never reaches the
+      // real Total Amount row at all.
+      if(info.totalAmount === null && (m = text.match(/^Total Amount\s+([\d,]+\.\d{2})/i))) info.totalAmount = parseFloat(m[1].replace(/,/g,''));
     });
     return info;
   }
