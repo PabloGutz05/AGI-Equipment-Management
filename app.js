@@ -5752,6 +5752,28 @@ function isManuallyCovered(unit, year, month, day){
   const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
   return dates.indexOf(dateStr) !== -1;
 }
+// Every period this unit already has an accrual OR not-accruable record for — OPEN or CLOSED,
+// doesn't matter — is a decision the operator already made and is frozen: it must never be
+// recomputed as "missing" again (see computeUnitMissingPeriods). A brand new gap that opens up
+// later (an edit uncovers something, or time simply keeps passing with no invoice) is always its
+// own separate period to judge, never folded back into an old frozen one. See
+// [[accruals_cumulative_history]] for why this replaced the earlier "same gap regrows forever"
+// model.
+// excludeAccrualId: leaves one specific record's own range out of the freeze set — needed by
+// reconcileOpenAccrualsCoverage, which re-runs this same day-by-day check restricted to an open
+// record's OWN range to ask "absent this record's own reservation, is there still a genuine gap
+// here". Without the exclusion, a record would always see its own days as already frozen/covered
+// and get treated as fully resolved (deleted) on every single reconcile pass.
+function getAccrualFrozenRanges(unit, excludeAccrualId){
+  const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
+  if(!unitIdNorm) return [];
+  return (state.accruals || [])
+    .filter(a => String(a.unitId || '').trim().toLowerCase() === unitIdNorm && a.periodStart && a.periodEnd && a.id !== excludeAccrualId)
+    .map(a => ({ start: a.periodStart, end: a.periodEnd }));
+}
+function isFrozenByAccrualDecision(dateStr, frozenRanges){
+  return frozenRanges.some(p => dateStr >= p.start && dateStr <= p.end);
+}
 // Sets (doesn't toggle) one date's manual-coverage membership without saving/persisting — a
 // click or drag applies this locally to however many dates are touched, and persistManualCoverage
 // only runs once the operator clicks "Accept manual coverage" in the panel.
@@ -12097,7 +12119,10 @@ function buildUnitStats(unit, statsId){
 // storage — this table is computed client-side and was never meant to be persisted). Instead
 // each unit's own registries are filtered down once up front, then the day loop only ever
 // checks that small per-unit list — same coverage/disabled semantics, far fewer comparisons.
-function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
+// excludeAccrualId (optional): see getAccrualFrozenRanges — pass an accrual record's own id
+// when asking "is this record's own range still genuinely missing", so its own freeze doesn't
+// mask the very thing being checked.
+function computeUnitMissingPeriods(unit, rangeStart, rangeEnd, excludeAccrualId){
   const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
   const invoices = state.invoices || [];
 
@@ -12143,6 +12168,8 @@ function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
     }
   }catch(e){}
 
+  const frozenRanges = getAccrualFrozenRanges(unit, excludeAccrualId);
+
   const periods = [];
   if(effectiveStart > rangeEnd) return periods;
 
@@ -12156,6 +12183,8 @@ function computeUnitMissingPeriods(unit, rangeStart, rangeEnd){
       covered = unitRentalPeriods.some(p => dateStr >= p.start && dateStr <= p.end);
       // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
       if(!covered) covered = isManuallyCovered(unit, y, m, d);
+      // Already accrued or marked not-accruable (open or closed) -- frozen, never re-missing.
+      if(!covered) covered = isFrozenByAccrualDecision(dateStr, frozenRanges);
     }
     const missing = !disabled && !covered;
     if(missing){
@@ -12193,7 +12222,12 @@ let _accrualsRowRefs = [];
 // whenever a month gets closed, since a closed record can no longer be edited/undone.
 let _accrualsLastAccruedUnitId = null;
 let _accrualsLastAccruedMissingRows = null; // original {unitId,lease,...,start,end,days} shape, for undo
-let _accrualsLastAccruedIds = null; // the state.accruals record ids created by that same action
+let _accrualsLastAccruedIds = null; // the state.accruals record ids created (or extended) by that same action
+// Set only when the last accrue action merged into an existing OPEN row (continuity with an
+// adjacent already-open period) instead of creating a new one — undo then needs to shrink that
+// row back to its pre-merge range rather than delete it outright, or it'd also destroy whatever
+// was already accrued there before this action. null for an ordinary fresh-row accrue.
+let _accrualsLastAccruedMerge = null; // { recordId, priorStart, priorEnd, priorDays }
 // Which month/year the "Periods Ready to Accrue" list is currently showing — defaults to
 // whichever month is presently open (see getAccrualsOpenMonthYear) whenever the tab is entered.
 let _accrualsViewMonth = null;
@@ -12257,45 +12291,15 @@ function computeUnitManualCoveragePeriods(unit){
 }
 
 // Shared by the full recompute and the single-unit incremental refresh below, so Table 1 stays
-// consistent no matter which path last touched it: excludes periods with an OPEN (not yet
-// closed) accrual — already sitting in "Periods Ready to Accrue" this cycle — and attaches
-// `.priorAccrual` (most recently closed total) to periods with prior closed history.
+// consistent no matter which path last touched it. The actual freeze (never let a day already
+// covered by an accrual OR not-accruable record — open or closed — count as "missing" again)
+// now happens right at the source in computeUnitMissingPeriods (see getAccrualFrozenRanges),
+// so by the time rows reach here they can never overlap an existing accrual/not-accruable
+// record in the first place. Kept as the one shared post-processing point for both callers
+// anyway — the natural place to hang future "track of sent accrued units/periods/amounts"
+// history features on, per [[accruals_cumulative_history]] — but has nothing to filter today.
 function applyAccrualHistoryToRows(rows){
-  // Match on the FULL range (start AND end), not just start — matching on start alone hid the
-  // wrong thing once manual coverage could carve a middle chunk out of an already-open-accrued
-  // gap: the resulting sub-periods still share the original start date, so a start-only match
-  // kept suppressing them even though they're no longer the same range as what's actually
-  // sitting in "Periods Ready to Accrue". Requiring an exact match means ANY change to the
-  // gap's shape (a split, or the gap simply growing) makes it reappear for review rather than
-  // staying silently hidden behind a now-stale accrual reference.
-  // Not Accruable records share this exact same "no accrualMonth/accrualYear" shape as open
-  // accruals do, so they're excluded from Missing Periods here too without any extra check —
-  // exactly the desired effect (a period sent to Not Accruable disappears from this list the
-  // same way an open-accrued or manually-covered one does), just via a table row shown
-  // elsewhere (see renderAccrualsNotAccruableList) instead of a dollar amount.
-  const openAccrualKeys = new Set(
-    (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear)
-      .map(a => a.unitId.toLowerCase() + '|' + a.periodStart + '|' + a.periodEnd)
-  );
-  const filtered = openAccrualKeys.size
-    ? rows.filter(r => !openAccrualKeys.has(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start) + '|' + dateToIsoStr(r.end)))
-    : rows;
-
-  const lastClosedByKey = new Map();
-  (state.accruals || []).filter(a => a.accrualMonth && a.accrualYear).forEach(a => {
-    const key = a.unitId.toLowerCase() + '|' + a.periodStart;
-    const existing = lastClosedByKey.get(key);
-    const endDate = isoStrToDate(a.periodEnd);
-    if(!existing || endDate > existing.endDate){
-      lastClosedByKey.set(key, { days: Number(a.days) || 0, month: Number(a.accrualMonth), year: Number(a.accrualYear), endDate });
-    }
-  });
-  filtered.forEach(r => {
-    const prior = lastClosedByKey.get(r.unitId.toLowerCase() + '|' + dateToIsoStr(r.start));
-    r.priorAccrual = prior ? { days: prior.days, label: `${accrualMonthName(prior.month)} ${prior.year}` } : null;
-  });
-
-  return filtered;
+  return rows;
 }
 
 // Provisional Table 1: every missing coverage period, for every unit, from Jan 1 of the
@@ -12347,13 +12351,12 @@ function renderAccrualsMissingPeriods(forceRecompute){
       });
     });
 
-    // Accruals are cumulative: a period that was already accrued and closed, but is STILL
-    // missing (no invoice/manual coverage arrived since), must keep reappearing here every
-    // cycle — its "days" naturally grows each time since computeUnitMissingPeriods always
-    // measures from the same original gap start, so re-accruing it folds the prior total in
-    // automatically. applyAccrualHistoryToRows only excludes a period with an OPEN (not yet
-    // closed) accrual, since that one is already sitting in "Periods Ready to Accrue" for the
-    // current cycle and would otherwise be double-listed/double-accrued before it's even closed.
+    // Once a period has an accrual OR not-accruable record (open or closed), it's frozen —
+    // computeUnitMissingPeriods already excludes those exact days (see getAccrualFrozenRanges),
+    // so a still-missing gap next to one always shows up here as its own new, separately-judged
+    // period rather than the old one silently regrowing. applyAccrualHistoryToRows is kept as
+    // the one shared post-processing point for both this full recompute and the single-unit
+    // incremental refresh below, in case a future history/audit feature needs it.
     const filteredRows = applyAccrualHistoryToRows(rows);
 
     _accrualsMissingRowsCache = { rows: filteredRows, rangeStart, rangeEnd };
@@ -12369,8 +12372,7 @@ function renderAccrualsMissingPeriods(forceRecompute){
     { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
     { key: 'status', label: 'Status', get: r => r.status },
     { key: 'period', label: 'Missing Period', get: r => r.start, numeric: true },
-    { key: 'days', label: 'Days', get: r => r.days, numeric: true, alignRight: true },
-    { key: 'priorAccrual', label: 'Prior Accrual', get: r => (r.priorAccrual ? r.priorAccrual.days : -1), numeric: true, alignRight: true }
+    { key: 'days', label: 'Days', get: r => r.days, numeric: true, alignRight: true }
   ];
 
   const sortCol = COLUMNS.find(c => c.key === _accrualsMissingSort.column) || COLUMNS[0];
@@ -12508,16 +12510,6 @@ function renderAccrualsMissingPeriods(forceRecompute){
     tr.appendChild(tdPeriod);
     const tdDays = document.createElement('td'); tdDays.textContent = r.days; tdDays.style.cssText = 'padding:4px 6px;text-align:right;';
     tr.appendChild(tdDays);
-    const tdPrior = document.createElement('td');
-    if(r.priorAccrual){
-      tdPrior.textContent = `${r.priorAccrual.days}d`;
-      tdPrior.title = `Already sent as of ${r.priorAccrual.label} closing — this cycle's Days figure is the cumulative total including that.`;
-      tdPrior.style.cssText = 'padding:4px 6px;text-align:right;color:#9333ea;font-weight:600;';
-    } else {
-      tdPrior.textContent = '—';
-      tdPrior.style.cssText = 'padding:4px 6px;text-align:right;color:#9ca3af;';
-    }
-    tr.appendChild(tdPrior);
 
     tbody.appendChild(tr);
     if(rowKey === _accrualsSelectedRowKey) selectedTr = tr;
@@ -12983,10 +12975,35 @@ function findSelectedMissingPeriodRow(){
   return _accrualsMissingRowsCache.rows.findIndex(r => (r.unitId.toLowerCase() + '|' + r.start.getTime()) === _accrualsSelectedRowKey);
 }
 
+// A newly-judged period that turns out to directly continue an already-OPEN accrual/not-
+// accruable row for the same unit gets folded into that same row (extending its dates) instead
+// of fragmenting the current open batch into multiple adjacent one-off rows for what's really
+// one continuous stretch. Never matches a CLOSED record — those are frozen and must never be
+// touched again once closed (see getAccrualFrozenRanges/computeUnitMissingPeriods). Matched by
+// "kind" (notAccruableFlag) so an Accrue action only ever merges into an open accrual row, and a
+// Not Accruable action only ever merges into an open not-accruable row — never across the two.
+function findAdjacentOpenAccrualRecord(unitId, newStartIso, newEndIso, notAccruableFlag){
+  const uidNorm = String(unitId || '').trim().toLowerCase();
+  // setDate (not raw ms arithmetic) so a day either side of a DST transition still lands
+  // exactly on local midnight of the right calendar day — matches computeUnitMissingPeriods's
+  // own day-stepping pattern.
+  const beforeDate = isoStrToDate(newStartIso); beforeDate.setDate(beforeDate.getDate() - 1);
+  const afterDate = isoStrToDate(newEndIso); afterDate.setDate(afterDate.getDate() + 1);
+  const dayBefore = dateToIsoStr(beforeDate);
+  const dayAfter = dateToIsoStr(afterDate);
+  return (state.accruals || []).find(a => {
+    if(a.accrualMonth || a.accrualYear) return false; // closed -- frozen, never touched
+    if(!!a.notAccruable !== !!notAccruableFlag) return false;
+    if(String(a.unitId || '').trim().toLowerCase() !== uidNorm) return false;
+    return a.periodEnd === dayBefore || a.periodStart === dayAfter;
+  }) || null;
+}
+
 // Moves only the currently-selected period out of the review list and into "Periods Ready to
-// Accrue" below, saved to the Accruals sheet as an open (accrualMonth/Year blank) record.
-// Blocked while a manual-coverage edit is still pending, so nothing gets accrued out from under
-// an unsaved change.
+// Accrue" below, saved to the Accruals sheet as an open (accrualMonth/Year blank) record —
+// or, if it directly continues an existing open row for this unit, merged into that row instead
+// (see findAdjacentOpenAccrualRecord). Blocked while a manual-coverage edit is still pending, so
+// nothing gets accrued out from under an unsaved change.
 function accrueCurrentUnit(){
   if(accrualsPanelBlockedByPending()) return;
   if(!_accrualsPanelUnit || !_accrualsMissingRowsCache) return;
@@ -12998,24 +13015,41 @@ function accrueCurrentUnit(){
   const movedRow = _accrualsMissingRowsCache.rows[idx];
   _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter((_, i) => i !== idx);
 
-  const newRecord = {
-    id: id(),
-    unitId: movedRow.unitId, lease: movedRow.lease, supplier: movedRow.supplier, costCenter: movedRow.costCenter, status: movedRow.status,
-    periodStart: dateToIsoStr(movedRow.start), periodEnd: dateToIsoStr(movedRow.end), days: movedRow.days,
-    accrualMonth: '', accrualYear: '', createdAt: new Date().toISOString()
-  };
-  state.accruals = (state.accruals || []).concat([newRecord]);
-  // Tracked via _accrualsSyncInFlight the same way persistManualCoverage tracks its own saves —
-  // the 60s background auto-refresh checks this flag and skips its cycle entirely while it's
-  // true, so a re-fetch of "Accruals" can never land mid-save and silently revert this record
-  // back out of state.accruals before it's actually landed on the sheet.
-  _accrualsSyncInFlight = true;
-  DB.bulkSaveAccruals([newRecord]).catch(e => console.error('Accrual save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  const newStartIso = dateToIsoStr(movedRow.start), newEndIso = dateToIsoStr(movedRow.end);
+  const adjacent = findAdjacentOpenAccrualRecord(movedRow.unitId, newStartIso, newEndIso, false);
+
+  let targetRecord, mergeInfo = null;
+  if(adjacent){
+    mergeInfo = { recordId: adjacent.id, priorStart: adjacent.periodStart, priorEnd: adjacent.periodEnd, priorDays: adjacent.days };
+    const mergedStart = adjacent.periodStart < newStartIso ? adjacent.periodStart : newStartIso;
+    const mergedEnd = adjacent.periodEnd > newEndIso ? adjacent.periodEnd : newEndIso;
+    adjacent.periodStart = mergedStart;
+    adjacent.periodEnd = mergedEnd;
+    adjacent.days = Math.round((isoStrToDate(mergedEnd) - isoStrToDate(mergedStart)) / 86400000) + 1;
+    targetRecord = adjacent;
+    _accrualsSyncInFlight = true;
+    DB.updateAccrual(adjacent).catch(e => console.error('Accrual merge error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  } else {
+    targetRecord = {
+      id: id(),
+      unitId: movedRow.unitId, lease: movedRow.lease, supplier: movedRow.supplier, costCenter: movedRow.costCenter, status: movedRow.status,
+      periodStart: newStartIso, periodEnd: newEndIso, days: movedRow.days,
+      accrualMonth: '', accrualYear: '', createdAt: new Date().toISOString()
+    };
+    state.accruals = (state.accruals || []).concat([targetRecord]);
+    // Tracked via _accrualsSyncInFlight the same way persistManualCoverage tracks its own saves —
+    // the 60s background auto-refresh checks this flag and skips its cycle entirely while it's
+    // true, so a re-fetch of "Accruals" can never land mid-save and silently revert this record
+    // back out of state.accruals before it's actually landed on the sheet.
+    _accrualsSyncInFlight = true;
+    DB.bulkSaveAccruals([targetRecord]).catch(e => console.error('Accrual save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  }
   try{ saveState(); }catch(e){}
 
   _accrualsLastAccruedUnitId = uid;
   _accrualsLastAccruedMissingRows = [movedRow];
-  _accrualsLastAccruedIds = [newRecord.id];
+  _accrualsLastAccruedIds = [targetRecord.id];
+  _accrualsLastAccruedMerge = mergeInfo;
 
   // Jump the "Periods Ready to Accrue" view to the currently-open month so the operator
   // immediately sees what they just accrued land in the list.
@@ -13033,9 +13067,11 @@ function accrueCurrentUnit(){
 // only the currently-selected period out of Missing Periods and into its own Not Accruable table
 // below (saved to the same Accruals sheet, flagged notAccruable:'true', and never given an
 // accrualMonth/Year — so it can never be swept into a closed accrual document or silently
-// reconciled away just because coverage happens to change later). Reversible any time via that
-// table's own Remove button. Blocked while a manual-coverage edit is still pending, same as
-// Accrue Period.
+// reconciled away just because coverage happens to change later) — or, if it directly continues
+// an existing open not-accruable row for this unit, merged into that row instead (see
+// findAdjacentOpenAccrualRecord). Reversible any time via that table's own Remove button (which
+// removes the whole row, merged range included). Blocked while a manual-coverage edit is still
+// pending, same as Accrue Period.
 function markCurrentPeriodNotAccruable(){
   if(accrualsPanelBlockedByPending()) return;
   if(!_accrualsPanelUnit || !_accrualsMissingRowsCache) return;
@@ -13047,15 +13083,28 @@ function markCurrentPeriodNotAccruable(){
   const movedRow = _accrualsMissingRowsCache.rows[idx];
   _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter((_, i) => i !== idx);
 
-  const newRecord = {
-    id: id(),
-    unitId: movedRow.unitId, lease: movedRow.lease, supplier: movedRow.supplier, costCenter: movedRow.costCenter, status: movedRow.status,
-    periodStart: dateToIsoStr(movedRow.start), periodEnd: dateToIsoStr(movedRow.end), days: movedRow.days,
-    accrualMonth: '', accrualYear: '', notAccruable: 'true', createdAt: new Date().toISOString()
-  };
-  state.accruals = (state.accruals || []).concat([newRecord]);
-  _accrualsSyncInFlight = true;
-  DB.bulkSaveAccruals([newRecord]).catch(e => console.error('Not Accruable save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  const newStartIso = dateToIsoStr(movedRow.start), newEndIso = dateToIsoStr(movedRow.end);
+  const adjacent = findAdjacentOpenAccrualRecord(movedRow.unitId, newStartIso, newEndIso, true);
+
+  if(adjacent){
+    const mergedStart = adjacent.periodStart < newStartIso ? adjacent.periodStart : newStartIso;
+    const mergedEnd = adjacent.periodEnd > newEndIso ? adjacent.periodEnd : newEndIso;
+    adjacent.periodStart = mergedStart;
+    adjacent.periodEnd = mergedEnd;
+    adjacent.days = Math.round((isoStrToDate(mergedEnd) - isoStrToDate(mergedStart)) / 86400000) + 1;
+    _accrualsSyncInFlight = true;
+    DB.updateAccrual(adjacent).catch(e => console.error('Not Accruable merge error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  } else {
+    const newRecord = {
+      id: id(),
+      unitId: movedRow.unitId, lease: movedRow.lease, supplier: movedRow.supplier, costCenter: movedRow.costCenter, status: movedRow.status,
+      periodStart: newStartIso, periodEnd: newEndIso, days: movedRow.days,
+      accrualMonth: '', accrualYear: '', notAccruable: 'true', createdAt: new Date().toISOString()
+    };
+    state.accruals = (state.accruals || []).concat([newRecord]);
+    _accrualsSyncInFlight = true;
+    DB.bulkSaveAccruals([newRecord]).catch(e => console.error('Not Accruable save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  }
   try{ saveState(); }catch(e){}
 
   renderAccrualsMissingPeriods();
@@ -13063,21 +13112,36 @@ function markCurrentPeriodNotAccruable(){
   updateAccrueUnitButton();
 }
 
-// Puts the most recently accrued period straight back into the review list and deletes the
-// just-created Accruals row — a single safety-net level of undo, not a full history; accruing
-// another period (or closing the month) replaces/clears the target.
+// Puts the most recently accrued period straight back into the review list — a single safety-net
+// level of undo, not a full history; accruing another period (or closing the month) replaces/
+// clears the target. Two shapes, per _accrualsLastAccruedMerge:
+//   - ordinary create: deletes the just-created Accruals row entirely.
+//   - merge into an existing open row: shrinks that row back to its pre-merge range instead of
+//     deleting it — deleting would also destroy whatever was already accrued there before this
+//     particular action.
 function undoAccrueUnit(){
   if(!_accrualsLastAccruedMissingRows || !_accrualsLastAccruedUnitId || !_accrualsLastAccruedIds) return;
-  const idsToRemove = new Set(_accrualsLastAccruedIds);
-  _accrualsSyncInFlight = true;
-  DB.bulkDeleteAccruals(_accrualsLastAccruedIds).catch(e => console.error('Accrual undo/delete error:', e)).finally(() => { _accrualsSyncInFlight = false; });
-  state.accruals = (state.accruals || []).filter(a => !idsToRemove.has(a.id));
+  if(_accrualsLastAccruedMerge){
+    const { recordId, priorStart, priorEnd, priorDays } = _accrualsLastAccruedMerge;
+    const rec = (state.accruals || []).find(a => a.id === recordId);
+    if(rec){
+      rec.periodStart = priorStart; rec.periodEnd = priorEnd; rec.days = priorDays;
+      _accrualsSyncInFlight = true;
+      DB.updateAccrual(rec).catch(e => console.error('Accrual undo/merge-revert error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+    }
+  } else {
+    const idsToRemove = new Set(_accrualsLastAccruedIds);
+    _accrualsSyncInFlight = true;
+    DB.bulkDeleteAccruals(_accrualsLastAccruedIds).catch(e => console.error('Accrual undo/delete error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+    state.accruals = (state.accruals || []).filter(a => !idsToRemove.has(a.id));
+  }
   try{ saveState(); }catch(e){}
 
   if(_accrualsMissingRowsCache) _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.concat(_accrualsLastAccruedMissingRows);
   _accrualsLastAccruedUnitId = null;
   _accrualsLastAccruedMissingRows = null;
   _accrualsLastAccruedIds = null;
+  _accrualsLastAccruedMerge = null;
 
   renderAccrualsMissingPeriods();
   renderAccrualsAccruedList();
@@ -13088,6 +13152,144 @@ function undoAccrueUnit(){
 // the tracker to the next month — irreversible (matches "once closed there's no more editions"),
 // so this asks for confirmation first and clears the Undo label (a closed record can't be
 // undone from here anymore).
+// Exports the currently-OPEN "Periods Ready to Accrue" batch to a two-tab Excel workbook so the
+// boss can analyze Accumulated and Current Month amounts separately. Deliberately independent of
+// whatever month the table happens to be VIEWING right now (a closed month could be on screen) —
+// always the actual open, not-yet-closed batch, the same one "Close Month Accruals" would lock
+// in. A unit appears on whichever tab(s) its respective amount is nonzero for: both tabs if it
+// has both a real Accumulated and Current Month figure, only one if only one applies, neither if
+// both happen to be $0. No sheet protection is applied, so every cell stays freely editable.
+function downloadAccrualsDeliverable(){
+  if(!(window.XLSX && typeof XLSX === 'object')){ alert('Excel export library not found. Please reload the page.'); return; }
+
+  const { month, year } = getAccrualsOpenMonthYear();
+  // Not Accruable records are excluded — same rule as "Periods Ready to Accrue" itself, they're
+  // never a dollar figure to deliver.
+  const openRecords = (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear && !a.notAccruable);
+  const fmtMDY = (iso) => { const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
+
+  const rows = openRecords.map(r => {
+    const estimate = computeAccrualChargeEstimate(r);
+    const split = splitAccrualAmountByViewMonth(r, estimate.chargePerDay, month, year);
+    return {
+      unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
+      periodText: `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, days: Number(r.days) || 0,
+      lastInvoiceAmount: estimate.totalAmount, chargePerDay: estimate.chargePerDay,
+      accumulated: split.accumulatedAmount, currentMonth: split.currentMonthAmount, total: split.totalAmount
+    };
+  });
+
+  const totalAccumulated = rows.reduce((s, r) => s + r.accumulated, 0);
+  const totalCurrentMonth = rows.reduce((s, r) => s + r.currentMonth, 0);
+  const totalOverall = rows.reduce((s, r) => s + r.total, 0);
+
+  const wb = XLSX.utils.book_new();
+  wb.Props = {
+    Title: `Accruals Deliverable ${accrualMonthName(month)} ${year}`,
+    Subject: 'AGI Vehicle Lease Management — Accruals Deliverable',
+    Author: 'AGI Vehicle Lease Management', Company: 'AGI', CreatedDate: new Date()
+  };
+
+  // Same visual vocabulary as exportReport's Vehicle_Report styles above, kept local to this
+  // function since the two exports don't otherwise share any data/state.
+  const baseFont = { name: 'Calibri', sz: 11 };
+  const styles = {
+    header: {
+      font: Object.assign({}, baseFont, { bold: true, color: { rgb: 'FFFFFF' } }),
+      fill: { fgColor: { rgb: '0B74DE' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { left:{style:'thin',color:{rgb:'0B74DE'}}, right:{style:'thin',color:{rgb:'0B74DE'}}, top:{style:'thin',color:{rgb:'0B74DE'}}, bottom: { style: 'medium', color: { rgb: '0B74DE' } } }
+    },
+    title: { font: Object.assign({}, baseFont, { bold: true, sz: 16, color: { rgb: '0B74DE' } }), alignment: { horizontal: 'left', vertical: 'center' } },
+    info: { alignment: { vertical: 'center' }, font: baseFont },
+    zebra: { fill: { fgColor: { rgb: 'F8FAFC' } } },
+    money: { alignment: { horizontal: 'right', vertical: 'center' }, font: baseFont, numFmt: '$#,##0.00' },
+    tabTotalLabel: { font: Object.assign({}, baseFont, { bold: true }), alignment: { horizontal: 'right' } },
+    tabTotalValue: { font: Object.assign({}, baseFont, { bold: true }), numFmt: '$#,##0.00' },
+    infoLabel: { font: Object.assign({}, baseFont, { italic: true, color: { rgb: '6B7280' } }), alignment: { horizontal: 'right' } },
+    infoValue: { font: Object.assign({}, baseFont, { italic: true, color: { rgb: '6B7280' } }), numFmt: '$#,##0.00' }
+  };
+  function mergeStyles(...objs){ const out = {}; objs.forEach(o => { if(!o) return; Object.keys(o).forEach(k => { out[k] = Object.assign({}, out[k], o[k]); }); }); return out; }
+  // aoa_to_sheet doesn't infer a cell's type (.t) from .v for the {v,s} object form the way it
+  // does for a bare value — leaving .t unset makes some readers (including XLSX's own
+  // sheet_to_json) treat the cell as blank even though .v is set. Always stamp it explicitly.
+  function cell(v, s){ return { v, t: (typeof v === 'number') ? 'n' : 's', s }; }
+
+  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Period', 'Days', 'Last Invoice Amount', 'Charge/Day'];
+
+  // amountKey/amountLabel: the ONE amount metric this tab is scoped to (Accumulated or Current
+  // Month) — kept as the tab's own single dollar column, separate from the other tab's metric,
+  // so the boss can analyze each independently rather than one mixed table.
+  function buildTabSheet(tabTitle, amountLabel, amountKey, tabRows, tabTotal){
+    const headerRow = HEADERS.concat([amountLabel]).map(h => cell(h, styles.header));
+    const totalCols = headerRow.length;
+    const titleText = `${tabTitle} — ${accrualMonthName(month)} ${year}`;
+    const blankRow = () => Array.from({ length: totalCols }, () => cell(''));
+    const aoa = [
+      [cell(titleText, styles.title)].concat(Array.from({ length: totalCols - 1 }, () => cell('', styles.title))),
+      headerRow
+    ];
+    tabRows.forEach((r, idx) => {
+      const zebra = (idx % 2 === 1) ? styles.zebra : null;
+      aoa.push([
+        cell(r.unitId, mergeStyles(styles.info, zebra)),
+        cell(r.lease, mergeStyles(styles.info, zebra)),
+        cell(r.supplier, mergeStyles(styles.info, zebra)),
+        cell(r.costCenter, mergeStyles(styles.info, zebra)),
+        cell(r.status, mergeStyles(styles.info, zebra)),
+        cell(r.periodText, mergeStyles(styles.info, zebra)),
+        cell(r.days, mergeStyles(styles.info, zebra, { alignment: { horizontal: 'right' } })),
+        cell(r.lastInvoiceAmount, mergeStyles(styles.money, zebra)),
+        cell(r.chargePerDay, mergeStyles(styles.money, zebra)),
+        cell(r[amountKey], mergeStyles(styles.money, zebra))
+      ]);
+    });
+
+    // This tab's own total — sums exactly the rows actually listed above, nothing more.
+    aoa.push(blankRow());
+    const totalRow = blankRow();
+    totalRow[totalCols - 2] = cell(`Total ${amountLabel}:`, styles.tabTotalLabel);
+    totalRow[totalCols - 1] = cell(tabTotal, styles.tabTotalValue);
+    aoa.push(totalRow);
+
+    // Informative overview, in its own separated space below — all three headline figures for
+    // the WHOLE open batch (not just what this tab lists), for cross-reference. Kept visually
+    // distinct (extra blank rows, italic/gray) from the tab's own specific total right above so
+    // the two are never confused with each other.
+    aoa.push(blankRow());
+    aoa.push(blankRow());
+    aoa.push([cell('Overview — whole open batch (informative only)', styles.infoLabel)]);
+    const infoLine = (label, value) => {
+      const r = blankRow();
+      r[totalCols - 2] = cell(label, styles.infoLabel);
+      r[totalCols - 1] = cell(value, styles.infoValue);
+      return r;
+    };
+    aoa.push(infoLine('Total Accumulated:', totalAccumulated));
+    aoa.push(infoLine('Total Current Month:', totalCurrentMonth));
+    aoa.push(infoLine('Total (Accumulated + Current Month):', totalOverall));
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + tabRows.length, c: totalCols - 1 } });
+    ws['!autofilter'] = { ref: range };
+    ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
+    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:24}, {wch:8}, {wch:16}, {wch:12}, {wch:16} ];
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }];
+    return ws;
+  }
+
+  const accumulatedRows = rows.filter(r => r.accumulated !== 0);
+  const currentRows = rows.filter(r => r.currentMonth !== 0);
+
+  const wsAccumulated = buildTabSheet('Accumulated Amounts', 'Accumulated', 'accumulated', accumulatedRows, totalAccumulated);
+  XLSX.utils.book_append_sheet(wb, wsAccumulated, 'Accumulated');
+  const wsCurrent = buildTabSheet('Current Month Amounts', 'Current Month', 'currentMonth', currentRows, totalCurrentMonth);
+  XLSX.utils.book_append_sheet(wb, wsCurrent, 'Current Month');
+
+  const fname = `Accruals_Deliverable_${accrualMonthName(month)}_${year}.xlsx`;
+  try{ XLSX.writeFile(wb, fname); }catch(e){ alert('Failed to save Excel: ' + (e && e.message || e)); }
+}
+
 function closeAccrualsMonth(){
   const { month, year } = getAccrualsOpenMonthYear();
   // Not Accruable records share the same blank-accrualMonth/Year shape as open accruals but
@@ -13124,6 +13326,7 @@ function closeAccrualsMonth(){
   _accrualsLastAccruedUnitId = null;
   _accrualsLastAccruedMissingRows = null;
   _accrualsLastAccruedIds = null;
+  _accrualsLastAccruedMerge = null;
 
   // Follow the view to the newly-open (empty) month so it's obvious the close succeeded.
   _accrualsViewMonth = nextMonth; _accrualsViewYear = nextYear;
@@ -13195,7 +13398,7 @@ function reconcileOpenAccrualsCoverage(){
     const origEnd = isoStrToDate(a.periodEnd);
     if(isNaN(origStart) || isNaN(origEnd)) return;
 
-    const stillMissing = computeUnitMissingPeriods(unit, origStart, origEnd);
+    const stillMissing = computeUnitMissingPeriods(unit, origStart, origEnd, a.id);
 
     if(stillMissing.length === 0){
       toDeleteIds.push(a.id);
@@ -14184,6 +14387,7 @@ function removeAccrualRecord(recordId){
     _accrualsLastAccruedUnitId = null;
     _accrualsLastAccruedMissingRows = null;
     _accrualsLastAccruedIds = null;
+    _accrualsLastAccruedMerge = null;
   }
 
   const unit = (state.units || []).find(u => String(u.unitId || '').trim().toLowerCase() === String(record.unitId || '').trim().toLowerCase());
@@ -14351,6 +14555,8 @@ const accrualsNotAccruableBtnEl = qs('#accrualsNotAccruableBtn');
 if(accrualsNotAccruableBtnEl) accrualsNotAccruableBtnEl.addEventListener('click', markCurrentPeriodNotAccruable);
 const accrualsCloseMonthBtnEl = qs('#accrualsCloseMonthBtn');
 if(accrualsCloseMonthBtnEl) accrualsCloseMonthBtnEl.addEventListener('click', closeAccrualsMonth);
+const accrualsDownloadDeliverableBtnEl = qs('#accrualsDownloadDeliverableBtn');
+if(accrualsDownloadDeliverableBtnEl) accrualsDownloadDeliverableBtnEl.addEventListener('click', downloadAccrualsDeliverable);
 const accrualsAccrueUndoLabelEl = qs('#accrualsAccrueUndoLabel');
 if(accrualsAccrueUndoLabelEl) accrualsAccrueUndoLabelEl.addEventListener('click', undoAccrueUnit);
 
