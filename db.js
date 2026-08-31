@@ -271,6 +271,7 @@ const DB = {
         days: Number(a.days) || 0,
         accrualMonth: String(a.accrualMonth || ''),
         accrualYear: String(a.accrualYear || ''),
+        notAccruable: String(a.notAccruable || ''),
         createdAt: String(a.createdAt || '')
       }));
 
