@@ -2913,10 +2913,14 @@ function getRegistryUnitDetails(r){
 // its own per-unit list) — since quarterly periods can't overlap and a unit can be added or
 // removed independently per period, coverage has to be checked per-period, not against the
 // registry's single overall periodStart/periodEnd + full unit list.
+// unitDetails is included on every slice alongside units (additive — every existing caller
+// only reads .from/.to/.units) so a caller that needs each unit's actual tax/other/charge for
+// that specific period (e.g. the accrual charge estimate) doesn't have to re-derive which
+// period1/periods[] entry a given slice came from all over again.
 function getRegistryCoveragePeriods(reg){
   const hasQuarterlyPeriods = !!(reg.period1From || reg.period1To || (Array.isArray(reg.periods) && reg.periods.length > 0));
   if(!hasQuarterlyPeriods){
-    return [{ from: reg.periodStart || '', to: reg.periodEnd || '', units: Array.isArray(reg.units) ? reg.units : [] }];
+    return [{ from: reg.periodStart || '', to: reg.periodEnd || '', units: Array.isArray(reg.units) ? reg.units : [], unitDetails: Array.isArray(reg.unitDetails) ? reg.unitDetails : [] }];
   }
   const slices = [];
   const period1Units = Array.isArray(reg.unitDetails) && reg.unitDetails.length
@@ -2939,9 +2943,10 @@ function getRegistryCoveragePeriods(reg){
     }
   }
 
-  slices.push({ from: period1From || reg.periodStart || '', to: period1To || reg.periodEnd || '', units: period1Units });
+  slices.push({ from: period1From || reg.periodStart || '', to: period1To || reg.periodEnd || '', units: period1Units, unitDetails: Array.isArray(reg.unitDetails) ? reg.unitDetails : [] });
   otherPeriods.forEach(p => {
-    slices.push({ from: p.fromDate || '', to: p.toDate || '', units: Array.isArray(p.unitDetails) ? p.unitDetails.map(d => d.unit) : [] });
+    const pUnitDetails = Array.isArray(p.unitDetails) ? p.unitDetails : [];
+    slices.push({ from: p.fromDate || '', to: p.toDate || '', units: pUnitDetails.map(d => d.unit), unitDetails: pUnitDetails });
   });
   return slices;
 }
@@ -13132,6 +13137,119 @@ function reconcileOpenAccrualsCoverage(){
   }
 }
 
+// Estimates how much to accrue for one accrual record: pulls the unit's own charge + other
+// charges from its MOST RECENT rental-invoice period ending strictly before this record's own
+// periodStart (accruing May's gap looks at April's invoice, not May's), divides that by however
+// many days THAT invoice period actually covered — periods aren't always a full calendar month,
+// so the full invoice amount would overstate a partial one — then multiplies by however many
+// days THIS accrual record itself covers. Tax is deliberately excluded; only rent (charge) plus
+// named Other Charges make up the base being accrued.
+//
+// Not every unit's prior invoice has been re-registered with the newer per-unit detail
+// breakdown yet — when a qualifying period is located but carries no usable charge, this
+// returns needsUpdate:true and every dollar figure as 0 rather than guessing, so a $0 row in
+// the table is a clear, actionable signal of exactly which invoice still needs updating.
+// Nothing here is persisted onto the accrual record — it's recomputed fresh on every render, so
+// fixing that invoice's detail and revisiting this tab immediately reflects the corrected amount.
+function computeAccrualChargeEstimate(record){
+  const result = {
+    found: false, needsUpdate: true, totalAmount: 0, daysInSourcePeriod: 0, chargePerDay: 0, toBeAccrued: 0,
+    sourceWd: '', sourceDoc: '', sourceFrom: '', sourceTo: '', unitDetail: null
+  };
+  const uidNorm = String(record.unitId || '').trim().toLowerCase();
+  const invoices = state.invoices || [];
+
+  let best = null; // { reg, slice }
+  (state.registries || []).forEach(reg => {
+    let cat = String(reg.category || '').toLowerCase();
+    if(!cat){
+      const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
+      cat = inv ? String(inv.category||'').toLowerCase() : '';
+    }
+    if(cat !== 'rental') return;
+    const slices = getRegistryCoveragePeriods(reg);
+    slices.forEach(slice => {
+      if(!slice.from || !slice.to) return;
+      const inSlice = (slice.units||[]).some(u => String(u).trim().toLowerCase() === uidNorm);
+      if(!inSlice) return;
+      if(!(slice.to < record.periodStart)) return; // must end strictly before this accrual period starts
+      if(!best || slice.to > best.slice.to) best = { reg, slice };
+    });
+  });
+
+  if(!best) return result;
+
+  result.found = true;
+  result.sourceWd = best.reg.wdNumber || '';
+  result.sourceDoc = best.reg.docNumber || '';
+  result.sourceFrom = best.slice.from;
+  result.sourceTo = best.slice.to;
+
+  const unitDetail = (best.slice.unitDetails || []).find(d => String(d.unit||'').trim().toLowerCase() === uidNorm);
+  if(!unitDetail || unitDetail.charge === undefined || unitDetail.charge === null || String(unitDetail.charge).trim() === ''){
+    result.unitDetail = unitDetail || null;
+    return result; // needsUpdate stays true, amounts stay 0
+  }
+
+  result.unitDetail = unitDetail;
+  result.needsUpdate = false;
+  const charge = parseCurrency(unitDetail.charge || '') || 0;
+  const other = parseCurrency(unitDetail.other || '') || 0;
+  result.totalAmount = charge + other;
+
+  const fromD = isoStrToDate(best.slice.from), toD = isoStrToDate(best.slice.to);
+  result.daysInSourcePeriod = (!isNaN(fromD) && !isNaN(toD)) ? Math.round((toD - fromD) / 86400000) + 1 : 0;
+  result.chargePerDay = result.daysInSourcePeriod > 0 ? result.totalAmount / result.daysInSourcePeriod : 0;
+  result.toBeAccrued = result.chargePerDay * (Number(record.days) || 0);
+
+  return result;
+}
+
+// Popup showing exactly what a "Last Invoice Amount" cell's total is built from — the source
+// invoice's period/WD number, its Charge/Other Charges (with named breakdown) or an explicit
+// "needs updating" notice, and the day-count math that turns it into a per-day rate.
+function openAccrualChargeDetail(record, estimate){
+  const modal = qs('#accrualChargeDetailModal');
+  const body = qs('#accrualChargeDetailBody');
+  if(!modal || !body) return;
+
+  const fmtMDY = (iso) => { if(!iso) return ''; const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
+  const row = (label, val) => `<div style="display:flex;justify-content:space-between;gap:16px;padding:3px 0;"><span style="color:#6b7280;">${label}</span><span style="font-weight:600;">${val}</span></div>`;
+
+  let html = `<div style="font-size:13px;color:#374151;margin-bottom:8px;"><strong>${record.unitId}</strong> — accruing ${fmtMDY(record.periodStart)} – ${fmtMDY(record.periodEnd)} (${record.days} day(s))</div>`;
+
+  if(!estimate.found){
+    html += `<div style="background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:6px;padding:10px;font-size:12px;">No rental invoice found for this unit ending before ${fmtMDY(record.periodStart)} — nothing to base an accrual amount on, so this row shows $0.</div>`;
+  } else {
+    html += `<div style="font-size:12px;color:#6b7280;margin-bottom:6px;">Source: WD ${estimate.sourceWd || '(none)'}${estimate.sourceDoc ? ' / Doc ' + estimate.sourceDoc : ''} — ${fmtMDY(estimate.sourceFrom)} – ${fmtMDY(estimate.sourceTo)}</div>`;
+    if(estimate.needsUpdate){
+      html += `<div style="background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:6px;padding:10px;font-size:12px;">This period was found, but it doesn't have a detailed per-unit charge yet — this invoice hasn't been updated with the new invoice registration. Showing $0 until it's updated.</div>`;
+    } else {
+      const ud = estimate.unitDetail || {};
+      const otherDetails = Array.isArray(ud.otherChargeDetails) ? ud.otherChargeDetails : [];
+      html += row('Charge (rent)', formatCurrency(parseCurrency(ud.charge||'')||0));
+      html += row('Other Charges', formatCurrency(parseCurrency(ud.other||'')||0));
+      if(otherDetails.length){
+        html += `<div style="margin:2px 0 6px 12px;font-size:11px;color:#6b7280;">${otherDetails.map(d => `${d.name || '(unnamed)'}: ${formatCurrency(parseCurrency(d.amount||'')||0)}`).join('<br>')}</div>`;
+      }
+      html += `<div style="border-top:1px solid #e6e9ee;margin:6px 0;"></div>`;
+      html += row('Total (source period)', formatCurrency(estimate.totalAmount));
+      html += row('Days in source period', String(estimate.daysInSourcePeriod));
+      html += row('Charge per day', formatCurrency(estimate.chargePerDay));
+      html += row('Days being accrued', String(record.days));
+      html += `<div style="border-top:1px solid #e6e9ee;margin:6px 0;"></div>`;
+      html += row('To be accrued', formatCurrency(estimate.toBeAccrued));
+    }
+  }
+
+  body.innerHTML = html;
+  modal.style.display = 'flex';
+}
+const accrualChargeDetailCloseBtn = qs('#accrualChargeDetailCloseBtn');
+if(accrualChargeDetailCloseBtn) accrualChargeDetailCloseBtn.addEventListener('click', () => { const m = qs('#accrualChargeDetailModal'); if(m) m.style.display = 'none'; });
+const accrualChargeDetailBackdrop = qs('#accrualChargeDetailModal .modal-backdrop');
+if(accrualChargeDetailBackdrop) accrualChargeDetailBackdrop.addEventListener('click', () => { const m = qs('#accrualChargeDetailModal'); if(m) m.style.display = 'none'; });
+
 // Click-to-sort state for "Periods Ready to Accrue" (not persisted).
 let _accrualsAccruedSort = { column: 'unitId', ascending: true };
 
@@ -13212,6 +13330,11 @@ function renderAccrualsAccruedList(){
   tableEl.innerHTML = '';
   if(rows.length === 0) return;
 
+  // Computed fresh every render (never persisted onto the accrual record) so fixing a source
+  // invoice's detail and coming back to this tab immediately reflects the corrected amount.
+  const chargeEstimates = new Map();
+  rows.forEach(r => chargeEstimates.set(r.id, computeAccrualChargeEstimate(r)));
+
   const COLUMNS = [
     { key: 'unitId', label: 'UnitId', get: r => r.unitId },
     { key: 'lease', label: 'Lease', get: r => r.lease },
@@ -13219,7 +13342,10 @@ function renderAccrualsAccruedList(){
     { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
     { key: 'status', label: 'Status', get: r => r.status },
     { key: 'period', label: 'Missing Period', get: r => r.periodStart || '' },
-    { key: 'days', label: 'Days', get: r => Number(r.days) || 0, numeric: true, alignRight: true }
+    { key: 'days', label: 'Days', get: r => Number(r.days) || 0, numeric: true, alignRight: true },
+    { key: 'lastInvoiceAmount', label: 'Last Invoice Amount', get: r => chargeEstimates.get(r.id).totalAmount, numeric: true, alignRight: true },
+    { key: 'chargePerDay', label: 'Charge/Day', get: r => chargeEstimates.get(r.id).chargePerDay, numeric: true, alignRight: true },
+    { key: 'toBeAccrued', label: 'To Be Accrued', get: r => chargeEstimates.get(r.id).toBeAccrued, numeric: true, alignRight: true }
   ];
   const sortCol = COLUMNS.find(c => c.key === _accrualsAccruedSort.column) || COLUMNS[0];
   const ascending = _accrualsAccruedSort.ascending;
@@ -13314,6 +13440,38 @@ function renderAccrualsAccruedList(){
       }
       tr.appendChild(td);
     });
+
+    const estimate = chargeEstimates.get(r.id);
+    const tdLastInvoice = document.createElement('td');
+    tdLastInvoice.textContent = formatCurrency(estimate.totalAmount);
+    tdLastInvoice.style.cssText = 'padding:4px 6px;text-align:right;cursor:pointer;';
+    if(estimate.needsUpdate){
+      // Flags exactly which rows still need their source invoice re-registered with detailed
+      // per-unit charges — a plain $0 alone wouldn't distinguish "needs updating" from a unit
+      // that's genuinely never had a prior invoice.
+      tdLastInvoice.style.color = '#b45309';
+      tdLastInvoice.style.fontWeight = '600';
+      tdLastInvoice.title = estimate.found ? 'Source invoice found but not yet updated with detailed charges — click for details' : 'No prior invoice found for this unit — click for details';
+    } else {
+      tdLastInvoice.style.color = '#0b74de';
+      tdLastInvoice.title = 'Click to see what this amount includes';
+    }
+    tdLastInvoice.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openAccrualChargeDetail(r, estimate);
+    });
+    tr.appendChild(tdLastInvoice);
+
+    const tdPerDay = document.createElement('td');
+    tdPerDay.textContent = formatCurrency(estimate.chargePerDay);
+    tdPerDay.style.cssText = 'padding:4px 6px;text-align:right;';
+    tr.appendChild(tdPerDay);
+
+    const tdToAccrue = document.createElement('td');
+    tdToAccrue.textContent = formatCurrency(estimate.toBeAccrued);
+    tdToAccrue.style.cssText = 'padding:4px 6px;text-align:right;font-weight:600;';
+    tr.appendChild(tdToAccrue);
+
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
