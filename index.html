@@ -1074,15 +1074,32 @@
   <!-- Unit Charge History modal -->
   <div id="unitChargeHistoryModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
     <div class="modal-backdrop"></div>
-    <div class="modal-dialog" role="document" style="max-width:720px;">
-      <h3 id="unitChargeHistoryTitle">Charge History</h3>
+    <div class="modal-dialog" role="document" style="max-width:760px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px;">
+        <h3 id="unitChargeHistoryTitle" style="margin:0;">Charge History</h3>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <span id="unitChargeHistoryNav" style="font-size:12px;color:#6b7280;white-space:nowrap;"></span>
+          <button id="unitChargeHistoryPrev" type="button" title="Previous unit" style="background:#eef2f7;border:none;color:#374151;width:26px;height:26px;border-radius:6px;cursor:pointer;font-size:13px;">‹</button>
+          <button id="unitChargeHistoryNext" type="button" title="Next unit" style="background:#eef2f7;border:none;color:#374151;width:26px;height:26px;border-radius:6px;cursor:pointer;font-size:13px;">›</button>
+        </div>
+      </div>
+      <div id="unitChargeHistoryInfo" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px 16px;background:#f9fafb;border:1px solid #e6e9ee;border-radius:8px;padding:10px 12px;margin-bottom:12px;"></div>
+
       <div id="unitChargeHistoryLegend" style="font-size:11px;color:#6b7280;margin-bottom:10px;"></div>
-      <div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">Last Invoice Amount</div>
+      <div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">Last Invoice Amount <span class="small-muted" style="font-weight:400;text-transform:none;">(click a block to review or use it)</span></div>
       <div id="unitChargeHistoryAmountChart"></div>
       <div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;margin:18px 0 4px;">Charge Per Day</div>
       <div id="unitChargeHistoryPerDayChart"></div>
       <div id="unitChargeHistoryNote" style="display:none;margin-top:10px;background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;font-size:12px;"></div>
-      <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+
+      <div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;margin:16px 0 4px;">Selected Invoice</div>
+      <div id="unitChargeHistoryDetail" class="small-muted" style="font-size:12px;">Click a block above to see that invoice's details before using it to accrue.</div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:8px;">
+        <div style="display:flex;gap:8px;">
+          <button type="button" id="unitChargeHistoryUseBlockBtn" class="btn-primary" disabled>Use Block to Accrue</button>
+          <button type="button" id="unitChargeHistoryResetBtn" class="small-link" style="display:none;">Reset to automatic</button>
+        </div>
         <button type="button" id="unitChargeHistoryCloseBtn">Close</button>
       </div>
     </div>
@@ -1485,8 +1502,8 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.33"></script>
-  <script src="app.js?v=11.33"></script>
-  <script src="pdfImport.js?v=11.33"></script>
+  <script src="db.js?v=11.34"></script>
+  <script src="app.js?v=11.34"></script>
+  <script src="pdfImport.js?v=11.34"></script>
 </body>
 </html>

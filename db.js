@@ -279,6 +279,11 @@ const DB = {
         accrualMonth: String(a.accrualMonth || ''),
         accrualYear: String(a.accrualYear || ''),
         notAccruable: String(a.notAccruable || ''),
+        // Set when an operator picks a specific historical period via the Charge History
+        // chart's "Use Block to Accrue" instead of the automatic closest-prior-period pick —
+        // see computeAccrualChargeEstimate in app.js.
+        overrideSourceFrom: String(a.overrideSourceFrom || ''),
+        overrideSourceTo: String(a.overrideSourceTo || ''),
         createdAt: String(a.createdAt || '')
       }));
 

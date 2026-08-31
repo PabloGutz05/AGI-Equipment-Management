@@ -5175,6 +5175,8 @@ function startAutoRefresh(){
           accrualMonth: String(a.accrualMonth || ''),
           accrualYear: String(a.accrualYear || ''),
           notAccruable: String(a.notAccruable || ''),
+          overrideSourceFrom: String(a.overrideSourceFrom || ''),
+          overrideSourceTo: String(a.overrideSourceTo || ''),
           createdAt: String(a.createdAt || '')
         }));
       }
@@ -13258,58 +13260,78 @@ function reconcileOpenAccrualsCoverage(){
 // the table is a clear, actionable signal of exactly which invoice still needs updating.
 // Nothing here is persisted onto the accrual record — it's recomputed fresh on every render, so
 // fixing that invoice's detail and revisiting this tab immediately reflects the corrected amount.
+//
+// Built on top of computeUnitChargeHistory (every period ever invoiced for this unit) so both
+// stay in agreement — the natural pick here is just that same history's closest-prior period.
+// An operator can override that pick from the Charge History chart's "Use Block to Accrue"
+// (see applyAccrualOverride/clearAccrualOverride) when the usual invoice looks unusually low or
+// turns out to have an error — record.overrideSourceFrom/To, once set, take precedence over the
+// natural pick; isOverridden reports whether that override actually changed anything (so the
+// "!" indicator only ever shows when it's meaningfully different from what would've been picked
+// automatically anyway).
 function computeAccrualChargeEstimate(record){
   const result = {
-    found: false, needsUpdate: true, totalAmount: 0, daysInSourcePeriod: 0, chargePerDay: 0, toBeAccrued: 0,
-    sourceWd: '', sourceDoc: '', sourceFrom: '', sourceTo: '', unitDetail: null
+    found: false, needsUpdate: true, totalAmount: 0, otherAmount: 0, daysInSourcePeriod: 0, chargePerDay: 0, toBeAccrued: 0,
+    sourceWd: '', sourceDoc: '', sourceFrom: '', sourceTo: '', unitDetail: null, isOverridden: false
   };
-  const uidNorm = String(record.unitId || '').trim().toLowerCase();
-  const invoices = state.invoices || [];
 
-  let best = null; // { reg, slice }
-  (state.registries || []).forEach(reg => {
-    let cat = String(reg.category || '').toLowerCase();
-    if(!cat){
-      const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
-      cat = inv ? String(inv.category||'').toLowerCase() : '';
-    }
-    if(cat !== 'rental') return;
-    const slices = getRegistryCoveragePeriods(reg);
-    slices.forEach(slice => {
-      if(!slice.from || !slice.to) return;
-      const inSlice = (slice.units||[]).some(u => String(u).trim().toLowerCase() === uidNorm);
-      if(!inSlice) return;
-      if(!(slice.to < record.periodStart)) return; // must end strictly before this accrual period starts
-      if(!best || slice.to > best.slice.to) best = { reg, slice };
-    });
+  const history = computeUnitChargeHistory(record.unitId);
+
+  let naturalPoint = null;
+  history.forEach(p => {
+    if(!(p.to < record.periodStart)) return;
+    if(!naturalPoint || p.to > naturalPoint.to) naturalPoint = p;
   });
 
-  if(!best) return result;
-
-  result.found = true;
-  result.sourceWd = best.reg.wdNumber || '';
-  result.sourceDoc = best.reg.docNumber || '';
-  result.sourceFrom = best.slice.from;
-  result.sourceTo = best.slice.to;
-
-  const unitDetail = (best.slice.unitDetails || []).find(d => String(d.unit||'').trim().toLowerCase() === uidNorm);
-  if(!unitDetail || unitDetail.charge === undefined || unitDetail.charge === null || String(unitDetail.charge).trim() === ''){
-    result.unitDetail = unitDetail || null;
-    return result; // needsUpdate stays true, amounts stay 0
+  let chosenPoint = naturalPoint;
+  if(record.overrideSourceFrom && record.overrideSourceTo){
+    const overridePoint = history.find(p => p.from === record.overrideSourceFrom && p.to === record.overrideSourceTo);
+    if(overridePoint){
+      chosenPoint = overridePoint;
+      result.isOverridden = !naturalPoint || naturalPoint.from !== overridePoint.from || naturalPoint.to !== overridePoint.to;
+    }
   }
 
-  result.unitDetail = unitDetail;
-  result.needsUpdate = false;
-  const charge = parseCurrency(unitDetail.charge || '') || 0;
-  const other = parseCurrency(unitDetail.other || '') || 0;
-  result.totalAmount = charge + other;
+  if(!chosenPoint) return result;
 
-  const fromD = isoStrToDate(best.slice.from), toD = isoStrToDate(best.slice.to);
-  result.daysInSourcePeriod = (!isNaN(fromD) && !isNaN(toD)) ? Math.round((toD - fromD) / 86400000) + 1 : 0;
-  result.chargePerDay = result.daysInSourcePeriod > 0 ? result.totalAmount / result.daysInSourcePeriod : 0;
+  result.found = true;
+  result.sourceWd = chosenPoint.sourceWd;
+  result.sourceDoc = chosenPoint.sourceDoc;
+  result.sourceFrom = chosenPoint.from;
+  result.sourceTo = chosenPoint.to;
+  result.unitDetail = chosenPoint.unitDetail;
+  result.needsUpdate = chosenPoint.needsUpdate;
+  result.totalAmount = chosenPoint.totalAmount;
+  result.otherAmount = chosenPoint.otherAmount;
+  result.daysInSourcePeriod = chosenPoint.days;
+  result.chargePerDay = chosenPoint.chargePerDay;
   result.toBeAccrued = result.chargePerDay * (Number(record.days) || 0);
 
   return result;
+}
+
+// Persists an operator's pick of a specific historical period (a block clicked in the Charge
+// History chart) as the source for this record's accrual calculation, superseding the natural
+// closest-prior pick — for when the usual invoice looks unusually low or turns out to have an
+// error. Recomputes and re-renders "Periods Ready to Accrue" immediately so the new amount (and
+// its "!" indicator, if this actually changed anything) show up without waiting on a refresh.
+function applyAccrualOverride(record, point){
+  record.overrideSourceFrom = point.from;
+  record.overrideSourceTo = point.to;
+  _accrualsSyncInFlight = true;
+  DB.updateAccrual(record).catch(e => console.error('Accrual override save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  try{ saveState(); }catch(e){}
+  if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList();
+}
+
+// Reverts a record back to the automatic closest-prior-period pick.
+function clearAccrualOverride(record){
+  record.overrideSourceFrom = '';
+  record.overrideSourceTo = '';
+  _accrualsSyncInFlight = true;
+  DB.updateAccrual(record).catch(e => console.error('Accrual override clear error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  try{ saveState(); }catch(e){}
+  if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList();
 }
 
 // Every rental period a unit has ever actually been invoiced for, chronologically — the same
@@ -13352,7 +13374,9 @@ function computeUnitChargeHistory(unitId){
 
       points.push({
         from: slice.from, to: slice.to, totalAmount, otherAmount: other, days, chargePerDay, otherPerDay,
-        needsUpdate: !hasDetail, sourceWd: reg.wdNumber || '', sourceDoc: reg.docNumber || ''
+        needsUpdate: !hasDetail, sourceWd: reg.wdNumber || '', sourceDoc: reg.docNumber || '',
+        unitDetail: unitDetail || null,
+        otherChargeDetails: (hasDetail && Array.isArray(unitDetail.otherChargeDetails)) ? unitDetail.otherChargeDetails : []
       });
     });
   });
@@ -13440,6 +13464,14 @@ function renderHistoryBarChart(containerEl, points, opts){
     const barTopY = baselineY - Math.max(barH, 0);
     const barX = cx - barW / 2;
 
+    if(i === opts.selectedIndex){
+      const highlight = document.createElementNS(svgNS, 'rect');
+      highlight.setAttribute('x', padLeft + colW * i); highlight.setAttribute('y', padTop);
+      highlight.setAttribute('width', colW); highlight.setAttribute('height', plotH);
+      highlight.setAttribute('fill', opts.selectedColor || 'rgba(11,116,222,0.08)');
+      svg.appendChild(highlight);
+    }
+
     const rect = document.createElementNS(svgNS, 'rect');
     rect.setAttribute('x', barX); rect.setAttribute('y', barTopY);
     rect.setAttribute('width', barW); rect.setAttribute('height', Math.max(barH, 0));
@@ -13488,10 +13520,26 @@ function renderHistoryBarChart(containerEl, points, opts){
     xLabel.textContent = p.label;
     svg.appendChild(xLabel);
 
+    // A full-height, invisible hit target spanning the whole column (not just the bar itself)
+    // — added last so it sits on top of everything and clicking anywhere in the column selects
+    // it, not just the (sometimes very short) visible bar.
+    if(typeof opts.onBlockClick === 'function'){
+      const hitRect = document.createElementNS(svgNS, 'rect');
+      hitRect.setAttribute('x', padLeft + colW * i); hitRect.setAttribute('y', padTop);
+      hitRect.setAttribute('width', colW); hitRect.setAttribute('height', plotH);
+      hitRect.setAttribute('fill', 'transparent');
+      hitRect.style.cursor = 'pointer';
+      hitRect.addEventListener('click', () => opts.onBlockClick(p, i));
+      svg.appendChild(hitRect);
+    }
+
     dotPoints.push({ x: cx, y: barTopY });
   });
 
-  // Both trend series are drawn after every bar so neither ever ends up hidden behind one.
+  // Both trend series are drawn after every bar (and after the per-column hit targets) so
+  // neither ever ends up hidden behind one — but that puts them visually on top of the hit
+  // targets too, so pointer-events:none on the line/dots lets a click land on whichever one of
+  // them happens to visually sit there pass straight through to the hit target underneath.
   const addTrendSeries = (pts, color) => {
     if(pts.length > 1){
       const polyline = document.createElementNS(svgNS, 'polyline');
@@ -13499,6 +13547,7 @@ function renderHistoryBarChart(containerEl, points, opts){
       polyline.setAttribute('fill', 'none');
       polyline.setAttribute('stroke', color);
       polyline.setAttribute('stroke-width', '2');
+      polyline.style.pointerEvents = 'none';
       svg.appendChild(polyline);
     }
     pts.forEach(d => {
@@ -13506,6 +13555,7 @@ function renderHistoryBarChart(containerEl, points, opts){
       circle.setAttribute('cx', d.x); circle.setAttribute('cy', d.y); circle.setAttribute('r', 4);
       circle.setAttribute('fill', color);
       circle.setAttribute('stroke', '#fff'); circle.setAttribute('stroke-width', '1.5');
+      circle.style.pointerEvents = 'none';
       svg.appendChild(circle);
     });
   };
@@ -13515,29 +13565,123 @@ function renderHistoryBarChart(containerEl, points, opts){
   containerEl.appendChild(svg);
 }
 
-// Opens the Charge History modal for one unit: two of the bar+trend charts above, one for
-// Last Invoice Amount and one for Charge/Day, both built from the exact same period data
-// (computeUnitChargeHistory) so the two always agree with each other and with the estimate
-// shown on "Periods Ready to Accrue".
-function openUnitChargeHistoryModal(unitId){
+// Tracks Prev/Next navigation across whichever accrual records the modal was opened from
+// (normally every row currently shown in "Periods Ready to Accrue"), and which historical
+// block (if any) the operator has clicked on for the unit currently being viewed.
+let _unitChargeHistoryRecordList = [];
+let _unitChargeHistoryIndex = 0;
+let _unitChargeHistorySelectedPoint = null;
+
+// Opens the Charge History modal for one accrual record's unit. recordList is the full set of
+// records to page through with Prev/Next (normally every row in "Periods Ready to Accrue") —
+// omit it to keep whatever list is already loaded (e.g. when re-opening after an edit).
+function openUnitChargeHistoryModal(record, recordList){
+  if(!record) return;
+  if(Array.isArray(recordList) && recordList.length > 0){
+    _unitChargeHistoryRecordList = recordList;
+  } else if(_unitChargeHistoryRecordList.length === 0){
+    _unitChargeHistoryRecordList = [record];
+  }
+  _unitChargeHistoryIndex = _unitChargeHistoryRecordList.findIndex(r => r.id === record.id);
+  if(_unitChargeHistoryIndex === -1) _unitChargeHistoryIndex = 0;
+  _unitChargeHistorySelectedPoint = null;
+
+  renderUnitChargeHistoryModal();
   const modal = qs('#unitChargeHistoryModal');
-  const titleEl = qs('#unitChargeHistoryTitle');
+  if(modal) modal.style.display = 'flex';
+}
+
+function renderUnitChargeHistoryModal(){
+  const record = _unitChargeHistoryRecordList[_unitChargeHistoryIndex];
+  const modal = qs('#unitChargeHistoryModal');
   const amountChartEl = qs('#unitChargeHistoryAmountChart');
   const perDayChartEl = qs('#unitChargeHistoryPerDayChart');
-  if(!modal || !amountChartEl || !perDayChartEl) return;
+  if(!record || !modal || !amountChartEl || !perDayChartEl) return;
+
+  const unitId = record.unitId;
+  const unit = (state.units || []).find(u => String(u.unitId || '').trim().toLowerCase() === String(unitId || '').trim().toLowerCase());
+
+  const titleEl = qs('#unitChargeHistoryTitle');
+  if(titleEl) titleEl.textContent = unitId + ' — Charge History';
+
+  const navEl = qs('#unitChargeHistoryNav');
+  if(navEl) navEl.textContent = `${_unitChargeHistoryIndex + 1} / ${_unitChargeHistoryRecordList.length}`;
+  const prevBtn = qs('#unitChargeHistoryPrev');
+  const nextBtn = qs('#unitChargeHistoryNext');
+  if(prevBtn){
+    prevBtn.style.opacity = _unitChargeHistoryIndex === 0 ? '0.3' : '1';
+    prevBtn.onclick = () => {
+      if(_unitChargeHistoryIndex > 0){
+        _unitChargeHistoryIndex--;
+        _unitChargeHistorySelectedPoint = null;
+        renderUnitChargeHistoryModal();
+      }
+    };
+  }
+  if(nextBtn){
+    nextBtn.style.opacity = _unitChargeHistoryIndex === _unitChargeHistoryRecordList.length - 1 ? '0.3' : '1';
+    nextBtn.onclick = () => {
+      if(_unitChargeHistoryIndex < _unitChargeHistoryRecordList.length - 1){
+        _unitChargeHistoryIndex++;
+        _unitChargeHistorySelectedPoint = null;
+        renderUnitChargeHistoryModal();
+      }
+    };
+  }
+
+  // Same general unit info shown at the top of the coverage-history popup, so there's no need
+  // to cross-reference the other modal just to confirm which lease/supplier/cost center this is.
+  const infoEl = qs('#unitChargeHistoryInfo');
+  if(infoEl){
+    const fields = [
+      { label: 'SUPPLIER', value: unit ? (unit.supplier || '—') : '—' },
+      { label: 'LEASE', value: unit ? (unit.lease || '—') : '—' },
+      { label: 'ARRANGEMENT', value: unit ? (unit.arrangement || '—') : '—' },
+      { label: 'INVOICING', value: unit ? (unit.invoicing || '—') : '—' },
+      { label: 'COST CENTER', value: unit ? (unit.costCenter || '—') : '—' },
+      { label: 'COMPANY', value: unit ? (unit.company || '—') : '—' }
+    ];
+    infoEl.innerHTML = fields.map(f => `
+      <div>
+        <div style="font-size:10px;font-weight:700;color:#9ca3af;letter-spacing:0.6px;text-transform:uppercase;margin-bottom:2px;">${f.label}</div>
+        <div style="font-size:12px;font-weight:600;color:#374151;">${escapeHtml(f.value)}</div>
+      </div>
+    `).join('');
+  }
 
   const history = computeUnitChargeHistory(unitId);
-  if(titleEl) titleEl.textContent = unitId + ' — Charge History';
+  const estimate = computeAccrualChargeEstimate(record);
+  // Only an open (not yet closed-month) record can have its accrual source overridden — a
+  // closed month is a locked historical statement everywhere else in this workflow too.
+  const isOpenRecord = !record.accrualMonth && !record.accrualYear;
 
   const labelFor = (p) => {
     const d = isoStrToDate(p.from);
     return isNaN(d) ? p.from : accrualMonthName(d.getMonth()+1).slice(0,3) + ' ' + String(d.getFullYear()).slice(2);
   };
 
+  // Highlight whichever block the operator just clicked; absent a fresh click, highlight
+  // whichever period is actually in use for this record right now (the override if one's set,
+  // otherwise the natural pick) so it's obvious at a glance where today's number comes from.
+  const selectedIndex = _unitChargeHistorySelectedPoint
+    ? history.findIndex(p => p.from === _unitChargeHistorySelectedPoint.from && p.to === _unitChargeHistorySelectedPoint.to)
+    : history.findIndex(p => p.from === estimate.sourceFrom && p.to === estimate.sourceTo);
+  const selectedPoint = selectedIndex !== -1 ? history[selectedIndex] : null;
+
+  // renderHistoryBarChart only knows about the mapped {label, value, subValue} chart points, not
+  // the full history record — look the real one up by index (both arrays are the same length,
+  // built from the same history.map(...) call, so the positions always correspond 1:1).
+  const onBlockClick = (p, i) => {
+    _unitChargeHistorySelectedPoint = history[i];
+    renderUnitChargeHistoryModal();
+  };
+
   renderHistoryBarChart(amountChartEl, history.map(p => ({ label: labelFor(p), value: p.totalAmount, subValue: p.otherAmount })),
-    { barColor: '#93c5fd', lineColor: '#1d4ed8', subBarColor: '#fbbf24', subLineColor: '#b45309', emptyMessage: 'No invoice history found for this unit.' });
+    { barColor: '#93c5fd', lineColor: '#1d4ed8', subBarColor: '#fbbf24', subLineColor: '#b45309',
+      emptyMessage: 'No invoice history found for this unit.', onBlockClick, selectedIndex });
   renderHistoryBarChart(perDayChartEl, history.map(p => ({ label: labelFor(p), value: p.chargePerDay, subValue: p.otherPerDay })),
-    { barColor: '#fdba74', lineColor: '#c2410c', subBarColor: '#c4b5fd', subLineColor: '#6d28d9', emptyMessage: 'No invoice history found for this unit.' });
+    { barColor: '#fdba74', lineColor: '#c2410c', subBarColor: '#c4b5fd', subLineColor: '#6d28d9',
+      emptyMessage: 'No invoice history found for this unit.', onBlockClick, selectedIndex });
 
   const legendEl = qs('#unitChargeHistoryLegend');
   if(legendEl){
@@ -13553,7 +13697,60 @@ function openUnitChargeHistoryModal(unitId){
     noteEl.style.display = needsUpdateCount > 0 ? 'block' : 'none';
   }
 
-  modal.style.display = 'flex';
+  // Invoice detail for whichever block is selected — the same information the coverage-history
+  // popup shows for a day's invoice, so the operator can double-check it before committing to
+  // "Use Block to Accrue".
+  const detailEl = qs('#unitChargeHistoryDetail');
+  if(detailEl){
+    if(!selectedPoint){
+      detailEl.innerHTML = "Click a block above to see that invoice's details before using it to accrue.";
+    } else {
+      const fmtMDY = (iso) => { if(!iso) return ''; const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
+      const row = (label, val) => `<div style="display:flex;justify-content:space-between;gap:16px;padding:2px 0;"><span style="color:#6b7280;">${label}</span><span style="font-weight:600;">${val}</span></div>`;
+      let html = `<div style="background:#f9fafb;border:1px solid #e6e9ee;border-radius:8px;padding:10px 12px;">`;
+      html += `<div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:4px;">📄 WD ${escapeHtml(selectedPoint.sourceWd || '(none)')}${selectedPoint.sourceDoc ? ' / Doc ' + escapeHtml(selectedPoint.sourceDoc) : ''}</div>`;
+      html += `<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">📅 ${fmtMDY(selectedPoint.from)} – ${fmtMDY(selectedPoint.to)} (${selectedPoint.days} day(s))</div>`;
+      if(selectedPoint.needsUpdate){
+        html += `<div style="background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;font-size:12px;">This invoice hasn't been updated with the detailed per-unit breakdown yet — shown as $0 until it is.</div>`;
+      } else {
+        const ud = selectedPoint.unitDetail || {};
+        html += row('Charge (rent)', formatCurrency(parseCurrency(ud.charge || '') || 0));
+        html += row('Other Charges', formatCurrency(selectedPoint.otherAmount));
+        if(selectedPoint.otherChargeDetails.length){
+          html += `<div style="margin:2px 0 4px 12px;font-size:11px;color:#6b7280;">${selectedPoint.otherChargeDetails.map(d => `${escapeHtml(d.name || '(unnamed)')}: ${formatCurrency(parseCurrency(d.amount || '') || 0)}`).join('<br>')}</div>`;
+        }
+        html += `<div style="border-top:1px solid #e6e9ee;margin:6px 0;"></div>`;
+        html += row('Total', formatCurrency(selectedPoint.totalAmount));
+        html += row('Charge per day', formatCurrency(selectedPoint.chargePerDay));
+      }
+      html += `</div>`;
+      detailEl.innerHTML = html;
+    }
+  }
+
+  const useBlockBtn = qs('#unitChargeHistoryUseBlockBtn');
+  const resetBtn = qs('#unitChargeHistoryResetBtn');
+  const alreadyUsingSelected = !!(selectedPoint && estimate.sourceFrom === selectedPoint.from && estimate.sourceTo === selectedPoint.to);
+  if(useBlockBtn){
+    useBlockBtn.disabled = !selectedPoint || !isOpenRecord || alreadyUsingSelected;
+    useBlockBtn.style.opacity = useBlockBtn.disabled ? '0.5' : '1';
+    useBlockBtn.style.cursor = useBlockBtn.disabled ? 'not-allowed' : 'pointer';
+    useBlockBtn.textContent = alreadyUsingSelected ? 'Already Using This Block' : 'Use Block to Accrue';
+    useBlockBtn.title = isOpenRecord ? '' : "This month is already closed — an override can't change a locked accrual.";
+    useBlockBtn.onclick = () => {
+      if(!selectedPoint || !isOpenRecord) return;
+      applyAccrualOverride(record, selectedPoint);
+      renderUnitChargeHistoryModal();
+    };
+  }
+  if(resetBtn){
+    resetBtn.style.display = (record.overrideSourceFrom && isOpenRecord) ? 'inline-block' : 'none';
+    resetBtn.onclick = () => {
+      clearAccrualOverride(record);
+      _unitChargeHistorySelectedPoint = null;
+      renderUnitChargeHistoryModal();
+    };
+  }
 }
 const unitChargeHistoryCloseBtn = qs('#unitChargeHistoryCloseBtn');
 if(unitChargeHistoryCloseBtn) unitChargeHistoryCloseBtn.addEventListener('click', () => { const m = qs('#unitChargeHistoryModal'); if(m) m.style.display = 'none'; });
@@ -13594,7 +13791,7 @@ function splitAccrualAmountByViewMonth(record, chargePerDay, viewMonth, viewYear
 // Popup showing exactly what a "Last Invoice Amount" cell's total is built from — the source
 // invoice's period/WD number, its Charge/Other Charges (with named breakdown) or an explicit
 // "needs updating" notice, and the day-count math that turns it into a per-day rate.
-function openAccrualChargeDetail(record, estimate){
+function openAccrualChargeDetail(record, estimate, recordList){
   const modal = qs('#accrualChargeDetailModal');
   const body = qs('#accrualChargeDetailBody');
   if(!modal || !body) return;
@@ -13635,15 +13832,17 @@ function openAccrualChargeDetail(record, estimate){
   }
 
   body.innerHTML = html;
-  _accrualChargeDetailUnitId = record.unitId;
+  _accrualChargeDetailRecord = record;
+  _accrualChargeDetailRecordList = Array.isArray(recordList) && recordList.length > 0 ? recordList : [record];
   modal.style.display = 'flex';
 }
-let _accrualChargeDetailUnitId = null;
+let _accrualChargeDetailRecord = null;
+let _accrualChargeDetailRecordList = [];
 const accrualChargeDetailCloseBtn = qs('#accrualChargeDetailCloseBtn');
 if(accrualChargeDetailCloseBtn) accrualChargeDetailCloseBtn.addEventListener('click', () => { const m = qs('#accrualChargeDetailModal'); if(m) m.style.display = 'none'; });
 const accrualChargeDetailHistoryBtn = qs('#accrualChargeDetailHistoryBtn');
 if(accrualChargeDetailHistoryBtn) accrualChargeDetailHistoryBtn.addEventListener('click', () => {
-  if(_accrualChargeDetailUnitId) openUnitChargeHistoryModal(_accrualChargeDetailUnitId);
+  if(_accrualChargeDetailRecord) openUnitChargeHistoryModal(_accrualChargeDetailRecord, _accrualChargeDetailRecordList);
 });
 const accrualChargeDetailBackdrop = qs('#accrualChargeDetailModal .modal-backdrop');
 if(accrualChargeDetailBackdrop) accrualChargeDetailBackdrop.addEventListener('click', () => { const m = qs('#accrualChargeDetailModal'); if(m) m.style.display = 'none'; });
@@ -13863,8 +14062,18 @@ function renderAccrualsAccruedList(){
 
     const estimate = chargeEstimates.get(r.id);
     const tdLastInvoice = document.createElement('td');
-    tdLastInvoice.textContent = formatCurrency(estimate.totalAmount);
     tdLastInvoice.style.cssText = 'padding:4px 6px;text-align:right;cursor:pointer;';
+    if(estimate.isOverridden){
+      // Flags a row whose accrual source was manually picked (via the Charge History chart's
+      // "Use Block to Accrue") rather than the automatic closest-prior-period — so it's obvious
+      // at a glance which numbers reflect an operator's judgment call, not the default pick.
+      const overrideMark = document.createElement('span');
+      overrideMark.textContent = '! ';
+      overrideMark.style.cssText = 'color:#dc2626;font-weight:800;';
+      overrideMark.title = 'This amount was manually selected from a different period than the usual most-recent invoice — click for details';
+      tdLastInvoice.appendChild(overrideMark);
+    }
+    tdLastInvoice.appendChild(document.createTextNode(formatCurrency(estimate.totalAmount)));
     if(estimate.needsUpdate){
       // Flags exactly which rows still need their source invoice re-registered with detailed
       // per-unit charges — a plain $0 alone wouldn't distinguish "needs updating" from a unit
@@ -13874,11 +14083,11 @@ function renderAccrualsAccruedList(){
       tdLastInvoice.title = estimate.found ? 'Source invoice found but not yet updated with detailed charges — click for details' : 'No prior invoice found for this unit — click for details';
     } else {
       tdLastInvoice.style.color = '#0b74de';
-      tdLastInvoice.title = 'Click to see what this amount includes';
+      tdLastInvoice.title = estimate.isOverridden ? 'Manually selected amount — click for details' : 'Click to see what this amount includes';
     }
     tdLastInvoice.addEventListener('click', (e) => {
       e.stopPropagation();
-      openAccrualChargeDetail(r, estimate);
+      openAccrualChargeDetail(r, estimate, rows);
     });
     tr.appendChild(tdLastInvoice);
 
@@ -13888,7 +14097,7 @@ function renderAccrualsAccruedList(){
     tdPerDay.title = "View this unit's Charge/Day and Last Invoice Amount history";
     tdPerDay.addEventListener('click', (e) => {
       e.stopPropagation();
-      openUnitChargeHistoryModal(r.unitId);
+      openUnitChargeHistoryModal(r, rows);
     });
     tr.appendChild(tdPerDay);
 
