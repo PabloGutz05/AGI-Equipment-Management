@@ -14123,6 +14123,46 @@ function renderAccrualsAccruedList(){
   });
   table.appendChild(tbody);
 
+  // Footer totals row -- lets the operator see the batch's grand totals (what's already
+  // accumulated through last month, what this month alone adds, and the combined total that
+  // will hit the books) without having to add up every row by hand.
+  const totalAccumulated = rows.reduce((sum, r) => sum + monthSplits.get(r.id).accumulatedAmount, 0);
+  const totalCurrentMonth = rows.reduce((sum, r) => sum + monthSplits.get(r.id).currentMonthAmount, 0);
+  const totalAccrued = rows.reduce((sum, r) => sum + monthSplits.get(r.id).totalAmount, 0);
+
+  const tfoot = document.createElement('tfoot');
+  const footRow = document.createElement('tr');
+  footRow.style.cssText = 'border-top:2px solid #d1d5db;background:#f9fafb;font-weight:700;';
+
+  const tdFootLabel = document.createElement('td');
+  tdFootLabel.textContent = 'Totals';
+  // Spans everything up through Charge/Day -- i.e. every column except the three amount
+  // columns being summed -- regardless of whether the leading Remove column is present.
+  tdFootLabel.colSpan = (isViewingOpenMonth ? 1 : 0) + 1 + 9;
+  tdFootLabel.style.cssText = 'padding:6px;text-align:right;color:#374151;';
+  footRow.appendChild(tdFootLabel);
+
+  const tdFootAccumulated = document.createElement('td');
+  tdFootAccumulated.textContent = formatCurrency(totalAccumulated);
+  tdFootAccumulated.title = 'Total Accumulated';
+  tdFootAccumulated.style.cssText = 'padding:6px;text-align:right;';
+  footRow.appendChild(tdFootAccumulated);
+
+  const tdFootCurrentMonth = document.createElement('td');
+  tdFootCurrentMonth.textContent = formatCurrency(totalCurrentMonth);
+  tdFootCurrentMonth.title = 'Charge for this month';
+  tdFootCurrentMonth.style.cssText = 'padding:6px;text-align:right;';
+  footRow.appendChild(tdFootCurrentMonth);
+
+  const tdFootTotal = document.createElement('td');
+  tdFootTotal.textContent = formatCurrency(totalAccrued);
+  tdFootTotal.title = 'Total Amount Accruals';
+  tdFootTotal.style.cssText = 'padding:6px;text-align:right;';
+  footRow.appendChild(tdFootTotal);
+
+  tfoot.appendChild(footRow);
+  table.appendChild(tfoot);
+
   tableEl.appendChild(table);
 }
 
