@@ -59,7 +59,14 @@ function _invoiceTrackingFromSheetRow(row){
 
 const DB = {
 
-  _fetchWithTimeout(fetchPromise, ms = 30000) {
+  // 60s (was 30s): measured directly against the live backend, a single "Manual Coverage"
+  // fetch alone took up to ~34.5s under real contention (every request — read or write, from
+  // any operator — serializes through one global Apps Script lock), so 30s was already too
+  // tight for the current data volume and was throwing "Request timed out" on ordinary page
+  // loads, not just under unusual load. This is the default for every DB.get/DB.post call that
+  // doesn't pass its own ms — including loadAll()'s initial fetch — so it's deliberately
+  // generous rather than tuned to today's exact worst case, since that sheet keeps growing.
+  _fetchWithTimeout(fetchPromise, ms = 60000) {
     return Promise.race([
       fetchPromise,
       new Promise((_, reject) =>
