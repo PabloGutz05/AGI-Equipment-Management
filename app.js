@@ -11393,8 +11393,10 @@ function renderUnitDetailModal(unitId) {
   );
   if(!unit) return;
 
-  window.currentWdNumbersYear = window.currentWdNumbersYear || new Date().getFullYear();
-  window.currentWdNumbersMonth = window.currentWdNumbersMonth || new Date().getMonth();
+  // ?? (not ||) -- month 0 (January) is a legitimate, meaningful value that || would otherwise
+  // treat as "unset" and silently replace with today's month instead.
+  window.currentWdNumbersYear = window.currentWdNumbersYear ?? new Date().getFullYear();
+  window.currentWdNumbersMonth = window.currentWdNumbersMonth ?? new Date().getMonth();
 
   // --- Header ---
   const titleEl = qs('#unitDetailTitle');
@@ -13049,10 +13051,95 @@ function updateAccrueUnitButton(){
   }
 }
 
+// Whenever a period sitting in "Periods Ready to Accrue" gets covered by a real invoice (or a
+// manual-coverage mark) after it was added, the accrual no longer represents a genuine gap —
+// leaving it as-is would double count that period. This ONLY ever touches OPEN records (no
+// accrualMonth/accrualYear yet) — once a month is closed via "Close Month Accruals" its records
+// are a locked historical statement and must never be silently altered just because coverage
+// changed afterward, even if that coverage would have fully or partially resolved it.
+//
+// Reuses computeUnitMissingPeriods (the exact same day-by-day coverage check driving the
+// Missing Periods table) restricted to each open record's own original date range, then
+// reconciles:
+//   - no longer missing at all      -> delete the accrual record entirely
+//   - still exactly the same range  -> leave untouched
+//   - shrunk to one sub-range       -> update this record's period/days in place
+//   - split into 2+ sub-ranges (coverage carved out the middle) -> shrink this record to the
+//     first surviving piece and create a new open record for each additional piece
+function reconcileOpenAccrualsCoverage(){
+  const openAccruals = (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear);
+  if(openAccruals.length === 0) return;
+
+  const toDeleteIds = [];
+  const toUpdate = [];
+  const toCreate = [];
+
+  openAccruals.forEach(a => {
+    const unit = (state.units || []).find(u => String(u.unitId || '').trim().toLowerCase() === String(a.unitId || '').trim().toLowerCase());
+    if(!unit) return;
+    const origStart = isoStrToDate(a.periodStart);
+    const origEnd = isoStrToDate(a.periodEnd);
+    if(isNaN(origStart) || isNaN(origEnd)) return;
+
+    const stillMissing = computeUnitMissingPeriods(unit, origStart, origEnd);
+
+    if(stillMissing.length === 0){
+      toDeleteIds.push(a.id);
+      return;
+    }
+
+    const first = stillMissing[0];
+    const firstStartStr = dateToIsoStr(first.start), firstEndStr = dateToIsoStr(first.end);
+    if(stillMissing.length === 1 && firstStartStr === a.periodStart && firstEndStr === a.periodEnd) return; // unchanged
+
+    const firstDays = Math.round((first.end - first.start) / 86400000) + 1;
+    toUpdate.push({ id: a.id, periodStart: firstStartStr, periodEnd: firstEndStr, days: firstDays });
+
+    stillMissing.slice(1).forEach(seg => {
+      const days = Math.round((seg.end - seg.start) / 86400000) + 1;
+      toCreate.push({
+        id: id(), unitId: a.unitId, lease: a.lease, supplier: a.supplier, costCenter: a.costCenter, status: a.status,
+        periodStart: dateToIsoStr(seg.start), periodEnd: dateToIsoStr(seg.end), days,
+        accrualMonth: '', accrualYear: '', createdAt: new Date().toISOString()
+      });
+    });
+  });
+
+  if(toDeleteIds.length === 0 && toUpdate.length === 0 && toCreate.length === 0) return;
+
+  // Apply locally first so whichever render triggered this reflects it immediately, then
+  // persist in the background — same _accrualsSyncInFlight-tracked pattern as every other
+  // Accruals mutation, so the 60s auto-refresh can't land mid-reconcile and revert it.
+  state.accruals = state.accruals.filter(a => toDeleteIds.indexOf(a.id) === -1);
+  toUpdate.forEach(u => {
+    const rec = state.accruals.find(a => a.id === u.id);
+    if(rec){ rec.periodStart = u.periodStart; rec.periodEnd = u.periodEnd; rec.days = u.days; }
+  });
+  state.accruals = state.accruals.concat(toCreate);
+  try{ saveState(); }catch(e){}
+
+  const pending = [];
+  if(toDeleteIds.length > 0) pending.push(DB.bulkDeleteAccruals(toDeleteIds).catch(e => console.error('Accrual reconcile delete error:', e)));
+  toUpdate.forEach(u => {
+    const rec = state.accruals.find(a => a.id === u.id);
+    if(rec) pending.push(DB.updateAccrual(rec).catch(e => console.error('Accrual reconcile update error:', e)));
+  });
+  if(toCreate.length > 0) pending.push(DB.bulkSaveAccruals(toCreate).catch(e => console.error('Accrual reconcile create error:', e)));
+
+  if(pending.length > 0){
+    _accrualsSyncInFlight = true;
+    Promise.allSettled(pending).finally(() => { _accrualsSyncInFlight = false; });
+  }
+}
+
+// Click-to-sort state for "Periods Ready to Accrue" (not persisted).
+let _accrualsAccruedSort = { column: 'unitId', ascending: true };
+
 // "Periods Ready to Accrue" — a month/year-driven view like Unit Overview's. Selecting the
 // currently-open month shows the live, still-editable (Undo-able) batch; selecting an earlier,
 // already-closed month shows that batch read-only, exactly as it was sent.
 function renderAccrualsAccruedList(){
+  reconcileOpenAccrualsCoverage();
   const tableEl = qs('#accrualsAccruedTable');
   const summaryEl = qs('#accrualsAccruedSummary');
   const monthSelectEl = qs('#accrualsAccrueMonthSelect');
@@ -13125,22 +13212,62 @@ function renderAccrualsAccruedList(){
   tableEl.innerHTML = '';
   if(rows.length === 0) return;
 
+  const COLUMNS = [
+    { key: 'unitId', label: 'UnitId', get: r => r.unitId },
+    { key: 'lease', label: 'Lease', get: r => r.lease },
+    { key: 'supplier', label: 'Supplier', get: r => r.supplier },
+    { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
+    { key: 'status', label: 'Status', get: r => r.status },
+    { key: 'period', label: 'Missing Period', get: r => r.periodStart || '' },
+    { key: 'days', label: 'Days', get: r => Number(r.days) || 0, numeric: true, alignRight: true }
+  ];
+  const sortCol = COLUMNS.find(c => c.key === _accrualsAccruedSort.column) || COLUMNS[0];
+  const ascending = _accrualsAccruedSort.ascending;
+  rows.sort((a, b) => {
+    const av = sortCol.get(a), bv = sortCol.get(b);
+    let cmp;
+    if(sortCol.numeric){
+      cmp = av - bv;
+    } else {
+      const as = av.toString().toLowerCase(), bs = bv.toString().toLowerCase();
+      cmp = as < bs ? -1 : (as > bs ? 1 : 0);
+    }
+    if(cmp === 0) cmp = (a.periodStart||'') < (b.periodStart||'') ? -1 : ((a.periodStart||'') > (b.periodStart||'') ? 1 : 0);
+    return ascending ? cmp : -cmp;
+  });
+
+  const unitIdList = Array.from(new Set(rows.map(r => r.unitId)));
+
   const table = document.createElement('table');
   table.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px;';
 
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
-  const columnLabels = ['#','UnitId','Lease','Supplier','Cost Center','Status','Missing Period','Days'];
+
   // Leftmost, ahead of every other column — amount/detail columns are planned for the right
   // side of this row, so the remove control needs a stable position that won't keep shifting
   // right as those get added. Removing only ever makes sense for the still-open, uncommitted
   // batch — a closed month's records are locked, same as everywhere else in this workflow.
-  if(isViewingOpenMonth) columnLabels.unshift('');
-  columnLabels.forEach((label, i) => {
+  if(isViewingOpenMonth){
+    const thRemove = document.createElement('th');
+    thRemove.style.cssText = 'padding:4px 6px;font-size:10px;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
+    headerRow.appendChild(thRemove);
+  }
+  const thCounter = document.createElement('th');
+  thCounter.textContent = '#';
+  thCounter.style.cssText = 'text-align:left;padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
+  headerRow.appendChild(thCounter);
+
+  COLUMNS.forEach(col => {
     const th = document.createElement('th');
-    th.textContent = label;
-    const isDaysCol = label === 'Days';
-    th.style.cssText = `text-align:${isDaysCol ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;`;
+    th.textContent = col.label + (sortCol.key === col.key ? (ascending ? ' ▲' : ' ▼') : '');
+    th.style.cssText = `text-align:${col.alignRight ? 'right' : 'left'};padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;cursor:pointer;user-select:none;`;
+    th.title = 'Click to sort';
+    th.addEventListener('click', () => {
+      if(_accrualsAccruedSort.column === col.key) _accrualsAccruedSort.ascending = !_accrualsAccruedSort.ascending;
+      else _accrualsAccruedSort = { column: col.key, ascending: true };
+      renderAccrualsAccruedList();
+    });
     headerRow.appendChild(th);
   });
   thead.appendChild(headerRow);
@@ -13162,10 +13289,29 @@ function renderAccrualsAccruedList(){
       tdRemove.appendChild(removeBtn);
       tr.appendChild(tdRemove);
     }
-    [String(i + 1), r.unitId, r.lease, r.supplier, r.costCenter, r.status, `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
+    const tdCounter = document.createElement('td');
+    tdCounter.textContent = String(i + 1);
+    tdCounter.style.cssText = 'padding:4px 6px;color:#6b7280;';
+    tr.appendChild(tdCounter);
+
+    [r.unitId, r.lease, r.supplier, r.costCenter, r.status, `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
       const td = document.createElement('td');
       td.textContent = val;
-      td.style.cssText = `padding:4px 6px;${ci === 0 ? 'color:#6b7280;' : ''}${ci === 7 ? 'text-align:right;' : ''}`;
+      td.style.cssText = `padding:4px 6px;${ci === 6 ? 'text-align:right;' : ''}`;
+      if(ci === 0){
+        // Same coverage-history popup used everywhere else a UnitId is clickable — lets the
+        // operator make a last visual check of this unit's calendar before sending the report.
+        td.style.color = '#0b74de';
+        td.style.cursor = 'pointer';
+        td.title = 'View coverage history';
+        td.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const periodDate = isoStrToDate(r.periodStart);
+          const y = isNaN(periodDate) ? new Date().getFullYear() : periodDate.getFullYear();
+          const m = isNaN(periodDate) ? new Date().getMonth() : periodDate.getMonth();
+          try{ openUnitWdNumbersModal(r.unitId, y, m, unitIdList); }catch(err){}
+        });
+      }
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
