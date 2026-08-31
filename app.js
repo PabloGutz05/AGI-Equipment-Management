@@ -12950,43 +12950,50 @@ function refreshAccrualsRowsForUnit(unit){
   renderAccrualsMissingPeriods();
 }
 
-// Moves every currently-listed period for the panel's unit out of the review list and into
-// "Periods Ready to Accrue" below, saved to the Accruals sheet as open (accrualMonth/Year
-// blank) records — the whole point being an empty review list once every unit is either
-// resolved (manual coverage) or accrued. Blocked while a manual-coverage edit is still pending,
-// so nothing gets accrued out from under an unsaved change.
+// Finds the single row in _accrualsMissingRowsCache.rows matching whichever row is currently
+// selected in Table 1 (_accrualsSelectedRowKey) — shared by Accrue Period and Not Accruable so
+// both act on exactly the one period the operator is looking at. Different periods for the same
+// unit can genuinely need different treatment (a lease's arrangement can change between periods,
+// or one gap is a real accrual candidate while an older one isn't), so acting unit-wide would
+// silently sweep up periods the operator never looked at or decided on.
+function findSelectedMissingPeriodRow(){
+  if(!_accrualsMissingRowsCache || !_accrualsSelectedRowKey) return -1;
+  return _accrualsMissingRowsCache.rows.findIndex(r => (r.unitId.toLowerCase() + '|' + r.start.getTime()) === _accrualsSelectedRowKey);
+}
+
+// Moves only the currently-selected period out of the review list and into "Periods Ready to
+// Accrue" below, saved to the Accruals sheet as an open (accrualMonth/Year blank) record.
+// Blocked while a manual-coverage edit is still pending, so nothing gets accrued out from under
+// an unsaved change.
 function accrueCurrentUnit(){
   if(accrualsPanelBlockedByPending()) return;
   if(!_accrualsPanelUnit || !_accrualsMissingRowsCache) return;
   const uid = (_accrualsPanelUnit.unitId || _accrualsPanelUnit.id || '').toString();
   if(!uid) return;
-  const uidLower = uid.toLowerCase();
 
-  const movedRows = _accrualsMissingRowsCache.rows.filter(r => r.unitId.toLowerCase() === uidLower);
-  if(movedRows.length === 0) return;
+  const idx = findSelectedMissingPeriodRow();
+  if(idx === -1) return;
+  const movedRow = _accrualsMissingRowsCache.rows[idx];
+  _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter((_, i) => i !== idx);
 
-  _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter(r => r.unitId.toLowerCase() !== uidLower);
-
-  const newRecords = movedRows.map(r => ({
+  const newRecord = {
     id: id(),
-    unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
-    periodStart: dateToIsoStr(r.start), periodEnd: dateToIsoStr(r.end), days: r.days,
+    unitId: movedRow.unitId, lease: movedRow.lease, supplier: movedRow.supplier, costCenter: movedRow.costCenter, status: movedRow.status,
+    periodStart: dateToIsoStr(movedRow.start), periodEnd: dateToIsoStr(movedRow.end), days: movedRow.days,
     accrualMonth: '', accrualYear: '', createdAt: new Date().toISOString()
-  }));
-  state.accruals = (state.accruals || []).concat(newRecords);
-  // Batched into one request (same reasoning as manual coverage's bulkSave — a unit with
-  // several open missing periods would otherwise fire one request per record). Tracked via
-  // _accrualsSyncInFlight the same way persistManualCoverage tracks its own saves — the 60s
-  // background auto-refresh checks this flag and skips its cycle entirely while it's true, so
-  // a re-fetch of "Accruals" can never land mid-save and silently revert these records back
-  // out of state.accruals before they've actually landed on the sheet.
+  };
+  state.accruals = (state.accruals || []).concat([newRecord]);
+  // Tracked via _accrualsSyncInFlight the same way persistManualCoverage tracks its own saves —
+  // the 60s background auto-refresh checks this flag and skips its cycle entirely while it's
+  // true, so a re-fetch of "Accruals" can never land mid-save and silently revert this record
+  // back out of state.accruals before it's actually landed on the sheet.
   _accrualsSyncInFlight = true;
-  DB.bulkSaveAccruals(newRecords).catch(e => console.error('Accrual save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  DB.bulkSaveAccruals([newRecord]).catch(e => console.error('Accrual save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
   try{ saveState(); }catch(e){}
 
   _accrualsLastAccruedUnitId = uid;
-  _accrualsLastAccruedMissingRows = movedRows;
-  _accrualsLastAccruedIds = newRecords.map(r => r.id);
+  _accrualsLastAccruedMissingRows = [movedRow];
+  _accrualsLastAccruedIds = [newRecord.id];
 
   // Jump the "Periods Ready to Accrue" view to the currently-open month so the operator
   // immediately sees what they just accrued land in the list.
@@ -13001,33 +13008,32 @@ function accrueCurrentUnit(){
 // Weekly/Quarterly leases aren't accrued at all, but their units can still need manual coverage
 // tracked — without this, their missing periods would sit in the review list above forever with
 // no way out (they'll never be genuinely "covered", and accruing them doesn't make sense). Moves
-// every currently-listed period for the panel's unit out of Missing Periods and into its own
-// Not Accruable table below (saved to the same Accruals sheet, flagged notAccruable:'true', and
-// never given an accrualMonth/Year — so it can never be swept into a closed accrual document or
-// silently reconciled away just because coverage happens to change later). Reversible any time
-// via that table's own Remove button. Blocked while a manual-coverage edit is still pending, same
-// as Accrue Unit.
+// only the currently-selected period out of Missing Periods and into its own Not Accruable table
+// below (saved to the same Accruals sheet, flagged notAccruable:'true', and never given an
+// accrualMonth/Year — so it can never be swept into a closed accrual document or silently
+// reconciled away just because coverage happens to change later). Reversible any time via that
+// table's own Remove button. Blocked while a manual-coverage edit is still pending, same as
+// Accrue Period.
 function markCurrentPeriodNotAccruable(){
   if(accrualsPanelBlockedByPending()) return;
   if(!_accrualsPanelUnit || !_accrualsMissingRowsCache) return;
   const uid = (_accrualsPanelUnit.unitId || _accrualsPanelUnit.id || '').toString();
   if(!uid) return;
-  const uidLower = uid.toLowerCase();
 
-  const movedRows = _accrualsMissingRowsCache.rows.filter(r => r.unitId.toLowerCase() === uidLower);
-  if(movedRows.length === 0) return;
+  const idx = findSelectedMissingPeriodRow();
+  if(idx === -1) return;
+  const movedRow = _accrualsMissingRowsCache.rows[idx];
+  _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter((_, i) => i !== idx);
 
-  _accrualsMissingRowsCache.rows = _accrualsMissingRowsCache.rows.filter(r => r.unitId.toLowerCase() !== uidLower);
-
-  const newRecords = movedRows.map(r => ({
+  const newRecord = {
     id: id(),
-    unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
-    periodStart: dateToIsoStr(r.start), periodEnd: dateToIsoStr(r.end), days: r.days,
+    unitId: movedRow.unitId, lease: movedRow.lease, supplier: movedRow.supplier, costCenter: movedRow.costCenter, status: movedRow.status,
+    periodStart: dateToIsoStr(movedRow.start), periodEnd: dateToIsoStr(movedRow.end), days: movedRow.days,
     accrualMonth: '', accrualYear: '', notAccruable: 'true', createdAt: new Date().toISOString()
-  }));
-  state.accruals = (state.accruals || []).concat(newRecords);
+  };
+  state.accruals = (state.accruals || []).concat([newRecord]);
   _accrualsSyncInFlight = true;
-  DB.bulkSaveAccruals(newRecords).catch(e => console.error('Not Accruable save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  DB.bulkSaveAccruals([newRecord]).catch(e => console.error('Not Accruable save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
   try{ saveState(); }catch(e){}
 
   renderAccrualsMissingPeriods();
@@ -13035,9 +13041,9 @@ function markCurrentPeriodNotAccruable(){
   updateAccrueUnitButton();
 }
 
-// Puts the most recently accrued unit's periods straight back into the review list and deletes
-// the just-created Accruals rows — a single safety-net level of undo, not a full history;
-// accruing a different unit (or closing the month) replaces/clears the target.
+// Puts the most recently accrued period straight back into the review list and deletes the
+// just-created Accruals row — a single safety-net level of undo, not a full history; accruing
+// another period (or closing the month) replaces/clears the target.
 function undoAccrueUnit(){
   if(!_accrualsLastAccruedMissingRows || !_accrualsLastAccruedUnitId || !_accrualsLastAccruedIds) return;
   const idsToRemove = new Set(_accrualsLastAccruedIds);
@@ -13104,12 +13110,13 @@ function closeAccrualsMonth(){
   updateAccrueUnitButton();
 }
 
-// Enables/disables "Accrue Unit" for whatever unit the panel currently shows, and shows/hides
-// the "Undo" label for the most recent accrue action.
+// Enables/disables "Accrue Period"/"Not Accruable" based on whether the currently-selected row
+// in Table 1 still exists, and shows/hides the "Undo" label for the most recent accrue action.
 function updateAccrueUnitButton(){
-  const uid = _accrualsPanelUnit ? (_accrualsPanelUnit.unitId || _accrualsPanelUnit.id || '').toString().toLowerCase() : '';
-  const hasRows = !!(uid && _accrualsMissingRowsCache && _accrualsMissingRowsCache.rows.some(r => r.unitId.toLowerCase() === uid));
-  const enabled = hasRows && !_accrualsHasPendingChanges;
+  // Both buttons now act on exactly the one selected row (see findSelectedMissingPeriodRow),
+  // not every row belonging to the panel's unit — enabled state has to match that precondition.
+  const hasSelectedRow = findSelectedMissingPeriodRow() !== -1;
+  const enabled = hasSelectedRow && !_accrualsHasPendingChanges;
   const btn = qs('#accrualsAccrueUnitBtn');
   if(btn){
     btn.disabled = !enabled;
@@ -13126,7 +13133,7 @@ function updateAccrueUnitButton(){
   if(undoLabel){
     if(_accrualsLastAccruedUnitId){
       undoLabel.style.display = 'block';
-      undoLabel.textContent = `Undo — restore ${_accrualsLastAccruedUnitId}'s period(s)`;
+      undoLabel.textContent = `Undo — restore ${_accrualsLastAccruedUnitId}'s period`;
     } else {
       undoLabel.style.display = 'none';
       undoLabel.textContent = '';

@@ -329,9 +329,9 @@
                           <button id="accrualsPanelClearBtn" type="button" disabled title="Discard this session's pending clicks/drags — anything already accepted before is left untouched" style="width:100%;padding:6px;border-radius:6px;border:1px solid #6d28d9;background:transparent;color:#c4b5fd;font-weight:600;font-size:11px;cursor:not-allowed;opacity:0.4;">Clear selection</button>
                         </div>
                         <div id="accrualsAccrueUnitBox" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#0b1f33;border:1px solid #1e3a5f;border-radius:8px;padding:10px;">
-                          <button id="accrualsAccrueUnitBtn" type="button" style="width:100%;padding:8px;border-radius:6px;border:none;background:#0b74de;color:#fff;font-weight:700;font-size:12px;cursor:pointer;">Accrue Unit</button>
+                          <button id="accrualsAccrueUnitBtn" type="button" title="Accrues only the period currently selected in the list — other periods for this unit are unaffected" style="width:100%;padding:8px;border-radius:6px;border:none;background:#0b74de;color:#fff;font-weight:700;font-size:12px;cursor:pointer;">Accrue Period</button>
                           <span id="accrualsAccrueUndoLabel" style="display:none;font-size:11px;color:#93c5fd;text-decoration:underline;cursor:pointer;text-align:center;"></span>
-                          <button id="accrualsNotAccruableBtn" type="button" title="Weekly/Quarterly leases aren't accrued — send this shown period to the Not Accruable list instead of leaving it stuck in Missing Periods" style="width:100%;padding:8px;border-radius:6px;border:1px solid #4b5563;background:transparent;color:#9ca3af;font-weight:700;font-size:12px;cursor:pointer;">Not Accruable</button>
+                          <button id="accrualsNotAccruableBtn" type="button" title="Weekly/Quarterly leases aren't accrued — send only the period currently selected in the list to the Not Accruable list instead of leaving it stuck in Missing Periods" style="width:100%;padding:8px;border-radius:6px;border:1px solid #4b5563;background:transparent;color:#9ca3af;font-weight:700;font-size:12px;cursor:pointer;">Not Accruable</button>
                         </div>
                       </div>
                     </div>
@@ -1463,8 +1463,8 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.26"></script>
-  <script src="app.js?v=11.26"></script>
-  <script src="pdfImport.js?v=11.26"></script>
+  <script src="db.js?v=11.27"></script>
+  <script src="app.js?v=11.27"></script>
+  <script src="pdfImport.js?v=11.27"></script>
 </body>
 </html>
