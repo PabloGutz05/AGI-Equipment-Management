@@ -13209,7 +13209,23 @@ function downloadAccrualsDeliverable(){
     infoLabel: { font: Object.assign({}, baseFont, { italic: true, color: { rgb: '6B7280' } }), alignment: { horizontal: 'right' } },
     infoValue: { font: Object.assign({}, baseFont, { italic: true, color: { rgb: '6B7280' } }), numFmt: '$#,##0.00' }
   };
-  function mergeStyles(...objs){ const out = {}; objs.forEach(o => { if(!o) return; Object.keys(o).forEach(k => { out[k] = Object.assign({}, out[k], o[k]); }); }); return out; }
+  // Deep-merges object-valued style properties (font/fill/border/alignment) but directly
+  // overwrites primitive ones (numFmt is a plain string) — Object.assign({}, ..., aString)
+  // treats the string as array-like and iterates its characters into a {0:'$',1:'#',...} object
+  // instead of keeping it a string, which is exactly what silently corrupted numFmt here and
+  // made the real XLSX library's own numFmt writer crash on a non-string with "e.replace is not
+  // a function" the moment a save was actually attempted.
+  function mergeStyles(...objs){
+    const out = {};
+    objs.forEach(o => {
+      if(!o) return;
+      Object.keys(o).forEach(k => {
+        const v = o[k];
+        out[k] = (v && typeof v === 'object' && !Array.isArray(v)) ? Object.assign({}, out[k], v) : v;
+      });
+    });
+    return out;
+  }
   // aoa_to_sheet doesn't infer a cell's type (.t) from .v for the {v,s} object form the way it
   // does for a bare value — leaving .t unset makes some readers (including XLSX's own
   // sheet_to_json) treat the cell as blank even though .v is set. Always stamp it explicitly.
