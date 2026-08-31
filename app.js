@@ -5003,8 +5003,24 @@ function startAutoRefresh(){
   }
 
   let _refreshRunning = false;
+  let _autoRefreshCycleCount = 0;
+  // "Manual Coverage" is by far the largest sheet (one row per manually-covered day per unit —
+  // 200,000+ rows and growing) and dominates every cycle's cost; fetching it only every Nth
+  // cycle keeps ITS effective freshness roughly what it always was (~this many × the interval
+  // below) while every other, faster-changing sheet (invoices, units, leases, accruals) gets
+  // refreshed far more often. On a cycle it's skipped, the code below carries forward whatever
+  // manual coverage state is already in memory — the exact same fallback already used when the
+  // fetch genuinely fails, just triggered deliberately instead of by an error.
+  const MANUAL_COVERAGE_FETCH_EVERY_N_CYCLES = 2;
 
-  const fetchWithTimeout = (promise, ms=25000) => {
+  // 45s (not the original 25s): measured against the live system, fetching all these sheets in
+  // parallel already took ~35s on its own — every request (read or write, from any operator)
+  // serializes through one global Apps Script lock, so this isn't optional overhead to shave
+  // down, it's the real cost of the current data volume. A timeout shorter than that made
+  // ordinary cycles fail silently (just a console warning) well before 60s ever came into play,
+  // which is what was actually behind "Updated" going stale for several minutes at a stretch —
+  // not the interval itself.
+  const fetchWithTimeout = (promise, ms=45000) => {
     const timeout = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('timeout')), ms)
     );
@@ -5034,6 +5050,8 @@ function startAutoRefresh(){
     if(typeof _accrualsSyncInFlight !== 'undefined' && _accrualsSyncInFlight) return;
 
     _refreshRunning = true;
+    _autoRefreshCycleCount++;
+    const shouldFetchManualCoverage = (_autoRefreshCycleCount % MANUAL_COVERAGE_FETCH_EVERY_N_CYCLES) === 1;
     try{
       const [registries, units, leases, users, accrualsRaw, manualCoverageRaw, meta] = await fetchWithTimeout(
         Promise.all([
@@ -5044,7 +5062,10 @@ function startAutoRefresh(){
           // Guarded like loadAll()'s own fetch of these — this refresh must keep working even
           // if one of these newer sheets is temporarily unreachable.
           DB.get({ action: 'getAll', sheet: 'Accruals' }).catch(() => null),
-          DB.get({ action: 'getAll', sheet: 'Manual Coverage' }).catch(() => null),
+          // Skipped on most cycles (see MANUAL_COVERAGE_FETCH_EVERY_N_CYCLES above) — resolves
+          // to null exactly like a genuine fetch failure would, so the existing fallback below
+          // (carry forward whatever's already in state.units) applies unchanged either way.
+          shouldFetchManualCoverage ? DB.get({ action: 'getAll', sheet: 'Manual Coverage' }).catch(() => null) : Promise.resolve(null),
           DB.get({ action: 'getMeta' })
         ])
       );
@@ -5198,7 +5219,10 @@ function startAutoRefresh(){
       console.warn('Auto-refresh skipped:', e.message);
     }
     _refreshRunning = false;
-  }, 60000);
+    // 30s (was 60s) — safe now that Manual Coverage (the dominant cost) is staggered out of
+    // most cycles and the timeout above has real headroom; _refreshRunning still guards against
+    // two cycles ever overlapping if one happens to run long.
+  }, 30000);
 
   updateTimestamp();
 }
@@ -13261,6 +13285,37 @@ function computeAccrualChargeEstimate(record){
   return result;
 }
 
+// Splits one accrual record's total into Accounting's two reporting buckets: everything
+// through the end of the prior month ("Accumulated" — days already owed from before this
+// reporting month even started) versus just the days that actually fall within the reporting
+// month itself ("This Month"), plus their sum ("Total") so nobody has to add the two by hand.
+// viewMonth/viewYear is whichever month is being looked at in "Periods Ready to Accrue" (the
+// open month while it's still being built, or a closed month's own accrual month when looking
+// back at history) — never the wall-clock "today", so a closed batch's split always matches
+// what it represented when it was actually sent, not whatever month happens to be current now.
+function splitAccrualAmountByViewMonth(record, chargePerDay, viewMonth, viewYear){
+  const periodStart = isoStrToDate(record.periodStart);
+  const periodEnd = isoStrToDate(record.periodEnd);
+  const boundary = new Date(viewYear, viewMonth - 1, 1); // first day of the reporting month
+  const dayCount = (a, b) => (a > b) ? 0 : Math.round((b - a) / 86400000) + 1;
+
+  const accumulatedEnd = new Date(boundary);
+  accumulatedEnd.setDate(accumulatedEnd.getDate() - 1); // last day of the prior month
+  const accumulatedCap = periodEnd < accumulatedEnd ? periodEnd : accumulatedEnd;
+  const accumulatedDays = dayCount(periodStart, accumulatedCap);
+
+  const currentMonthStart = periodStart > boundary ? periodStart : boundary;
+  const currentMonthDays = dayCount(currentMonthStart, periodEnd);
+
+  const accumulatedAmount = chargePerDay * accumulatedDays;
+  const currentMonthAmount = chargePerDay * currentMonthDays;
+  return {
+    accumulatedDays, accumulatedAmount,
+    currentMonthDays, currentMonthAmount,
+    totalAmount: accumulatedAmount + currentMonthAmount
+  };
+}
+
 // Popup showing exactly what a "Last Invoice Amount" cell's total is built from — the source
 // invoice's period/WD number, its Charge/Other Charges (with named breakdown) or an explicit
 // "needs updating" notice, and the day-count math that turns it into a per-day rate.
@@ -13295,6 +13350,12 @@ function openAccrualChargeDetail(record, estimate){
       html += row('Days being accrued', String(record.days));
       html += `<div style="border-top:1px solid #e6e9ee;margin:6px 0;"></div>`;
       html += row('To be accrued', formatCurrency(estimate.toBeAccrued));
+
+      const split = splitAccrualAmountByViewMonth(record, estimate.chargePerDay, _accrualsViewMonth, _accrualsViewYear);
+      html += `<div style="margin-top:8px;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;">Accounting/Payables split — ${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}</div>`;
+      html += row(`Accumulated (thru ${accrualMonthName(_accrualsViewMonth === 1 ? 12 : _accrualsViewMonth - 1)})`, `${formatCurrency(split.accumulatedAmount)} (${split.accumulatedDays}d)`);
+      html += row(`${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}`, `${formatCurrency(split.currentMonthAmount)} (${split.currentMonthDays}d)`);
+      html += row('Total', formatCurrency(split.totalAmount));
     }
   }
 
@@ -13389,8 +13450,19 @@ function renderAccrualsAccruedList(){
 
   // Computed fresh every render (never persisted onto the accrual record) so fixing a source
   // invoice's detail and coming back to this tab immediately reflects the corrected amount.
+  // The Accounting/Payables report needs the total split at the reporting month's own boundary
+  // — everything accrued through the end of the PRIOR month ("Accumulated") versus just this
+  // reporting month's own days ("This Month") — rather than one lump sum they'd have to split
+  // by hand. Split against _accrualsViewYear/_accrualsViewMonth (whichever month this table is
+  // currently showing), not wall-clock "today", so a closed month's split always reflects what
+  // was actually being reported that month.
   const chargeEstimates = new Map();
-  rows.forEach(r => chargeEstimates.set(r.id, computeAccrualChargeEstimate(r)));
+  const monthSplits = new Map();
+  rows.forEach(r => {
+    const est = computeAccrualChargeEstimate(r);
+    chargeEstimates.set(r.id, est);
+    monthSplits.set(r.id, splitAccrualAmountByViewMonth(r, est.chargePerDay, _accrualsViewMonth, _accrualsViewYear));
+  });
 
   const COLUMNS = [
     { key: 'unitId', label: 'UnitId', get: r => r.unitId },
@@ -13402,7 +13474,9 @@ function renderAccrualsAccruedList(){
     { key: 'days', label: 'Days', get: r => Number(r.days) || 0, numeric: true, alignRight: true },
     { key: 'lastInvoiceAmount', label: 'Last Invoice Amount', get: r => chargeEstimates.get(r.id).totalAmount, numeric: true, alignRight: true },
     { key: 'chargePerDay', label: 'Charge/Day', get: r => chargeEstimates.get(r.id).chargePerDay, numeric: true, alignRight: true },
-    { key: 'toBeAccrued', label: 'To Be Accrued', get: r => chargeEstimates.get(r.id).toBeAccrued, numeric: true, alignRight: true }
+    { key: 'accumulated', label: 'Accumulated', get: r => monthSplits.get(r.id).accumulatedAmount, numeric: true, alignRight: true },
+    { key: 'currentMonth', label: 'This Month', get: r => monthSplits.get(r.id).currentMonthAmount, numeric: true, alignRight: true },
+    { key: 'totalAccrued', label: 'Total', get: r => monthSplits.get(r.id).totalAmount, numeric: true, alignRight: true }
   ];
   const sortCol = COLUMNS.find(c => c.key === _accrualsAccruedSort.column) || COLUMNS[0];
   const ascending = _accrualsAccruedSort.ascending;
@@ -13524,10 +13598,23 @@ function renderAccrualsAccruedList(){
     tdPerDay.style.cssText = 'padding:4px 6px;text-align:right;';
     tr.appendChild(tdPerDay);
 
-    const tdToAccrue = document.createElement('td');
-    tdToAccrue.textContent = formatCurrency(estimate.toBeAccrued);
-    tdToAccrue.style.cssText = 'padding:4px 6px;text-align:right;font-weight:600;';
-    tr.appendChild(tdToAccrue);
+    const split = monthSplits.get(r.id);
+    const tdAccumulated = document.createElement('td');
+    tdAccumulated.textContent = formatCurrency(split.accumulatedAmount);
+    tdAccumulated.title = `${split.accumulatedDays} day(s) through the end of the prior month`;
+    tdAccumulated.style.cssText = 'padding:4px 6px;text-align:right;';
+    tr.appendChild(tdAccumulated);
+
+    const tdCurrentMonth = document.createElement('td');
+    tdCurrentMonth.textContent = formatCurrency(split.currentMonthAmount);
+    tdCurrentMonth.title = `${split.currentMonthDays} day(s) within ${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}`;
+    tdCurrentMonth.style.cssText = 'padding:4px 6px;text-align:right;';
+    tr.appendChild(tdCurrentMonth);
+
+    const tdTotal = document.createElement('td');
+    tdTotal.textContent = formatCurrency(split.totalAmount);
+    tdTotal.style.cssText = 'padding:4px 6px;text-align:right;font-weight:600;';
+    tr.appendChild(tdTotal);
 
     tbody.appendChild(tr);
   });
