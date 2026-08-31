@@ -1064,8 +1064,24 @@
     <div class="modal-dialog" role="document">
       <h3>Accrual Charge Detail</h3>
       <div id="accrualChargeDetailBody"></div>
-      <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+        <button type="button" id="accrualChargeDetailHistoryBtn" class="small-link">📈 View Charge History</button>
         <button type="button" id="accrualChargeDetailCloseBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unit Charge History modal -->
+  <div id="unitChargeHistoryModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document" style="max-width:720px;">
+      <h3 id="unitChargeHistoryTitle">Charge History</h3>
+      <div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">Last Invoice Amount</div>
+      <div id="unitChargeHistoryAmountChart"></div>
+      <div style="font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;margin:18px 0 4px;">Charge Per Day</div>
+      <div id="unitChargeHistoryPerDayChart"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+        <button type="button" id="unitChargeHistoryCloseBtn">Close</button>
       </div>
     </div>
   </div>
@@ -1467,8 +1483,8 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.30"></script>
-  <script src="app.js?v=11.30"></script>
-  <script src="pdfImport.js?v=11.30"></script>
+  <script src="db.js?v=11.32"></script>
+  <script src="app.js?v=11.32"></script>
+  <script src="pdfImport.js?v=11.32"></script>
 </body>
 </html>

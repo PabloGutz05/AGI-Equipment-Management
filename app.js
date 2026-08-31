@@ -13312,6 +13312,189 @@ function computeAccrualChargeEstimate(record){
   return result;
 }
 
+// Every rental period a unit has ever actually been invoiced for, chronologically — the same
+// per-unit charge+other/days math as computeAccrualChargeEstimate, just walking every matching
+// registry slice instead of stopping at the single most recent one. Powers the Charge History
+// chart (Last Invoice Amount and Charge/Day over time) so a jump/anomaly in either is visible
+// at a glance instead of having to click through each source invoice one at a time.
+function computeUnitChargeHistory(unitId){
+  const uidNorm = String(unitId || '').trim().toLowerCase();
+  const invoices = state.invoices || [];
+  const points = [];
+
+  (state.registries || []).forEach(reg => {
+    let cat = String(reg.category || '').toLowerCase();
+    if(!cat){
+      const inv = invoices.find(i => String(i.wdNumber||'').trim().toLowerCase() === String(reg.wdNumber||'').trim().toLowerCase());
+      cat = inv ? String(inv.category||'').toLowerCase() : '';
+    }
+    if(cat !== 'rental') return;
+    const slices = getRegistryCoveragePeriods(reg);
+    slices.forEach(slice => {
+      if(!slice.from || !slice.to) return;
+      const inSlice = (slice.units||[]).some(u => String(u).trim().toLowerCase() === uidNorm);
+      if(!inSlice) return;
+      const unitDetail = (slice.unitDetails || []).find(d => String(d.unit||'').trim().toLowerCase() === uidNorm);
+      if(!unitDetail || unitDetail.charge === undefined || unitDetail.charge === null || String(unitDetail.charge).trim() === '') return;
+
+      const charge = parseCurrency(unitDetail.charge || '') || 0;
+      const other = parseCurrency(unitDetail.other || '') || 0;
+      const totalAmount = charge + other;
+      const fromD = isoStrToDate(slice.from), toD = isoStrToDate(slice.to);
+      const days = (!isNaN(fromD) && !isNaN(toD)) ? Math.round((toD - fromD) / 86400000) + 1 : 0;
+      const chargePerDay = days > 0 ? totalAmount / days : 0;
+
+      points.push({ from: slice.from, to: slice.to, totalAmount, days, chargePerDay, sourceWd: reg.wdNumber || '', sourceDoc: reg.docNumber || '' });
+    });
+  });
+
+  points.sort((a, b) => a.from < b.from ? -1 : (a.from > b.from ? 1 : 0));
+  return points;
+}
+
+// Rounds a chart's Y-axis max up to a "nice" 1/2/5×10^n value, so gridlines land on clean
+// numbers instead of whatever the exact data maximum happens to be.
+function niceCeiling(val){
+  if(!(val > 0)) return 10;
+  const exp = Math.floor(Math.log10(val));
+  const base = Math.pow(10, exp);
+  const norm = val / base;
+  let niceNorm;
+  if(norm <= 1) niceNorm = 1;
+  else if(norm <= 2) niceNorm = 2;
+  else if(norm <= 5) niceNorm = 5;
+  else niceNorm = 10;
+  return niceNorm * base;
+}
+
+// Renders a bar chart (SVG) into containerEl: one bar per point (height proportional to its
+// value, with a $ label above it and the point's own label below), plus a dot centered on each
+// bar's top edge connected to its neighbors — the trend line the shape of the bars alone
+// doesn't make obvious at a glance. points: [{label, value}], already in the order to display.
+function renderHistoryBarChart(containerEl, points, opts){
+  opts = opts || {};
+  containerEl.innerHTML = '';
+  if(!points || points.length === 0){
+    const none = document.createElement('div');
+    none.className = 'small-muted';
+    none.textContent = opts.emptyMessage || 'No data available.';
+    containerEl.appendChild(none);
+    return;
+  }
+
+  const width = opts.width || 640;
+  const height = opts.height || 220;
+  const padTop = 34, padBottom = 30, padLeft = 60, padRight = 16;
+  const plotW = width - padLeft - padRight;
+  const plotH = height - padTop - padBottom;
+
+  const maxVal = Math.max.apply(null, points.map(p => p.value).concat([0]));
+  const niceMax = niceCeiling(maxVal);
+  const colW = plotW / points.length;
+  const barW = Math.min(colW * 0.5, 56);
+
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.style.cssText = 'width:100%;height:auto;display:block;';
+
+  const gridSteps = 4;
+  for(let i = 0; i <= gridSteps; i++){
+    const frac = i / gridSteps;
+    const y = padTop + plotH * (1 - frac);
+    const line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('x1', padLeft); line.setAttribute('x2', width - padRight);
+    line.setAttribute('y1', y); line.setAttribute('y2', y);
+    line.setAttribute('stroke', '#eef2f7'); line.setAttribute('stroke-width', '1');
+    svg.appendChild(line);
+
+    const gridLabel = document.createElementNS(svgNS, 'text');
+    gridLabel.setAttribute('x', padLeft - 8); gridLabel.setAttribute('y', y + 3);
+    gridLabel.setAttribute('text-anchor', 'end'); gridLabel.setAttribute('font-size', '10'); gridLabel.setAttribute('fill', '#9ca3af');
+    gridLabel.textContent = formatCurrency(niceMax * frac);
+    svg.appendChild(gridLabel);
+  }
+
+  const dotPoints = [];
+  points.forEach((p, i) => {
+    const cx = padLeft + colW * i + colW / 2;
+    const barH = niceMax > 0 ? (p.value / niceMax) * plotH : 0;
+    const barTopY = padTop + plotH - Math.max(barH, 0);
+    const barX = cx - barW / 2;
+
+    const rect = document.createElementNS(svgNS, 'rect');
+    rect.setAttribute('x', barX); rect.setAttribute('y', barTopY);
+    rect.setAttribute('width', barW); rect.setAttribute('height', Math.max(barH, 0));
+    rect.setAttribute('rx', 3);
+    rect.setAttribute('fill', opts.barColor || '#93c5fd');
+    svg.appendChild(rect);
+
+    const amtLabel = document.createElementNS(svgNS, 'text');
+    amtLabel.setAttribute('x', cx); amtLabel.setAttribute('y', Math.max(barTopY - 8, 12));
+    amtLabel.setAttribute('text-anchor', 'middle'); amtLabel.setAttribute('font-size', '11'); amtLabel.setAttribute('font-weight', '700');
+    amtLabel.setAttribute('fill', '#374151');
+    amtLabel.textContent = formatCurrency(p.value);
+    svg.appendChild(amtLabel);
+
+    const xLabel = document.createElementNS(svgNS, 'text');
+    xLabel.setAttribute('x', cx); xLabel.setAttribute('y', height - padBottom + 16);
+    xLabel.setAttribute('text-anchor', 'middle'); xLabel.setAttribute('font-size', '10'); xLabel.setAttribute('fill', '#6b7280');
+    xLabel.textContent = p.label;
+    svg.appendChild(xLabel);
+
+    dotPoints.push({ x: cx, y: barTopY });
+  });
+
+  if(dotPoints.length > 1){
+    const polyline = document.createElementNS(svgNS, 'polyline');
+    polyline.setAttribute('points', dotPoints.map(d => `${d.x},${d.y}`).join(' '));
+    polyline.setAttribute('fill', 'none');
+    polyline.setAttribute('stroke', opts.lineColor || '#dc2626');
+    polyline.setAttribute('stroke-width', '2');
+    svg.appendChild(polyline);
+  }
+  dotPoints.forEach(d => {
+    const circle = document.createElementNS(svgNS, 'circle');
+    circle.setAttribute('cx', d.x); circle.setAttribute('cy', d.y); circle.setAttribute('r', 4);
+    circle.setAttribute('fill', opts.lineColor || '#dc2626');
+    circle.setAttribute('stroke', '#fff'); circle.setAttribute('stroke-width', '1.5');
+    svg.appendChild(circle);
+  });
+
+  containerEl.appendChild(svg);
+}
+
+// Opens the Charge History modal for one unit: two of the bar+trend charts above, one for
+// Last Invoice Amount and one for Charge/Day, both built from the exact same period data
+// (computeUnitChargeHistory) so the two always agree with each other and with the estimate
+// shown on "Periods Ready to Accrue".
+function openUnitChargeHistoryModal(unitId){
+  const modal = qs('#unitChargeHistoryModal');
+  const titleEl = qs('#unitChargeHistoryTitle');
+  const amountChartEl = qs('#unitChargeHistoryAmountChart');
+  const perDayChartEl = qs('#unitChargeHistoryPerDayChart');
+  if(!modal || !amountChartEl || !perDayChartEl) return;
+
+  const history = computeUnitChargeHistory(unitId);
+  if(titleEl) titleEl.textContent = unitId + ' — Charge History';
+
+  const labelFor = (p) => {
+    const d = isoStrToDate(p.from);
+    return isNaN(d) ? p.from : accrualMonthName(d.getMonth()+1).slice(0,3) + ' ' + String(d.getFullYear()).slice(2);
+  };
+
+  renderHistoryBarChart(amountChartEl, history.map(p => ({ label: labelFor(p), value: p.totalAmount })),
+    { barColor: '#93c5fd', lineColor: '#1d4ed8', emptyMessage: 'No invoice history found for this unit.' });
+  renderHistoryBarChart(perDayChartEl, history.map(p => ({ label: labelFor(p), value: p.chargePerDay })),
+    { barColor: '#fdba74', lineColor: '#c2410c', emptyMessage: 'No invoice history found for this unit.' });
+
+  modal.style.display = 'flex';
+}
+const unitChargeHistoryCloseBtn = qs('#unitChargeHistoryCloseBtn');
+if(unitChargeHistoryCloseBtn) unitChargeHistoryCloseBtn.addEventListener('click', () => { const m = qs('#unitChargeHistoryModal'); if(m) m.style.display = 'none'; });
+const unitChargeHistoryBackdrop = qs('#unitChargeHistoryModal .modal-backdrop');
+if(unitChargeHistoryBackdrop) unitChargeHistoryBackdrop.addEventListener('click', () => { const m = qs('#unitChargeHistoryModal'); if(m) m.style.display = 'none'; });
+
 // Splits one accrual record's total into Accounting's two reporting buckets: everything
 // through the end of the prior month ("Accumulated" — days already owed from before this
 // reporting month even started) versus just the days that actually fall within the reporting
@@ -13387,10 +13570,16 @@ function openAccrualChargeDetail(record, estimate){
   }
 
   body.innerHTML = html;
+  _accrualChargeDetailUnitId = record.unitId;
   modal.style.display = 'flex';
 }
+let _accrualChargeDetailUnitId = null;
 const accrualChargeDetailCloseBtn = qs('#accrualChargeDetailCloseBtn');
 if(accrualChargeDetailCloseBtn) accrualChargeDetailCloseBtn.addEventListener('click', () => { const m = qs('#accrualChargeDetailModal'); if(m) m.style.display = 'none'; });
+const accrualChargeDetailHistoryBtn = qs('#accrualChargeDetailHistoryBtn');
+if(accrualChargeDetailHistoryBtn) accrualChargeDetailHistoryBtn.addEventListener('click', () => {
+  if(_accrualChargeDetailUnitId) openUnitChargeHistoryModal(_accrualChargeDetailUnitId);
+});
 const accrualChargeDetailBackdrop = qs('#accrualChargeDetailModal .modal-backdrop');
 if(accrualChargeDetailBackdrop) accrualChargeDetailBackdrop.addEventListener('click', () => { const m = qs('#accrualChargeDetailModal'); if(m) m.style.display = 'none'; });
 
@@ -13630,7 +13819,12 @@ function renderAccrualsAccruedList(){
 
     const tdPerDay = document.createElement('td');
     tdPerDay.textContent = formatCurrency(estimate.chargePerDay);
-    tdPerDay.style.cssText = 'padding:4px 6px;text-align:right;';
+    tdPerDay.style.cssText = 'padding:4px 6px;text-align:right;color:#0b74de;cursor:pointer;';
+    tdPerDay.title = "View this unit's Charge/Day and Last Invoice Amount history";
+    tdPerDay.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openUnitChargeHistoryModal(r.unitId);
+    });
     tr.appendChild(tdPerDay);
 
     const split = monthSplits.get(r.id);
