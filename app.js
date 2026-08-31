@@ -2051,17 +2051,6 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
       subchargesWrap.appendChild(subRow);
     };
 
-    // "Divide" (and any other code that sets a flat number directly into the hidden input and
-    // dispatches 'input') gets represented as a single unnamed subcharge, so the amount isn't
-    // silently lost the next time a subcharge is added/removed. recomputeOtherFromSubcharges
-    // itself never dispatches 'input' on otherHiddenInput, so this can't loop.
-    otherHiddenInput.addEventListener('input', () => {
-      const flatVal = otherHiddenInput.value;
-      subchargesWrap.innerHTML = '';
-      if(parseCurrency(flatVal)) addSubchargeRow({ name: '', amount: flatVal, tax: '' });
-      recomputeOtherFromSubcharges();
-    });
-
     otherAddBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       selectRow();
@@ -2187,6 +2176,8 @@ function openDivideAmountsModal(wrapId){
   const rowCount = wrap.querySelectorAll('.unit-breakdown-row').length;
   const countEl = qs('#divideUnitCount'); if(countEl) countEl.textContent = String(rowCount);
   const form = qs('#divideAmountsForm'); if(form) form.reset();
+  const otherNameSelect = qs('#divideOtherName');
+  if(otherNameSelect) populateOtherChargeSelect(otherNameSelect, '');
   modal.style.display = 'block';
 }
 function closeDivideAmountsModal(){
@@ -2223,24 +2214,53 @@ if(divideAmountsForm){
     const rowEls = Array.from(wrap.querySelectorAll('.unit-breakdown-row'));
     if(rowEls.length === 0){ closeDivideAmountsModal(); return; }
 
-    const taxTotal = parseCurrency(qs('#divideTax').value) || 0;
-    const otherTotal = parseCurrency(qs('#divideOther').value) || 0;
-    const chargeTotal = parseCurrency(qs('#divideCharge').value) || 0;
+    // A blank field parses to null; an explicit 0 is just as much "nothing to divide" as blank
+    // — either way the field is skipped entirely rather than distributing $0.00 across every
+    // unit, which would otherwise silently blank out whatever was already entered there.
+    const taxTotal = parseCurrency(qs('#divideTax').value);
+    const chargeTotal = parseCurrency(qs('#divideCharge').value);
+    const otherName = ((qs('#divideOtherName') || {}).value || '').trim();
+    const otherAmountTotal = parseCurrency(qs('#divideOtherAmount').value);
+    const otherTaxTotal = parseCurrency(qs('#divideOtherTax').value);
 
-    const taxParts = splitAmountEvenly(taxTotal, rowEls.length);
-    const otherParts = splitAmountEvenly(otherTotal, rowEls.length);
-    const chargeParts = splitAmountEvenly(chargeTotal, rowEls.length);
-
-    rowEls.forEach((row, i) => {
-      const taxInput = row.querySelector('.ub-tax');
-      const otherInput = row.querySelector('.ub-other');
-      const chargeInput = row.querySelector('.ub-charge');
-      // Dispatch a real "input" event on each so the existing auto-grow/total-recalculation
-      // listeners fire naturally, same as if the user had typed the value themselves.
-      if(taxInput){ taxInput.value = taxParts[i]; taxInput.dispatchEvent(new Event('input')); }
-      if(otherInput){ otherInput.value = otherParts[i]; otherInput.dispatchEvent(new Event('input')); }
-      if(chargeInput){ chargeInput.value = chargeParts[i]; chargeInput.dispatchEvent(new Event('input')); }
-    });
+    if(taxTotal){
+      const taxParts = splitAmountEvenly(taxTotal, rowEls.length);
+      rowEls.forEach((row, i) => {
+        const taxInput = row.querySelector('.ub-tax');
+        if(taxInput){ taxInput.value = taxParts[i]; taxInput.dispatchEvent(new Event('input')); }
+      });
+    }
+    if(chargeTotal){
+      const chargeParts = splitAmountEvenly(chargeTotal, rowEls.length);
+      rowEls.forEach((row, i) => {
+        const chargeInput = row.querySelector('.ub-charge');
+        if(chargeInput){ chargeInput.value = chargeParts[i]; chargeInput.dispatchEvent(new Event('input')); }
+      });
+    }
+    // Other Charges no longer accepts one flat number for the whole unit — that used to get
+    // dumped straight into the hidden rollup field and, on every unit, wipe out any named
+    // charges (Freight, Fuel, etc.) already entered there. Instead this adds ONE new named
+    // subcharge row per unit (via the same "+ Other" button the operator would click by hand),
+    // so existing named charges on every unit are left completely untouched.
+    if(otherAmountTotal || otherTaxTotal){
+      const otherAmountParts = otherAmountTotal ? splitAmountEvenly(otherAmountTotal, rowEls.length) : null;
+      const otherTaxParts = otherTaxTotal ? splitAmountEvenly(otherTaxTotal, rowEls.length) : null;
+      rowEls.forEach((row, i) => {
+        const addBtn = row.querySelector('.ub-other-add-btn');
+        const uid = row.dataset.unitId;
+        if(!addBtn || !uid) return;
+        addBtn.click();
+        const subWrap = wrap.querySelector(`.unit-breakdown-subcharges[data-unit-id="${CSS.escape(uid)}"]`);
+        const newSubRow = subWrap ? subWrap.querySelector('.unit-breakdown-subcharge-row:last-child') : null;
+        if(!newSubRow) return;
+        const nameSelect = newSubRow.querySelector('.ub-sub-name');
+        const amountInput = newSubRow.querySelector('.ub-sub-amount');
+        const taxInputSub = newSubRow.querySelector('.ub-sub-tax');
+        if(nameSelect && otherName){ nameSelect.value = otherName; nameSelect.dispatchEvent(new Event('change')); }
+        if(amountInput && otherAmountParts){ amountInput.value = otherAmountParts[i]; amountInput.dispatchEvent(new Event('input')); }
+        if(taxInputSub && otherTaxParts){ taxInputSub.value = otherTaxParts[i]; taxInputSub.dispatchEvent(new Event('input')); }
+      });
+    }
 
     closeDivideAmountsModal();
   });
@@ -13541,6 +13561,14 @@ function renderAccrualsAccruedList(){
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f0f0f0';
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
+    tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
+    tr.addEventListener('click', () => {
+      Array.from(tbody.querySelectorAll('tr')).forEach(row => { row.dataset.selected = ''; row.style.backgroundColor = ''; });
+      tr.dataset.selected = 'true';
+      tr.style.backgroundColor = '#e6f0ff';
+    });
     if(isViewingOpenMonth){
       const tdRemove = document.createElement('td');
       tdRemove.style.cssText = 'padding:4px 6px;text-align:center;';
@@ -13549,7 +13577,7 @@ function renderAccrualsAccruedList(){
       removeBtn.textContent = '−';
       removeBtn.title = 'Remove — sends this period back to the missing-periods review list';
       removeBtn.style.cssText = 'width:18px;height:18px;line-height:14px;padding:0;border-radius:4px;border:1px solid #dc2626;background:transparent;color:#dc2626;font-weight:700;font-size:13px;cursor:pointer;';
-      removeBtn.addEventListener('click', () => removeAccrualRecord(r.id));
+      removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeAccrualRecord(r.id); });
       tdRemove.appendChild(removeBtn);
       tr.appendChild(tdRemove);
     }
@@ -13741,6 +13769,14 @@ function renderAccrualsNotAccruableList(){
   rows.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f0f0f0';
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('mouseenter', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = '#f3f6fb'; });
+    tr.addEventListener('mouseleave', () => { if(tr.dataset.selected !== 'true') tr.style.backgroundColor = ''; });
+    tr.addEventListener('click', () => {
+      Array.from(tbody.querySelectorAll('tr')).forEach(row => { row.dataset.selected = ''; row.style.backgroundColor = ''; });
+      tr.dataset.selected = 'true';
+      tr.style.backgroundColor = '#e6f0ff';
+    });
 
     const tdRemove = document.createElement('td');
     tdRemove.style.cssText = 'padding:4px 6px;text-align:center;';
@@ -13749,7 +13785,7 @@ function renderAccrualsNotAccruableList(){
     removeBtn.textContent = '−';
     removeBtn.title = 'Remove — sends this period back to the missing-periods review list';
     removeBtn.style.cssText = 'width:18px;height:18px;line-height:14px;padding:0;border-radius:4px;border:1px solid #dc2626;background:transparent;color:#dc2626;font-weight:700;font-size:13px;cursor:pointer;';
-    removeBtn.addEventListener('click', () => removeNotAccruableRecord(r.id));
+    removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeNotAccruableRecord(r.id); });
     tdRemove.appendChild(removeBtn);
     tr.appendChild(tdRemove);
 

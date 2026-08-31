@@ -1020,20 +1020,24 @@
     <div class="modal-backdrop"></div>
     <div class="modal-dialog" role="document" style="max-width:380px;">
       <h3>Divide Amounts Evenly</h3>
-      <div class="small-muted" style="margin-bottom:12px;">Enter the invoice's total Tax, Other Charges, and Amount — each will be split evenly across the <strong id="divideUnitCount">0</strong> selected units.</div>
+      <div class="small-muted" style="margin-bottom:12px;">Only the fields you fill in are split evenly across the <strong id="divideUnitCount">0</strong> selected units — a blank or 0 field is left untouched everywhere, so this never erases an amount you already entered.</div>
       <form id="divideAmountsForm" style="display:flex;flex-direction:column;gap:12px;">
         <label style="display:flex;flex-direction:column;gap:4px;">
           <span style="font-weight:600;font-size:13px;">Tax</span>
           <input id="divideTax" type="text" class="money-input" inputmode="decimal" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;">
-          <span style="font-weight:600;font-size:13px;">Other Charges</span>
-          <input id="divideOther" type="text" class="money-input" inputmode="decimal" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
-        </label>
-        <label style="display:flex;flex-direction:column;gap:4px;">
           <span style="font-weight:600;font-size:13px;">Amount</span>
           <input id="divideCharge" type="text" class="money-input" inputmode="decimal" placeholder="0.00" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
         </label>
+        <div style="border-top:1px solid #e6e9ee;padding-top:10px;">
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px;">Other Charge <span class="small-muted" style="font-weight:400;">(optional — added as a new named line on every unit, existing charges are kept)</span></div>
+          <div style="display:flex;gap:8px;">
+            <select id="divideOtherName" style="flex:1 1 130px;padding:8px;border:1px solid #e6e6e6;border-radius:6px;"><option value="">(select charge type)</option></select>
+            <input id="divideOtherAmount" type="text" class="money-input" inputmode="decimal" placeholder="Amount" style="flex:0 0 90px;padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+            <input id="divideOtherTax" type="text" class="money-input" inputmode="decimal" placeholder="Tax" style="flex:0 0 80px;padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+          </div>
+        </div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
           <button type="button" id="divideAmountsCancelBtn">Cancel</button>
           <button type="submit" class="btn-primary">Divide</button>
@@ -1463,8 +1467,8 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.28"></script>
-  <script src="app.js?v=11.28"></script>
-  <script src="pdfImport.js?v=11.28"></script>
+  <script src="db.js?v=11.30"></script>
+  <script src="app.js?v=11.30"></script>
+  <script src="pdfImport.js?v=11.30"></script>
 </body>
 </html>
