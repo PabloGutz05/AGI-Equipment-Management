@@ -1,15 +1,24 @@
 // --- Import Invoice (PDF) tab ---------------------------------------------------------
-// Parses TCR Americas' quarterly usage-detail invoice PDF (always the same fixed layout:
-// per-unit rows of barcode/fleet code/model/dates/Labour|Parts|Usage amounts, repeated once
-// per billed month) and turns it into the same per-unit-per-period structure the Invoice
-// Registration form's quarterly period tables already expect. Usage is the unit's actual
-// rent, so it becomes the main Charge amount; Labour and Parts are billed alongside it but
-// aren't rent, so they're placed as named Other Charges instead (matching how the rest of
-// the app already distinguishes rent from other charges). The preview tables below are the
-// exact same interactive component the real registration form uses, so the operator can
-// re-categorize or edit any amount before it's sent. Nothing here writes to state or DB
-// directly — "Send to Registration" only fills in the real #invoiceForm fields/tables, so
-// the existing validation, uniqueness checks and save logic are exactly what runs.
+// Parses two known supplier invoice layouts and turns each into the same per-unit
+// Tax/Other Charges/Amount structure the Invoice Registration form already expects:
+//   - TCR Americas' quarterly usage-detail invoice (always the same fixed layout: per-unit
+//     rows of barcode/fleet code/model/dates/Labour|Parts|Usage amounts, repeated once per
+//     billed month, all under ONE lease). Usage is the unit's actual rent, so it becomes the
+//     main Charge amount; Labour and Parts are billed alongside it but aren't rent, so
+//     they're placed as named Other Charges instead.
+//   - Toyota Industries Commercial Finance's account invoice summary (one "ACCOUNT
+//     INFORMATION / SUMMARY OF CHARGES" block per contract/unit, each contract billed under
+//     its OWN lease — a single PDF can span many leases at once). Each block's Contract
+//     Number is this system's Lease Number, its Description line is the UnitId, and its
+//     charge row(s) split straight into Charge + Tax. Toyota invoices only ever cover a
+//     single month and never print the period's start date — only the Invoice Date, which
+//     doubles as that period's end/"to" date; the operator fills in the start date by hand.
+// Which parser runs is auto-detected from the PDF's own text (detectInvoiceType) — the
+// operator never has to pick a format. The preview tables below are the exact same
+// interactive component the real registration form uses, so the operator can re-categorize
+// or edit any amount before it's sent. Nothing here writes to state or DB directly — "Send
+// to Registration" only fills in the real #invoiceForm fields/tables, so the existing
+// validation, uniqueness checks and save logic are exactly what runs.
 
 (function(){
   const PDFJS_VERSION = '6.2.108';
@@ -50,6 +59,17 @@
       });
     }
     return rows;
+  }
+
+  function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  // Picks which of the two known parsers to run, straight from the PDF's own text — the
+  // operator never has to declare the format up front.
+  function detectInvoiceType(rows){
+    const joined = rows.join(' ');
+    if(/Toyota Industries Commercial Finance/i.test(joined) || /Toyotacf\.com/i.test(joined)) return 'toyota';
+    if(rows.some(r => /Document Detail/i.test(r))) return 'tcr';
+    return 'unknown';
   }
 
   function monthKeyFromMDY(mdy){
@@ -220,6 +240,100 @@
     return info;
   }
 
+  // ---- Toyota Industries Commercial Finance: account invoice summary ----
+
+  function parseToyotaHeaderInfo(rows){
+    const info = { docNumber:'', invoiceDateIso:'', subtotalAmount:null, tax:null, totalAmount:null };
+    rows.forEach(text => {
+      let m;
+      if(!info.docNumber && (m = text.match(/^Invoice Number\s+(\S+)/))) info.docNumber = m[1];
+      if(!info.invoiceDateIso && (m = text.match(/^Invoice Date\s+(\d{2})\/(\d{2})\/(\d{4})/))) info.invoiceDateIso = `${m[3]}-${m[1]}-${m[2]}`;
+      // The recap block on the final page ("Total Amount Due:") is the WHOLE invoice's grand
+      // total split into Amount/Tax/Total — distinct from each per-contract "Total Amount Due
+      // <contract#> ..." row (no colon, four trailing numbers) parsed separately below. Used
+      // purely as a cross-check against the sum of everything actually parsed.
+      if(info.totalAmount === null && (m = text.match(/^Total Amount Due:\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})$/))){
+        info.subtotalAmount = parseFloat(m[1].replace(/,/g,''));
+        info.tax = parseFloat(m[2].replace(/,/g,''));
+        info.totalAmount = parseFloat(m[3].replace(/,/g,''));
+      }
+    });
+    return info;
+  }
+
+  // Every contract/unit on a Toyota statement gets its own "ACCOUNT INFORMATION / SUMMARY OF
+  // CHARGES" block: a Contract Number (== this system's Lease Number), a Description line
+  // naming the unit (its UnitId), then one or more named charge rows (Base Payment, and
+  // occasionally Late Charges/Property Tax/Other Charges) each shaped
+  // "<label> $amount $tax $total", closed out by that same contract's own "Total Amount Due
+  // <contract#> ..." recap row. Charge/Tax are summed across every charge row found in the
+  // block — this invoice never breaks a unit's charges into named sub-types the way TCR's
+  // Labour/Parts do, so everything simply rolls into the unit's plain Charge + Tax. A block
+  // missing either its unit id or a readable charge amount is recorded as an issue for the
+  // operator to complete, exactly like TCR's unrecognized rows.
+  function parseToyotaBlocks(rows){
+    const units = [];
+    const issues = [];
+    let issueSeq = 0;
+
+    for(let i = 0; i < rows.length; i++){
+      let contractNumber = null;
+      let m = rows[i].match(/^Contract Number\s+(\S+)/);
+      if(m) contractNumber = m[1];
+      else if(/^Contract Number$/i.test(rows[i].trim()) && rows[i+1]) contractNumber = rows[i+1].trim();
+      if(!contractNumber) continue;
+
+      // This block's end: its own "Total Amount Due <contract#>" recap row, or — if that's
+      // missing/garbled — the next "Contract Number" line, whichever comes first.
+      let endIdx = rows.length;
+      const totalDueRe = new RegExp('^Total Amount Due\\s+' + escapeRegExp(contractNumber) + '\\b');
+      for(let j = i + 1; j < rows.length; j++){
+        if(totalDueRe.test(rows[j]) || /^Contract Number\b/i.test(rows[j])){ endIdx = j; break; }
+      }
+
+      // Unit id: the first non-empty line after "Description", bounded to this block.
+      let unitId = null;
+      for(let j = i + 1; j < endIdx; j++){
+        if(/^Description\b/i.test(rows[j].trim())){
+          for(let k = j + 1; k < endIdx; k++){
+            const t = rows[k].trim();
+            if(!t) continue;
+            unitId = t;
+            break;
+          }
+          break;
+        }
+      }
+
+      // Charge row(s): "<label...> $amount $tax $total" — sum Amount/Tax across every one
+      // found. Explicitly skips this contract's own "Total Amount Due" recap row (it has FOUR
+      // trailing numbers, not three, but a lazy label match could otherwise still absorb the
+      // extra one and misparse it as a charge line if the endIdx boundary above ever missed it).
+      let charge = 0, tax = 0, chargeRowsFound = 0;
+      for(let j = i + 1; j < endIdx; j++){
+        if(/^Total Amount Due\b/i.test(rows[j])) continue;
+        const cm = rows[j].match(/^(.+?)\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})\s+\$?([\d,]+\.\d{2})$/);
+        if(!cm) continue;
+        charge += parseFloat(cm[2].replace(/,/g,''));
+        tax += parseFloat(cm[3].replace(/,/g,''));
+        chargeRowsFound++;
+      }
+
+      if(!unitId || chargeRowsFound === 0){
+        issues.push({
+          id: 'iss' + (++issueSeq), contractNumber, unitId: unitId || '',
+          charge: chargeRowsFound ? charge : null, tax: chargeRowsFound ? tax : null,
+          rawText: rows[i], reason: !unitId ? 'Could not find the unit id (Description line) for this contract.' : 'Could not find a charge amount for this contract.'
+        });
+        continue;
+      }
+
+      units.push({ contractNumber, unitId, charge, tax });
+    }
+
+    return { units, issues };
+  }
+
   // Maps a parsed bucket ("Labour"/"Parts") to whichever Other Charge Type name is already
   // configured on the Developer tab, so the preview's dropdown lands on a real option instead
   // of an ad-hoc "(not in list)" one whenever a matching type already exists.
@@ -281,16 +395,21 @@
   }
 
   // ---- Review UI state ----
-  // { header, baseUnitMonthCat, monthRanges, issues, periods, matchedUnitIds, unmatchedUnitIds,
-  //   overallFrom, overallTo } — baseUnitMonthCat holds only confidently-parsed amounts and is
-  // never mutated; issues holds the operator-editable rows shown at the top of the screen.
-  // periods/matchedUnitIds/etc. are always derived fresh from those two via recompute().
+  // _reviewData.type ('tcr' | 'toyota') decides which shape the rest of this object has and
+  // which recompute/render/send function runs. In both shapes, the "base" field(s) hold only
+  // confidently-parsed data and are never mutated directly; issues holds the operator-editable
+  // rows shown at the top of the screen; everything else is always derived fresh from those two
+  // via recompute() — this is what makes editing an issue row update the tables below live.
+  //   tcr:    { header, baseUnitMonthCat, monthRanges, issues, periods, matchedUnitIds,
+  //             unmatchedUnitIds, overallFrom, overallTo }
+  //   toyota: { header, baseUnits, issues, rows, matchedUnitIds, unmatchedUnitIds,
+  //             matchedLeaseNumbers, unmatchedLeaseContracts, leaseMismatches, unitData }
   let _reviewData = null;
 
   // Folds baseUnitMonthCat + every issue that currently has a complete unit/period/category/
   // amount into one combined map, then rebuilds periods/matchedUnitIds/etc. from it — this is
   // what makes editing a row in the issues table show up in the tables below.
-  function recompute(){
+  function recomputeTcr(){
     const combined = {};
     Object.keys(_reviewData.baseUnitMonthCat).forEach(uid => {
       combined[uid] = {};
@@ -312,6 +431,74 @@
     _reviewData.unmatchedUnitIds = built.unmatchedUnitIds;
     _reviewData.overallFrom = built.overallFrom;
     _reviewData.overallTo = built.overallTo;
+  }
+
+  // Toyota equivalent of recomputeTcr(): folds baseUnits + every issue that now has a
+  // complete contract/unit/charge into one combined row list, then rebuilds
+  // matchedUnitIds/matchedLeaseNumbers/unitData/etc. from it.
+  function recomputeToyota(){
+    const combined = _reviewData.baseUnits.slice();
+    _reviewData.issues.forEach(issue => {
+      if(!issue.contractNumber || !issue.unitId) return;
+      const c = Number(issue.charge);
+      if(!isFinite(c)) return;
+      const t = Number(issue.tax);
+      combined.push({ contractNumber: issue.contractNumber, unitId: issue.unitId, charge: c, tax: isFinite(t) ? t : 0 });
+    });
+
+    const existingUnitIds = new Set((state.units||[]).map(u => (u.unitId||u.id||'').toString().trim().toLowerCase()));
+    const matchedUnitIds = [];
+    const unmatchedUnitIds = [];
+    const matchedLeaseNumbers = [];
+    const unmatchedLeaseContracts = [];
+    const leaseMismatches = [];
+    const unitData = {};
+
+    combined.forEach(row => {
+      const uidKey = row.unitId.toString().trim().toLowerCase();
+      const unitMatched = existingUnitIds.has(uidKey);
+      if(unitMatched){
+        if(matchedUnitIds.indexOf(row.unitId) === -1) matchedUnitIds.push(row.unitId);
+        const existing = unitData[row.unitId];
+        // Same unit listed more than once in one PDF (shouldn't normally happen on this
+        // invoice format) — sum rather than silently overwrite so nothing disappears.
+        if(existing){
+          const newCharge = (parseCurrency(existing.charge)||0) + row.charge;
+          const newTax = (parseCurrency(existing.tax)||0) + row.tax;
+          existing.charge = newCharge ? newCharge.toFixed(2) : '';
+          existing.tax = newTax ? newTax.toFixed(2) : '';
+        } else {
+          unitData[row.unitId] = { charge: row.charge ? row.charge.toFixed(2) : '', tax: row.tax ? row.tax.toFixed(2) : '', other: '', otherChargeDetails: [] };
+        }
+      } else if(unmatchedUnitIds.indexOf(row.unitId) === -1){
+        unmatchedUnitIds.push(row.unitId);
+      }
+
+      const leaseRec = (state.leases||[]).find(l => (l.leaseNumber||l.id||'').toString().trim().toLowerCase() === row.contractNumber.toString().trim().toLowerCase());
+      if(leaseRec){
+        const leaseKey = (leaseRec.leaseNumber||leaseRec.id||'').toString();
+        if(matchedLeaseNumbers.indexOf(leaseKey) === -1) matchedLeaseNumbers.push(leaseKey);
+        const unitRec = (state.units||[]).find(u => (u.unitId||u.id||'').toString().trim().toLowerCase() === uidKey);
+        if(unitRec && (unitRec.lease||'').toString().trim().toLowerCase() !== leaseKey.toLowerCase()){
+          leaseMismatches.push(`Unit ${row.unitId} is registered under lease "${unitRec.lease || '(none)'}" but this invoice lists it under contract "${row.contractNumber}" — it won't be pre-checked or included in the total below until you fix the lease or select it manually.`);
+        }
+      } else if(unmatchedLeaseContracts.indexOf(row.contractNumber) === -1){
+        unmatchedLeaseContracts.push(row.contractNumber);
+      }
+    });
+
+    _reviewData.rows = combined;
+    _reviewData.matchedUnitIds = matchedUnitIds;
+    _reviewData.unmatchedUnitIds = unmatchedUnitIds;
+    _reviewData.matchedLeaseNumbers = matchedLeaseNumbers;
+    _reviewData.unmatchedLeaseContracts = unmatchedLeaseContracts;
+    _reviewData.leaseMismatches = leaseMismatches;
+    _reviewData.unitData = unitData;
+  }
+
+  function recompute(){
+    if(_reviewData.type === 'toyota') recomputeToyota();
+    else recomputeTcr();
   }
 
   function monthLabel(key){
@@ -341,7 +528,7 @@
     }).join('');
   }
 
-  function renderIssuesTable(){
+  function renderIssuesTableTcr(){
     const issuesWrap = qs('#pdfImportIssuesWrap');
     if(!issuesWrap) return;
     issuesWrap.innerHTML = '';
@@ -420,7 +607,7 @@
     issuesWrap.appendChild(table);
   }
 
-  function renderReview(){
+  function renderReviewTcr(){
     const wrap = qs('#pdfImportReview');
     const headerWrap = qs('#pdfImportHeaderInfo');
     const warnWrap = qs('#pdfImportWarnings');
@@ -429,7 +616,7 @@
 
     const { header, periods, matchedUnitIds, unmatchedUnitIds, overallFrom, overallTo, issues } = _reviewData;
 
-    renderIssuesTable();
+    renderIssuesTableTcr();
 
     const leaseRec = (state.leases||[]).find(l => (l.leaseNumber||'').toString().trim().toLowerCase() === (header.leaseNumber||'').toString().trim().toLowerCase());
     const isQuarterlyLease = !!(leaseRec && (leaseRec.arrangement||'').toString().trim().toLowerCase() === 'quarterly');
@@ -507,7 +694,161 @@
     wrap.style.display = 'block';
   }
 
-  function sendToRegistration(){
+  // Toyota equivalent of renderIssuesTableTcr(): one editable row per contract that couldn't
+  // be confidently parsed (no unit id found and/or no readable charge amount).
+  function renderIssuesTableToyota(){
+    const issuesWrap = qs('#pdfImportIssuesWrap');
+    if(!issuesWrap) return;
+    issuesWrap.innerHTML = '';
+    const issues = _reviewData.issues;
+    if(!issues || issues.length === 0) return;
+
+    const title = document.createElement('div');
+    title.innerHTML = `<strong>⚠ ${issues.length} contract(s) need review</strong> — edit Contract/Unit/Charge/Tax below; changes apply to the table further down immediately.`;
+    title.style.cssText = 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:6px;padding:8px 10px;font-size:12px;margin-bottom:8px;';
+    issuesWrap.appendChild(title);
+
+    const table = document.createElement('table');
+    table.style.cssText = 'border-collapse:collapse;width:100%;font-size:12px;';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Contract Number','Unit','Charge','Tax','Reason','Raw text','']
+      .forEach(label => { const th = document.createElement('th'); th.textContent = label; th.style.cssText = 'text-align:left;padding:6px 8px;border-bottom:2px solid #fecaca;background:#fef2f2;'; headRow.appendChild(th); });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    issues.forEach(issue => {
+      const tr = document.createElement('tr'); tr.style.cssText = 'background:#fff5f5;';
+      const mk = (el) => { const td = document.createElement('td'); td.style.cssText = 'padding:4px 8px;border-bottom:1px solid #fee2e2;'; td.appendChild(el); tr.appendChild(td); };
+
+      const contractInput = document.createElement('input'); contractInput.type = 'text'; contractInput.value = issue.contractNumber || '';
+      contractInput.style.cssText = 'width:130px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      contractInput.addEventListener('input', () => { issue.contractNumber = contractInput.value.trim(); recompute(); renderReview(); });
+      mk(contractInput);
+
+      const unitInput = document.createElement('input'); unitInput.type = 'text'; unitInput.value = issue.unitId || '';
+      unitInput.style.cssText = 'width:100px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      unitInput.addEventListener('input', () => { issue.unitId = unitInput.value.trim(); recompute(); renderReview(); });
+      mk(unitInput);
+
+      const chargeInput = document.createElement('input'); chargeInput.type = 'text'; chargeInput.inputMode = 'decimal';
+      chargeInput.value = (issue.charge === null || issue.charge === undefined) ? '' : issue.charge.toFixed(2);
+      chargeInput.style.cssText = 'width:90px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      chargeInput.addEventListener('input', () => { issue.charge = parseCurrency(chargeInput.value); recompute(); renderReview(); });
+      mk(chargeInput);
+
+      const taxInput = document.createElement('input'); taxInput.type = 'text'; taxInput.inputMode = 'decimal';
+      taxInput.value = (issue.tax === null || issue.tax === undefined) ? '' : issue.tax.toFixed(2);
+      taxInput.style.cssText = 'width:90px;padding:3px 6px;border:1px solid #e6e9ee;border-radius:4px;';
+      taxInput.addEventListener('input', () => { issue.tax = parseCurrency(taxInput.value); recompute(); renderReview(); });
+      mk(taxInput);
+
+      const reasonEl = document.createElement('div'); reasonEl.textContent = issue.reason; reasonEl.style.cssText = 'max-width:220px;color:#7f1d1d;';
+      mk(reasonEl);
+
+      const rawEl = document.createElement('div'); rawEl.textContent = issue.rawText; rawEl.title = issue.rawText;
+      rawEl.style.cssText = 'max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9ca3af;';
+      mk(rawEl);
+
+      const dismissBtn = document.createElement('button'); dismissBtn.type = 'button'; dismissBtn.textContent = 'Dismiss';
+      dismissBtn.title = 'Accept the current values as final and stop flagging this row';
+      dismissBtn.style.cssText = 'font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;background:#f9fafb;cursor:pointer;';
+      dismissBtn.addEventListener('click', () => {
+        if(issue.contractNumber && issue.unitId && isFinite(Number(issue.charge))){
+          _reviewData.baseUnits.push({ contractNumber: issue.contractNumber, unitId: issue.unitId, charge: Number(issue.charge), tax: isFinite(Number(issue.tax)) ? Number(issue.tax) : 0 });
+        }
+        _reviewData.issues = _reviewData.issues.filter(i => i.id !== issue.id);
+        recompute();
+        renderReview();
+      });
+      mk(dismissBtn);
+
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    issuesWrap.appendChild(table);
+  }
+
+  function renderReviewToyota(){
+    const wrap = qs('#pdfImportReview');
+    const headerWrap = qs('#pdfImportHeaderInfo');
+    const warnWrap = qs('#pdfImportWarnings');
+    const tableWrap = qs('#pdfImportTableWrap');
+    if(!wrap || !headerWrap || !warnWrap || !tableWrap || !_reviewData) return;
+
+    const { header, matchedUnitIds, unmatchedUnitIds, unmatchedLeaseContracts, leaseMismatches, unitData, rows } = _reviewData;
+
+    renderIssuesTableToyota();
+
+    headerWrap.innerHTML = '';
+    [
+      ['Doc Number', header.docNumber || '(not found)'],
+      ['Invoice Date', header.invoiceDateIso ? formatDate(header.invoiceDateIso) : '(not found)'],
+      ['Period Start', 'not in this PDF — enter manually on the registration form'],
+      ['Period End', header.invoiceDateIso ? (formatDate(header.invoiceDateIso) + ' (from Invoice Date)') : '(not found)'],
+      ['WD Invoice Number', 'not in this PDF — enter manually on the registration form'],
+      ['Contracts found', String(rows.length) + ' (' + matchedUnitIds.length + ' matched unit(s))']
+    ].forEach(([label, val]) => {
+      const row = document.createElement('div');
+      row.innerHTML = `<strong>${label}:</strong> ${val}`;
+      headerWrap.appendChild(row);
+    });
+
+    warnWrap.innerHTML = '';
+    const warnings = [];
+    if(unmatchedLeaseContracts.length > 0) warnings.push(`${unmatchedLeaseContracts.length} contract number(s) don't match any lease in the system: ${unmatchedLeaseContracts.join(', ')}`);
+    if(unmatchedUnitIds.length > 0) warnings.push(`${unmatchedUnitIds.length} unit(s) in the PDF don't match any UnitId in the system and will be skipped: ${unmatchedUnitIds.join(', ')}`);
+    leaseMismatches.forEach(msg => warnings.push(msg));
+    const parsedSum = rows.reduce((s,r) => s + r.charge + r.tax, 0);
+    if(header.subtotalAmount !== null && header.tax !== null){
+      const pdfSum = header.subtotalAmount + header.tax;
+      if(Math.round(parsedSum*100) !== Math.round(pdfSum*100)){
+        warnings.push(`Parsed total (${formatCurrency(parsedSum.toFixed(2))}) doesn't match the PDF's own grand total (${formatCurrency(pdfSum.toFixed(2))}) — some rows may not have been read correctly, or some contracts/units aren't in the system yet.`);
+      }
+    }
+    warnings.forEach(msg => {
+      const d = document.createElement('div');
+      d.style.cssText = 'background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;font-size:12px;margin-bottom:6px;';
+      d.textContent = '⚠ ' + msg;
+      warnWrap.appendChild(d);
+    });
+
+    tableWrap.innerHTML = '';
+    if(matchedUnitIds.length === 0){
+      const none = document.createElement('div'); none.className = 'small-muted'; none.textContent = 'No units from this PDF matched an existing UnitId.';
+      tableWrap.appendChild(none);
+      wrap.style.display = 'block';
+      return;
+    }
+
+    // Always a single flat breakdown table -- this invoice format only ever covers one month.
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid #e6e9ee;border-radius:8px;padding:10px;margin-bottom:14px;background:#fafbfc;';
+    const title = document.createElement('strong');
+    title.textContent = 'Charges' + (header.invoiceDateIso ? ' (period start — fill in manually — through ' + formatDate(header.invoiceDateIso) + ')' : '');
+    card.appendChild(title);
+    const wrapId = 'pdfImportPreview_0';
+    const wrapDiv = document.createElement('div');
+    wrapDiv.id = wrapId;
+    wrapDiv.className = 'invoice-unit-breakdown';
+    wrapDiv.style.marginTop = '8px';
+    card.appendChild(wrapDiv);
+    tableWrap.appendChild(card);
+    renderUnitBreakdownTable(wrapId, matchedUnitIds, null, unitData, { showEmptyRow: true });
+    // There's no "declared Amount" to compare against in this preview (that only exists once
+    // it's on the real registration form), so the shared component's red/green matching color
+    // would otherwise always show red here on every edit — pin it to a neutral color.
+    const totalEl = wrapDiv.querySelector('.unit-breakdown-total-text');
+    if(totalEl){
+      totalEl.style.color = '#374151';
+      new MutationObserver(() => { totalEl.style.color = '#374151'; }).observe(totalEl, { childList: true, characterData: true, subtree: true });
+    }
+
+    wrap.style.display = 'block';
+  }
+
+  function sendToRegistrationTcr(){
     if(!_reviewData) return;
     const { header, periods, matchedUnitIds } = _reviewData;
     if(matchedUnitIds.length === 0){ alert('No matched units to send.'); return; }
@@ -612,6 +953,77 @@
     const wdInput = qs('#invoiceWD'); if(wdInput) wdInput.focus();
   }
 
+  // Toyota equivalent of sendToRegistrationTcr(): always a single flat breakdown table (this
+  // invoice format is never quarterly), but across potentially MANY leases at once — every
+  // contract number that matched a real lease gets checked, exactly like editing an existing
+  // multi-lease invoice group does elsewhere in this app. Period Start is left blank (this
+  // invoice never prints it) so the operator notices and fills it in; Period End defaults to
+  // the invoice date, which is this format's stand-in "through" date.
+  function sendToRegistrationToyota(){
+    if(!_reviewData) return;
+    const { header, matchedUnitIds, matchedLeaseNumbers } = _reviewData;
+    if(matchedUnitIds.length === 0){ alert('No matched units to send.'); return; }
+
+    // Pull whatever is currently in the live preview table — including any manual edits —
+    // rather than the frozen originally-parsed values.
+    const seed = getUnitBreakdownRowsData('pdfImportPreview_0');
+
+    const invoicesTabBtn = document.querySelector('.tab[data-tab="invoices"]');
+    if(invoicesTabBtn) invoicesTabBtn.click();
+
+    const form = qs('#invoiceForm');
+    if(!form) return;
+    form.reset();
+    delete form.dataset.editing; delete form.dataset.editingGroupIds;
+    if(typeof resetInvoiceQuarterlyPeriods === 'function') resetInvoiceQuarterlyPeriods();
+
+    const docInput = qs('#invoiceDoc'); if(docInput) docInput.value = header.docNumber || '';
+    const pStart = qs('#invoicePeriodStart'); if(pStart) pStart.value = ''; // not printed on this invoice -- operator fills in
+    const pEnd = qs('#invoicePeriodEnd'); if(pEnd) pEnd.value = header.invoiceDateIso || '';
+    const invDate = qs('#invoiceSupplierInvoiceDate'); if(invDate && header.invoiceDateIso) invDate.value = header.invoiceDateIso;
+
+    const catSel = qs('#invoiceCategory');
+    if(catSel){
+      const opt = Array.from(catSel.options).find(o => o.value.toLowerCase() === 'rental');
+      if(opt) catSel.value = opt.value;
+    }
+
+    if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions(matchedLeaseNumbers);
+    if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
+    if(typeof syncInvoiceUnitOptions === 'function') syncInvoiceUnitOptions(matchedLeaseNumbers, matchedUnitIds);
+    if(typeof updateInvoiceAddPeriodAvailability === 'function') updateInvoiceAddPeriodAvailability();
+
+    if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown(seed);
+    // The real breakdown table (and so the actual invoice) only ever gets a row for whichever
+    // units actually ended up checked in the unit picker — the unit picker itself only ever
+    // offers units whose OWN registered lease is one of the leases just checked above, so a
+    // unit flagged by leaseMismatches above (registered under a different lease than this
+    // invoice lists it under) never makes it in. Summing every matched unit's seed here
+    // regardless would silently overstate the Declared Amount past what the breakdown table
+    // actually adds up to, so the total is scoped to only what's really selected instead.
+    const actualUnitIds = typeof getSelectedInvoiceUnits === 'function' ? getSelectedInvoiceUnits() : matchedUnitIds;
+    const totalAmount = actualUnitIds.reduce((s,uid) => s + (seed[uid] ? seedRowTotal(seed[uid]) : 0), 0);
+
+    const amountInput = qs('#invoiceAmount');
+    if(amountInput){ amountInput.value = totalAmount.toFixed(2); amountInput.dispatchEvent(new Event('input')); }
+    if(typeof updateUnitBreakdownTotal === 'function') updateUnitBreakdownTotal('invoiceUnitBreakdown');
+    if(typeof updateQuarterlyPeriodsAggregateTotal === 'function') updateQuarterlyPeriodsAggregateTotal();
+
+    const wdInput = qs('#invoiceWD'); if(wdInput) wdInput.focus();
+  }
+
+  function renderReview(){
+    if(!_reviewData) return;
+    if(_reviewData.type === 'toyota') renderReviewToyota();
+    else renderReviewTcr();
+  }
+
+  function sendToRegistration(){
+    if(!_reviewData) return;
+    if(_reviewData.type === 'toyota') sendToRegistrationToyota();
+    else sendToRegistrationTcr();
+  }
+
   async function handleFile(file){
     const statusEl = qs('#pdfImportStatus');
     const reviewWrap = qs('#pdfImportReview');
@@ -624,13 +1036,29 @@
       const buf = await file.arrayBuffer();
       const pdf = await lib.getDocument({ data: buf }).promise;
       const rows = await extractRows(pdf);
+      const invoiceType = detectInvoiceType(rows);
+
+      if(invoiceType === 'toyota'){
+        const header = parseToyotaHeaderInfo(rows);
+        const { units, issues } = parseToyotaBlocks(rows);
+        if(units.length === 0 && issues.length === 0){
+          if(statusEl) statusEl.textContent = 'No recognizable contract/charge blocks found — this may not be a Toyota Industries Commercial Finance invoice.';
+          return;
+        }
+        _reviewData = { type:'toyota', header, baseUnits: units, issues, rows: [], matchedUnitIds: [], unmatchedUnitIds: [], matchedLeaseNumbers: [], unmatchedLeaseContracts: [], leaseMismatches: [], unitData: {} };
+        recompute();
+        if(statusEl) statusEl.textContent = `Parsed ${_reviewData.rows.length} contract(s) for ${_reviewData.matchedUnitIds.length} matched unit(s)` + (issues.length ? ` — ${issues.length} need review.` : '.');
+        renderReview();
+        return;
+      }
+
       const header = parseHeaderInfo(rows);
       const { unitMonthCat, monthRanges, totalCandidates, issues } = parseDetailRows(rows);
       if(totalCandidates === 0){
         if(statusEl) statusEl.textContent = 'No recognizable line items found — this may not be a TCR quarterly usage-detail invoice.';
         return;
       }
-      _reviewData = { header, baseUnitMonthCat: unitMonthCat, monthRanges, issues, periods: [], matchedUnitIds: [], unmatchedUnitIds: [], overallFrom: '', overallTo: '' };
+      _reviewData = { type:'tcr', header, baseUnitMonthCat: unitMonthCat, monthRanges, issues, periods: [], matchedUnitIds: [], unmatchedUnitIds: [], overallFrom: '', overallTo: '' };
       recompute();
       if(statusEl) statusEl.textContent = `Parsed ${totalCandidates} line item(s) across ${_reviewData.periods.length} period(s) for ${_reviewData.matchedUnitIds.length} matched unit(s)` + (issues.length ? ` — ${issues.length} need review.` : '.');
       renderReview();
