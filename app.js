@@ -13335,16 +13335,25 @@ function computeUnitChargeHistory(unitId){
       const inSlice = (slice.units||[]).some(u => String(u).trim().toLowerCase() === uidNorm);
       if(!inSlice) return;
       const unitDetail = (slice.unitDetails || []).find(d => String(d.unit||'').trim().toLowerCase() === uidNorm);
-      if(!unitDetail || unitDetail.charge === undefined || unitDetail.charge === null || String(unitDetail.charge).trim() === '') return;
+      // A period the unit is actually listed under is never skipped, even when it has no
+      // detailed charge yet — dropping it would silently cut the timeline short or paper over
+      // a gap that's really just an invoice that hasn't been re-registered with the new
+      // detailed breakdown. Shown instead as an explicit $0 point (needsUpdate:true), the same
+      // "this invoice needs updating" signal already used on Periods Ready to Accrue.
+      const hasDetail = !!(unitDetail && unitDetail.charge !== undefined && unitDetail.charge !== null && String(unitDetail.charge).trim() !== '');
 
-      const charge = parseCurrency(unitDetail.charge || '') || 0;
-      const other = parseCurrency(unitDetail.other || '') || 0;
+      const charge = hasDetail ? (parseCurrency(unitDetail.charge || '') || 0) : 0;
+      const other = hasDetail ? (parseCurrency(unitDetail.other || '') || 0) : 0;
       const totalAmount = charge + other;
       const fromD = isoStrToDate(slice.from), toD = isoStrToDate(slice.to);
       const days = (!isNaN(fromD) && !isNaN(toD)) ? Math.round((toD - fromD) / 86400000) + 1 : 0;
       const chargePerDay = days > 0 ? totalAmount / days : 0;
+      const otherPerDay = days > 0 ? other / days : 0;
 
-      points.push({ from: slice.from, to: slice.to, totalAmount, days, chargePerDay, sourceWd: reg.wdNumber || '', sourceDoc: reg.docNumber || '' });
+      points.push({
+        from: slice.from, to: slice.to, totalAmount, otherAmount: other, days, chargePerDay, otherPerDay,
+        needsUpdate: !hasDetail, sourceWd: reg.wdNumber || '', sourceDoc: reg.docNumber || ''
+      });
     });
   });
 
@@ -13370,7 +13379,11 @@ function niceCeiling(val){
 // Renders a bar chart (SVG) into containerEl: one bar per point (height proportional to its
 // value, with a $ label above it and the point's own label below), plus a dot centered on each
 // bar's top edge connected to its neighbors — the trend line the shape of the bars alone
-// doesn't make obvious at a glance. points: [{label, value}], already in the order to display.
+// doesn't make obvious at a glance. When a point also carries a subValue (e.g. Other Charges,
+// always a portion of the same total), a second, narrower block sharing the same baseline is
+// nested inside the same bar, with its own dot+trend line in a second color — so that
+// sub-amount's own trend across months is just as visible as the total's, not just implied by
+// the outer bar's height. points: [{label, value, subValue?}], already in display order.
 function renderHistoryBarChart(containerEl, points, opts){
   opts = opts || {};
   containerEl.innerHTML = '';
@@ -13382,6 +13395,8 @@ function renderHistoryBarChart(containerEl, points, opts){
     return;
   }
 
+  const hasSub = points.some(p => p.subValue !== undefined && p.subValue !== null);
+
   const width = opts.width || 640;
   const height = opts.height || 220;
   const padTop = 34, padBottom = 30, padLeft = 60, padRight = 16;
@@ -13392,6 +13407,7 @@ function renderHistoryBarChart(containerEl, points, opts){
   const niceMax = niceCeiling(maxVal);
   const colW = plotW / points.length;
   const barW = Math.min(colW * 0.5, 56);
+  const subBarW = barW * 0.55;
 
   const svgNS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNS, 'svg');
@@ -13415,11 +13431,13 @@ function renderHistoryBarChart(containerEl, points, opts){
     svg.appendChild(gridLabel);
   }
 
+  const baselineY = padTop + plotH;
   const dotPoints = [];
+  const subDotPoints = [];
   points.forEach((p, i) => {
     const cx = padLeft + colW * i + colW / 2;
     const barH = niceMax > 0 ? (p.value / niceMax) * plotH : 0;
-    const barTopY = padTop + plotH - Math.max(barH, 0);
+    const barTopY = baselineY - Math.max(barH, 0);
     const barX = cx - barW / 2;
 
     const rect = document.createElementNS(svgNS, 'rect');
@@ -13436,6 +13454,34 @@ function renderHistoryBarChart(containerEl, points, opts){
     amtLabel.textContent = formatCurrency(p.value);
     svg.appendChild(amtLabel);
 
+    if(hasSub){
+      // Same baseline (0) and column as the outer bar, just narrower and shorter — a block
+      // nested inside the block, not a separate stacked segment, since Other Charges is
+      // already included in (not additional to) the outer bar's own total.
+      const subVal = p.subValue || 0;
+      const subH = niceMax > 0 ? (subVal / niceMax) * plotH : 0;
+      const subTopY = baselineY - Math.max(subH, 0);
+      const subX = cx - subBarW / 2;
+
+      const subRect = document.createElementNS(svgNS, 'rect');
+      subRect.setAttribute('x', subX); subRect.setAttribute('y', subTopY);
+      subRect.setAttribute('width', subBarW); subRect.setAttribute('height', Math.max(subH, 0));
+      subRect.setAttribute('rx', 2);
+      subRect.setAttribute('fill', opts.subBarColor || '#fbbf24');
+      svg.appendChild(subRect);
+
+      if(subVal > 0){
+        const subLabel = document.createElementNS(svgNS, 'text');
+        subLabel.setAttribute('x', cx); subLabel.setAttribute('y', Math.max(subTopY - 5, 24));
+        subLabel.setAttribute('text-anchor', 'middle'); subLabel.setAttribute('font-size', '9'); subLabel.setAttribute('font-weight', '600');
+        subLabel.setAttribute('fill', opts.subLineColor || '#b45309');
+        subLabel.textContent = formatCurrency(subVal);
+        svg.appendChild(subLabel);
+      }
+
+      subDotPoints.push({ x: cx, y: subTopY });
+    }
+
     const xLabel = document.createElementNS(svgNS, 'text');
     xLabel.setAttribute('x', cx); xLabel.setAttribute('y', height - padBottom + 16);
     xLabel.setAttribute('text-anchor', 'middle'); xLabel.setAttribute('font-size', '10'); xLabel.setAttribute('fill', '#6b7280');
@@ -13445,21 +13491,26 @@ function renderHistoryBarChart(containerEl, points, opts){
     dotPoints.push({ x: cx, y: barTopY });
   });
 
-  if(dotPoints.length > 1){
-    const polyline = document.createElementNS(svgNS, 'polyline');
-    polyline.setAttribute('points', dotPoints.map(d => `${d.x},${d.y}`).join(' '));
-    polyline.setAttribute('fill', 'none');
-    polyline.setAttribute('stroke', opts.lineColor || '#dc2626');
-    polyline.setAttribute('stroke-width', '2');
-    svg.appendChild(polyline);
-  }
-  dotPoints.forEach(d => {
-    const circle = document.createElementNS(svgNS, 'circle');
-    circle.setAttribute('cx', d.x); circle.setAttribute('cy', d.y); circle.setAttribute('r', 4);
-    circle.setAttribute('fill', opts.lineColor || '#dc2626');
-    circle.setAttribute('stroke', '#fff'); circle.setAttribute('stroke-width', '1.5');
-    svg.appendChild(circle);
-  });
+  // Both trend series are drawn after every bar so neither ever ends up hidden behind one.
+  const addTrendSeries = (pts, color) => {
+    if(pts.length > 1){
+      const polyline = document.createElementNS(svgNS, 'polyline');
+      polyline.setAttribute('points', pts.map(d => `${d.x},${d.y}`).join(' '));
+      polyline.setAttribute('fill', 'none');
+      polyline.setAttribute('stroke', color);
+      polyline.setAttribute('stroke-width', '2');
+      svg.appendChild(polyline);
+    }
+    pts.forEach(d => {
+      const circle = document.createElementNS(svgNS, 'circle');
+      circle.setAttribute('cx', d.x); circle.setAttribute('cy', d.y); circle.setAttribute('r', 4);
+      circle.setAttribute('fill', color);
+      circle.setAttribute('stroke', '#fff'); circle.setAttribute('stroke-width', '1.5');
+      svg.appendChild(circle);
+    });
+  };
+  addTrendSeries(dotPoints, opts.lineColor || '#dc2626');
+  if(hasSub) addTrendSeries(subDotPoints, opts.subLineColor || '#b45309');
 
   containerEl.appendChild(svg);
 }
@@ -13483,10 +13534,24 @@ function openUnitChargeHistoryModal(unitId){
     return isNaN(d) ? p.from : accrualMonthName(d.getMonth()+1).slice(0,3) + ' ' + String(d.getFullYear()).slice(2);
   };
 
-  renderHistoryBarChart(amountChartEl, history.map(p => ({ label: labelFor(p), value: p.totalAmount })),
-    { barColor: '#93c5fd', lineColor: '#1d4ed8', emptyMessage: 'No invoice history found for this unit.' });
-  renderHistoryBarChart(perDayChartEl, history.map(p => ({ label: labelFor(p), value: p.chargePerDay })),
-    { barColor: '#fdba74', lineColor: '#c2410c', emptyMessage: 'No invoice history found for this unit.' });
+  renderHistoryBarChart(amountChartEl, history.map(p => ({ label: labelFor(p), value: p.totalAmount, subValue: p.otherAmount })),
+    { barColor: '#93c5fd', lineColor: '#1d4ed8', subBarColor: '#fbbf24', subLineColor: '#b45309', emptyMessage: 'No invoice history found for this unit.' });
+  renderHistoryBarChart(perDayChartEl, history.map(p => ({ label: labelFor(p), value: p.chargePerDay, subValue: p.otherPerDay })),
+    { barColor: '#fdba74', lineColor: '#c2410c', subBarColor: '#c4b5fd', subLineColor: '#6d28d9', emptyMessage: 'No invoice history found for this unit.' });
+
+  const legendEl = qs('#unitChargeHistoryLegend');
+  if(legendEl){
+    const swatch = (color, label) => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;"><span style="width:10px;height:10px;border-radius:2px;background:${color};display:inline-block;"></span>${label}</span>`;
+    legendEl.innerHTML = swatch('#93c5fd', 'Total (Charge + Other)') + swatch('#fbbf24', 'Other Charges');
+  }
+  const needsUpdateCount = history.filter(p => p.needsUpdate).length;
+  const noteEl = qs('#unitChargeHistoryNote');
+  if(noteEl){
+    noteEl.textContent = needsUpdateCount > 0
+      ? `${needsUpdateCount} period(s) shown as $0 — their source invoice hasn't been updated with the detailed per-unit breakdown yet.`
+      : '';
+    noteEl.style.display = needsUpdateCount > 0 ? 'block' : 'none';
+  }
 
   modal.style.display = 'flex';
 }
