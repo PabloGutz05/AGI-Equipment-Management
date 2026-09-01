@@ -13355,7 +13355,6 @@ function downloadAccrualsDeliverable(){
 
   const totalAccumulated = rows.reduce((s, r) => s + r.accumulated, 0);
   const totalCurrentMonth = rows.reduce((s, r) => s + r.currentMonth, 0);
-  const totalOverall = rows.reduce((s, r) => s + r.total, 0);
 
   const wb = XLSX.utils.book_new();
   wb.Props = {
@@ -13424,7 +13423,7 @@ function downloadAccrualsDeliverable(){
     const headerRow = HEADERS.concat([`${amountLabel} Period`, `${amountLabel} Days`, amountLabel, 'Comment', 'Accounting Summary']).map(h => cell(h, styles.header));
     const totalCols = headerRow.length;
     const titleText = `${tabTitle} — ${accrualMonthName(month)} ${year}`;
-    const blankRow = () => Array.from({ length: totalCols }, () => cell(''));
+    const blankRow = (s) => Array.from({ length: totalCols }, () => cell('', s));
     const aoa = [
       [cell(titleText, styles.title)].concat(Array.from({ length: totalCols - 1 }, () => cell('', styles.title))),
       headerRow
@@ -13468,29 +13467,20 @@ function downloadAccrualsDeliverable(){
     // it) — label/value land there, not assuming the amount is the very last column.
     const amountColIdx = totalCols - 3;
 
-    // This tab's own total — sums exactly the rows actually listed above, nothing more.
+    // This tab's own total — sums exactly the rows actually listed above, nothing more. Kept as
+    // the ONLY totals row on this tab (an earlier version also repeated a second "Overview —
+    // whole open batch" block further down with all three headline figures, including the OTHER
+    // tab's own metric — that's exactly the kind of cross-scope mixing the Accumulated/Current
+    // Month split exists to avoid, and read as if the filter's own selection list reached the
+    // totals). A solid top border spans the row (every cell, not just label/value) so it reads
+    // unmistakably as a footer bar immediately below the data, never as another filterable row —
+    // the filter range itself (below) still stops exactly at the last data row regardless.
+    const footerBorder = { border: { top: { style: 'medium', color: { rgb: '0B74DE' } } } };
     aoa.push(blankRow());
-    const totalRow = blankRow();
-    totalRow[amountColIdx - 1] = cell(`Total ${amountLabel}:`, styles.tabTotalLabel);
-    totalRow[amountColIdx] = cell(tabTotal, styles.tabTotalValue);
+    const totalRow = blankRow(footerBorder);
+    totalRow[amountColIdx - 1] = cell(`Total ${amountLabel}:`, mergeStyles(styles.tabTotalLabel, footerBorder));
+    totalRow[amountColIdx] = cell(tabTotal, mergeStyles(styles.tabTotalValue, footerBorder));
     aoa.push(totalRow);
-
-    // Informative overview, in its own separated space below — all three headline figures for
-    // the WHOLE open batch (not just what this tab lists), for cross-reference. Kept visually
-    // distinct (extra blank rows, italic/gray) from the tab's own specific total right above so
-    // the two are never confused with each other.
-    aoa.push(blankRow());
-    aoa.push(blankRow());
-    aoa.push([cell('Overview — whole open batch (informative only)', styles.infoLabel)]);
-    const infoLine = (label, value) => {
-      const r = blankRow();
-      r[amountColIdx - 1] = cell(label, styles.infoLabel);
-      r[amountColIdx] = cell(value, styles.infoValue);
-      return r;
-    };
-    aoa.push(infoLine('Total Accumulated:', totalAccumulated));
-    aoa.push(infoLine('Total Current Month:', totalCurrentMonth));
-    aoa.push(infoLine('Total (Accumulated + Current Month):', totalOverall));
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + tabRows.length, c: totalCols - 1 } });
