@@ -14946,15 +14946,29 @@ function getInvoiceTrackingCostCenterSummary(){
   return computeCostCenterSummaryForUnits(getInvoiceTrackingCheckedUnits());
 }
 
+// Single source of truth for "how much of one unit's charge is actually in dispute" — shared by
+// the live checkbox-driven auto-sum (updateInvoiceTrackingDisputeAmountFromChecked, below) AND
+// the Refresh Data recompute (refreshInvoiceTrackingRecordFromSource) — factored out specifically
+// so the two can never drift out of sync with each other the way they did before this existed
+// (Refresh Data kept summing the FULL tax+other+charge, ignoring disabled days entirely, long
+// after the checkbox path was taught to pro-rate). A dispute is specifically about days the unit
+// was DISABLED but still invoiced for: only Amount (Charge) + Other Charges scale down to the
+// disabled portion of the unit's own invoice period — tax is excluded entirely, since the
+// supplier recalculates tax when they reissue a corrected invoice. A unit disabled for the
+// invoice's ENTIRE period naturally resolves to its full Amount+Other (disabledDays ===
+// totalDays); one never disabled at all during that period resolves to 0.
+function computeUnitDisputeShare(unitId, chargeVal, otherVal, periodFrom, periodTo){
+  const chargeAndOther = (parseCurrency(chargeVal || '') || 0) + (parseCurrency(otherVal || '') || 0);
+  if(!chargeAndOther) return 0;
+  const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
+  if(!unitRec) return 0;
+  const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, periodFrom, periodTo);
+  return totalDays > 0 ? chargeAndOther * (disabledDays / totalDays) : 0;
+}
+
 // Checking/unchecking a row's dispute box re-sums a PRO-RATED starting estimate into Amount in
 // Dispute — still freely editable by hand afterward (checking further boxes will re-sum again,
-// overwriting a manual edit). A dispute here is specifically about days the unit was DISABLED
-// but still invoiced for: only Amount (Charge) + Other Charges scale down to the disabled
-// portion of that unit's own invoice period (per-row, since a quarterly registry can invoice
-// different units for different sub-periods) — tax is excluded entirely, since the supplier
-// recalculates tax when they reissue a corrected invoice. A unit disabled for the invoice's
-// ENTIRE period naturally computes to its full Amount+Other (disabledDays === totalDays), no
-// special-casing needed. A unit that was never disabled during that period contributes 0.
+// overwriting a manual edit).
 function updateInvoiceTrackingDisputeAmountFromChecked(){
   const wrap = qs('#itUnitAmountBreakdown');
   let sum = 0;
@@ -14962,11 +14976,7 @@ function updateInvoiceTrackingDisputeAmountFromChecked(){
     wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
       const cb = row.querySelector('.itb-dispute-checkbox');
       if(!cb || !cb.checked) return;
-      const chargeAndOther = (parseCurrency(row.dataset.other || '') || 0) + (parseCurrency(row.dataset.charge || '') || 0);
-      if(!chargeAndOther) return;
-      const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (row.dataset.unitId || '').toString().trim().toLowerCase());
-      const { totalDays, disabledDays } = unitRec ? computeDisabledDaysInPeriod(unitRec, row.dataset.periodFrom, row.dataset.periodTo) : { totalDays: 0, disabledDays: 0 };
-      sum += totalDays > 0 ? chargeAndOther * (disabledDays / totalDays) : 0;
+      sum += computeUnitDisputeShare(row.dataset.unitId, row.dataset.charge, row.dataset.other, row.dataset.periodFrom, row.dataset.periodTo);
     });
   }
   const disputeField = qs('#itAmountInDispute');
@@ -15383,6 +15393,117 @@ function renderInvoiceTrackingTable(){
     tbody.appendChild(tr);
   });
 }
+
+// Downloads the Tracked Invoices table to Excel — same rows, same columns, in the same order
+// and with the same value formatting as the on-screen table (INVOICE_TRACKING_COLUMNS), with one
+// exception: Description of Issue/Request are NOT truncated here — the on-screen "…" preview is
+// only a screen-space compromise (see PREVIEW_LEN above), not the actual information, and a
+// downloadable report should carry the real thing. One Comments column is appended at the end,
+// gathering this record's manually-entered binnacle comments — the free-text "Add comment"
+// entries plus Completed-status completion notes — as "Comment 1: …\nComment 2: …\n…" in a
+// single cell, oldest first (the order they were actually written in). Auto-generated change-log
+// entries (Description/Request/Status edits, "Entry edited: …", "Data refreshed from source…")
+// are deliberately excluded — those are a change history, not a comment; matches the same
+// manual-vs-auto distinction the binnacle's own "hide auto" checkbox already uses.
+function downloadInvoiceTrackingReport(){
+  if(!(window.XLSX && typeof XLSX === 'object')){ alert('Excel export library not found. Please reload the page.'); return; }
+
+  const rows = (state.invoiceTracking || []).slice();
+  if(rows.length === 0){ alert('No tracked invoices to export yet.'); return; }
+
+  // Same short-date formatting the on-screen table applies to From Date/To Date only — WD
+  // Invoice Date and every other field are shown exactly as stored, same as the table.
+  const fmtShortDate = (s) => {
+    if(!s) return '';
+    const p = String(s).split('-');
+    if(p.length < 3) return s;
+    const d = new Date(parseInt(p[0]), parseInt(p[1]) - 1, parseInt(p[2]));
+    return isNaN(d) ? s : d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+  };
+
+  const manualCommentsText = (record) => {
+    const log = Array.isArray(record.log) ? record.log : [];
+    const manual = log.filter(entry => !(entry.type && entry.type.indexOf('auto') === 0));
+    return manual.map((entry, idx) => `Comment ${idx + 1}: ${(entry.text || '').toString().trim()}`).join('\n');
+  };
+
+  const wb = XLSX.utils.book_new();
+  wb.Props = {
+    Title: 'Invoice Dispute Tracking Report',
+    Subject: 'AGI Vehicle Lease Management — Invoice Dispute Tracking',
+    Author: 'AGI Vehicle Lease Management', Company: 'AGI', CreatedDate: new Date()
+  };
+
+  // Same visual vocabulary as the Accruals Deliverable's styles above, kept local to this
+  // function since the two exports don't otherwise share any data/state.
+  const baseFont = { name: 'Calibri', sz: 11 };
+  const styles = {
+    header: {
+      font: Object.assign({}, baseFont, { bold: true, color: { rgb: 'FFFFFF' } }),
+      fill: { fgColor: { rgb: '0B74DE' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: { left:{style:'thin',color:{rgb:'0B74DE'}}, right:{style:'thin',color:{rgb:'0B74DE'}}, top:{style:'thin',color:{rgb:'0B74DE'}}, bottom: { style: 'medium', color: { rgb: '0B74DE' } } }
+    },
+    title: { font: Object.assign({}, baseFont, { bold: true, sz: 16, color: { rgb: '0B74DE' } }), alignment: { horizontal: 'left', vertical: 'center' } },
+    info: { alignment: { vertical: 'center', wrapText: true }, font: baseFont },
+    zebra: { fill: { fgColor: { rgb: 'F8FAFC' } } },
+    money: { alignment: { horizontal: 'right', vertical: 'center' }, font: baseFont, numFmt: '$#,##0.00' }
+  };
+  // Deep-merges object-valued style properties but directly overwrites primitive ones (numFmt is
+  // a plain string) — same fix as downloadAccrualsDeliverable's mergeStyles, needed for the same
+  // reason (a naive Object.assign(...) on a string corrupts numFmt and crashes the real writer).
+  function mergeStyles(...objs){
+    const out = {};
+    objs.forEach(o => {
+      if(!o) return;
+      Object.keys(o).forEach(k => {
+        const v = o[k];
+        out[k] = (v && typeof v === 'object' && !Array.isArray(v)) ? Object.assign({}, out[k], v) : v;
+      });
+    });
+    return out;
+  }
+  // aoa_to_sheet doesn't infer a cell's type (.t) from .v for the {v,s} object form — always
+  // stamp it explicitly, same as downloadAccrualsDeliverable's cell().
+  function cell(v, s){ return { v, t: (typeof v === 'number') ? 'n' : 's', s }; }
+
+  const headers = INVOICE_TRACKING_COLUMNS.map(c => c.label).concat(['Comments']);
+  const totalCols = headers.length;
+  const titleText = `Invoice Dispute Tracking Report — ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`;
+
+  const aoa = [
+    [cell(titleText, styles.title)].concat(Array.from({ length: totalCols - 1 }, () => cell('', styles.title))),
+    headers.map(h => cell(h, styles.header))
+  ];
+
+  rows.forEach((r, idx) => {
+    const zebra = (idx % 2 === 1) ? styles.zebra : null;
+    const rowCells = INVOICE_TRACKING_COLUMNS.map(col => {
+      let val = col.get ? col.get(r) : (r[col.key] || '');
+      if(col.key === 'invoiceAmount' || col.key === 'amountInDispute' || col.key === 'amountDue'){
+        return cell(parseCurrency(val) || 0, mergeStyles(styles.money, zebra));
+      }
+      if(col.key === 'fromDate' || col.key === 'toDate') val = fmtShortDate(val);
+      return cell(val || '', mergeStyles(styles.info, zebra));
+    });
+    rowCells.push(cell(manualCommentsText(r), mergeStyles(styles.info, zebra)));
+    aoa.push(rowCells);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + rows.length, c: totalCols - 1 } });
+  ws['!autofilter'] = { ref: range };
+  ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
+  ws['!cols'] = INVOICE_TRACKING_COLUMNS.map(col => ({ wch: (col.key === 'descriptionOfIssue' || col.key === 'request') ? 30 : 16 })).concat([{ wch: 60 }]);
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }];
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Invoice Tracking');
+
+  const fname = `Invoice_Dispute_Tracking_Report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  try{ XLSX.writeFile(wb, fname); }catch(e){ alert('Failed to save Excel: ' + (e && e.message || e)); }
+}
+const itDownloadReportBtnEl = qs('#itDownloadReportBtn');
+if(itDownloadReportBtnEl) itDownloadReportBtnEl.addEventListener('click', downloadInvoiceTrackingReport);
 
 const invoiceTrackingForm = qs('#invoiceTrackingForm');
 if(invoiceTrackingForm){
@@ -16064,12 +16185,20 @@ function refreshInvoiceTrackingRecordFromSource(record){
     return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails: d ? (d.otherChargeDetails || []) : [], charge: d ? d.charge : '' };
   });
 
-  // Amount in Dispute is normally the sum of Tax/Other/Amount across the disputed units at
-  // the time the entry was created — if the registry was missing that detail back then (or
-  // it's since been corrected), re-derive it the same way here so it stays in sync, then
-  // recompute Amount Due (Invoice Amount − Amount in Dispute) off the refreshed total.
-  const recomputedDispute = record.unitAmountDetails.reduce((sum, d) =>
-    sum + (parseCurrency(d.tax || '') || 0) + (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0), 0);
+  // Amount in Dispute is re-derived the SAME pro-rated way the checkbox auto-sum computes it
+  // (computeUnitDisputeShare) — each unit's own charge+other scaled down to just the days it was
+  // actually Disabled within its own invoice period (quarterly-aware), tax excluded — never the
+  // full tax+other+charge. Refreshing must never silently blow a correctly-scoped dispute amount
+  // back up to the unit's whole invoiced amount.
+  const periodSlices = getRegistryCoveragePeriods(reg);
+  const sliceForUnit = (uid) => {
+    const uidLower = (uid || '').toString().trim().toLowerCase();
+    return periodSlices.find(s => (s.units || []).some(u => (u || '').toString().trim().toLowerCase() === uidLower)) || periodSlices[0] || { from: '', to: '' };
+  };
+  const recomputedDispute = record.unitAmountDetails.reduce((sum, d) => {
+    const slice = sliceForUnit(d.unit);
+    return sum + computeUnitDisputeShare(d.unit, d.charge, d.other, slice.from, slice.to);
+  }, 0);
   record.amountInDispute = recomputedDispute ? recomputedDispute.toFixed(2) : '';
   const invoiceAmountNum = parseCurrency(record.invoiceAmount || '') || 0;
   const amountInDisputeNum = parseCurrency(record.amountInDispute || '') || 0;
