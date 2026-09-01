@@ -12317,11 +12317,14 @@ function getAccrualComment(record){
 
 // Upserts (or, for blank text, clears) this record's comment for the CURRENT month only — any
 // comment already saved for a different month is left untouched, preserving that history.
-function setAccrualComment(record, text){
+// opts.auto marks the entry as system-generated (see applyAccrualOverride below) — editing a
+// comment through the modal always saves a plain one, which is how an auto-note gets "promoted"
+// to a manual one an operator wrote on top of and clearAccrualOverride will then leave alone.
+function setAccrualComment(record, text, opts){
   const { month, year } = getAccrualCommentMonthYear(record);
   const list = (Array.isArray(record.accrualComments) ? record.accrualComments : []).filter(c => !(Number(c.month) === month && Number(c.year) === year));
   const trimmed = (text || '').toString().trim();
-  if(trimmed) list.push({ month, year, text: trimmed, timestamp: new Date().toISOString() });
+  if(trimmed) list.push({ month, year, text: trimmed, timestamp: new Date().toISOString(), auto: !!(opts && opts.auto) });
   record.accrualComments = list;
 }
 
@@ -13309,12 +13312,20 @@ function downloadAccrualsDeliverable(){
     return {
       unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
       disabledDate: getUnitDisabledDateText(r.unitId),
+      // "Last WD/Period/Amount" are always the NATURAL closest-prior invoice, regardless of any
+      // override — "Accrual Amount Used" is the amount actually driving Charge/Day and the
+      // Accumulated/Current Month figures, which only differs from the natural one when an
+      // operator has deliberately picked a different source period ("Use Block to Accrue").
+      lastWdInvoiceNumber: estimate.naturalSourceWd,
+      lastInvoicePeriodText: estimate.naturalFound ? `${fmtMDY(estimate.naturalSourceFrom)} - ${fmtMDY(estimate.naturalSourceTo)}` : '',
+      lastInvoiceAmount: estimate.naturalTotalAmount,
+      chargePerDay: estimate.chargePerDay,
+      accrualAmountUsed: estimate.totalAmount,
       // No column shows the record's own full raw span (periodStart/periodEnd) here — only each
       // tab's own scoped period below (accumulatedPeriodText/currentMonthPeriodText), which is
       // the exact range that tab's dollar amount actually covers. A record spanning e.g. Apr 1 –
       // Aug 31 would otherwise show that whole range next to its Accumulated figure and read as
       // if the amount covered August too, which is exactly the confusion a live user hit.
-      lastInvoiceAmount: estimate.totalAmount, chargePerDay: estimate.chargePerDay,
       accumulated: split.accumulatedAmount, accumulatedDays: split.accumulatedDays,
       accumulatedPeriodText: split.accumulatedStart ? `${fmtMDY(split.accumulatedStart)} - ${fmtMDY(split.accumulatedEnd)}` : '',
       currentMonth: split.currentMonthAmount, currentMonthDays: split.currentMonthDays,
@@ -13375,8 +13386,12 @@ function downloadAccrualsDeliverable(){
   // does for a bare value — leaving .t unset makes some readers (including XLSX's own
   // sheet_to_json) treat the cell as blank even though .v is set. Always stamp it explicitly.
   function cell(v, s){ return { v, t: (typeof v === 'number') ? 'n' : 's', s }; }
+  // A live Excel formula cell (no leading "=" — SheetJS convention) — `v` is a precomputed
+  // fallback so the cell still shows something sensible even in a viewer that doesn't
+  // recalculate formulas; Excel itself recalculates .f on open and overwrites the cached .v.
+  function formulaCellFn(formula, fallbackValue, s){ return { f: formula, v: fallbackValue, t: 's', s }; }
 
-  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Disabled Date', 'Last Invoice Amount', 'Charge/Day'];
+  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Disabled Date', 'Last WD Invoice Number', 'Last Invoice Period', 'Last Invoice Amount', 'Charge/Day', 'Accrual Amount Used'];
 
   // amountKey/amountLabel: the ONE amount metric this tab is scoped to (Accumulated or Current
   // Month) — kept as the tab's own single dollar column, separate from the other tab's metric,
@@ -13388,7 +13403,7 @@ function downloadAccrualsDeliverable(){
   // reading whichever one they saw first as THE period this amount covers, even when it wasn't.
   // Simplest fix: don't show a period that isn't the one being reported on.
   function buildTabSheet(tabTitle, amountLabel, amountKey, periodTextKey, daysKey, tabRows, tabTotal){
-    const headerRow = HEADERS.concat([`${amountLabel} Period`, `${amountLabel} Days`, amountLabel, 'Comment']).map(h => cell(h, styles.header));
+    const headerRow = HEADERS.concat([`${amountLabel} Period`, `${amountLabel} Days`, amountLabel, 'Comment', 'Accounting Summary']).map(h => cell(h, styles.header));
     const totalCols = headerRow.length;
     const titleText = `${tabTitle} — ${accrualMonthName(month)} ${year}`;
     const blankRow = () => Array.from({ length: totalCols }, () => cell(''));
@@ -13396,8 +13411,21 @@ function downloadAccrualsDeliverable(){
       [cell(titleText, styles.title)].concat(Array.from({ length: totalCols - 1 }, () => cell('', styles.title))),
       headerRow
     ];
+    // Column letters for the Accounting Summary formula below — computed once from HEADERS'
+    // fixed layout rather than hardcoded, so this keeps working if a column is ever added/
+    // removed ahead of it.
+    const colLetter = (idx) => XLSX.utils.encode_col(idx);
+    const colUnitId = colLetter(0), colLease = colLetter(1), colSupplier = colLetter(2);
+    const colLastWd = colLetter(6), colLastInvoicePeriod = colLetter(7);
+    const colTabPeriod = colLetter(HEADERS.length); // first column appended after HEADERS
     tabRows.forEach((r, idx) => {
       const zebra = (idx % 2 === 1) ? styles.zebra : null;
+      const excelRow = idx + 3; // 1 = title, 2 = header, data starts at row 3
+      // A live formula so the summary stays correct even if the boss edits a referenced cell
+      // (e.g. corrects a typo'd Supplier) directly in Excel — matches "give edition to the
+      // report". The cached fallback value below mirrors it exactly for non-recalculating viewers.
+      const summaryFormula = `"Unit "&${colUnitId}${excelRow}&" — Supplier "&${colSupplier}${excelRow}&", Lease "&${colLease}${excelRow}&" — Last received: WD "&${colLastWd}${excelRow}&" ("&${colLastInvoicePeriod}${excelRow}&") — ${amountLabel} period: "&${colTabPeriod}${excelRow}`;
+      const summaryFallback = `Unit ${r.unitId} — Supplier ${r.supplier}, Lease ${r.lease} — Last received: WD ${r.lastWdInvoiceNumber || '(none)'} (${r.lastInvoicePeriodText || 'n/a'}) — ${amountLabel} period: ${r[periodTextKey] || 'n/a'}`;
       aoa.push([
         cell(r.unitId, mergeStyles(styles.info, zebra)),
         cell(r.lease, mergeStyles(styles.info, zebra)),
@@ -13405,18 +13433,22 @@ function downloadAccrualsDeliverable(){
         cell(r.costCenter, mergeStyles(styles.info, zebra)),
         cell(r.status, mergeStyles(styles.info, zebra)),
         cell(r.disabledDate, mergeStyles(styles.info, zebra)),
+        cell(r.lastWdInvoiceNumber, mergeStyles(styles.info, zebra)),
+        cell(r.lastInvoicePeriodText, mergeStyles(styles.info, zebra)),
         cell(r.lastInvoiceAmount, mergeStyles(styles.money, zebra)),
         cell(r.chargePerDay, mergeStyles(styles.money, zebra)),
+        cell(r.accrualAmountUsed, mergeStyles(styles.money, zebra)),
         cell(r[periodTextKey], mergeStyles(styles.info, zebra)),
         cell(r[daysKey], mergeStyles(styles.info, zebra, { alignment: { horizontal: 'right' } })),
         cell(r[amountKey], mergeStyles(styles.money, zebra)),
-        cell(r.comment, mergeStyles(styles.info, zebra, { alignment: { wrapText: true } }))
+        cell(r.comment, mergeStyles(styles.info, zebra, { alignment: { wrapText: true } })),
+        formulaCellFn(summaryFormula, summaryFallback, mergeStyles(styles.info, zebra, { alignment: { wrapText: true } }))
       ]);
     });
 
-    // Amount column is second-to-last now that Comment trails it — label/value land just
-    // before it rather than assuming the amount is always the very last column.
-    const amountColIdx = totalCols - 2;
+    // Amount column now sits three from the end (Comment and Accounting Summary trail after
+    // it) — label/value land there, not assuming the amount is the very last column.
+    const amountColIdx = totalCols - 3;
 
     // This tab's own total — sums exactly the rows actually listed above, nothing more.
     aoa.push(blankRow());
@@ -13446,7 +13478,7 @@ function downloadAccrualsDeliverable(){
     const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + tabRows.length, c: totalCols - 1 } });
     ws['!autofilter'] = { ref: range };
     ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
-    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:14}, {wch:16}, {wch:12}, {wch:22}, {wch:10}, {wch:16}, {wch:30} ];
+    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:14}, {wch:16}, {wch:22}, {wch:16}, {wch:12}, {wch:16}, {wch:22}, {wch:10}, {wch:16}, {wch:30}, {wch:70} ];
     ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }];
     return ws;
   }
@@ -13654,7 +13686,12 @@ function reconcileOpenAccrualsCoverage(){
 function computeAccrualChargeEstimate(record){
   const result = {
     found: false, needsUpdate: true, totalAmount: 0, otherAmount: 0, daysInSourcePeriod: 0, chargePerDay: 0, toBeAccrued: 0,
-    sourceWd: '', sourceDoc: '', sourceFrom: '', sourceTo: '', unitDetail: null, isOverridden: false
+    sourceWd: '', sourceDoc: '', sourceFrom: '', sourceTo: '', unitDetail: null, isOverridden: false,
+    // The natural (never-overridden) closest-prior pick, exposed alongside the possibly-
+    // overridden "used" fields above — the Accruals Deliverable shows both side by side
+    // ("Last Invoice Amount/Period/WD#" = this; "Accrual Amount Used" = the used fields above),
+    // since an override deliberately makes those two different on purpose.
+    naturalFound: false, naturalTotalAmount: 0, naturalSourceWd: '', naturalSourceDoc: '', naturalSourceFrom: '', naturalSourceTo: ''
   };
 
   const history = computeUnitChargeHistory(record.unitId);
@@ -13664,6 +13701,15 @@ function computeAccrualChargeEstimate(record){
     if(!(p.to < record.periodStart)) return;
     if(!naturalPoint || p.to > naturalPoint.to) naturalPoint = p;
   });
+
+  if(naturalPoint){
+    result.naturalFound = true;
+    result.naturalTotalAmount = naturalPoint.totalAmount;
+    result.naturalSourceWd = naturalPoint.sourceWd;
+    result.naturalSourceDoc = naturalPoint.sourceDoc;
+    result.naturalSourceFrom = naturalPoint.from;
+    result.naturalSourceTo = naturalPoint.to;
+  }
 
   let chosenPoint = naturalPoint;
   if(record.overrideSourceFrom && record.overrideSourceTo){
@@ -13697,19 +13743,33 @@ function computeAccrualChargeEstimate(record){
 // closest-prior pick — for when the usual invoice looks unusually low or turns out to have an
 // error. Recomputes and re-renders "Periods Ready to Accrue" immediately so the new amount (and
 // its "!" indicator, if this actually changed anything) show up without waiting on a refresh.
+// Also auto-writes this month's comment to record which invoice is actually being used ("Invoice
+// used to accrue "WD1234"") so accounting sees it directly on the deliverable's Comment column
+// without the operator having to write it by hand — but only replaces a comment that was itself
+// auto-generated (or none at all); a comment the operator wrote themselves is never overwritten.
 function applyAccrualOverride(record, point){
   record.overrideSourceFrom = point.from;
   record.overrideSourceTo = point.to;
+  const existingComment = getAccrualComment(record);
+  if(!existingComment || existingComment.auto){
+    setAccrualComment(record, `Invoice used to accrue "${point.sourceWd || '(unknown WD)'}"`, { auto: true });
+  }
   _accrualsSyncInFlight = true;
   DB.updateAccrual(record).catch(e => console.error('Accrual override save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
   try{ saveState(); }catch(e){}
   if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList();
 }
 
-// Reverts a record back to the automatic closest-prior-period pick.
+// Reverts a record back to the automatic closest-prior-period pick. Clears this month's comment
+// too, but only if it's the auto-generated "Invoice used to accrue..." note from applyAccrualOverride
+// above — a comment the operator wrote or edited themselves is left in place.
 function clearAccrualOverride(record){
   record.overrideSourceFrom = '';
   record.overrideSourceTo = '';
+  const existingComment = getAccrualComment(record);
+  if(existingComment && existingComment.auto){
+    setAccrualComment(record, '');
+  }
   _accrualsSyncInFlight = true;
   DB.updateAccrual(record).catch(e => console.error('Accrual override clear error:', e)).finally(() => { _accrualsSyncInFlight = false; });
   try{ saveState(); }catch(e){}
