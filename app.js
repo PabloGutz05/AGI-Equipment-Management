@@ -12356,7 +12356,6 @@ function renderAccrualsMissingPeriods(forceRecompute){
   if(!tableEl) return;
 
   if(forceRecompute || !_accrualsMissingRowsCache){
-    const now = new Date();
     // Extends as far back as any unit's own operational history goes — matching what that
     // unit's own coverage calendar/stats panel already shows — rather than a fixed cutoff.
     // A gap that started before this initiative's original Jan-2026 anchor is still a real,
@@ -12376,7 +12375,13 @@ function renderAccrualsMissingPeriods(forceRecompute){
         if(firstOpMonth < rangeStart) rangeStart = firstOpMonth;
       }catch(e){}
     });
-    const rangeEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    // Capped at the end of whichever month is currently OPEN for accruals — not real wall-clock
+    // "now". Without this, a gap reaching into next month would show up (and be accruable) here
+    // before the current month is even closed, letting an operator jump ahead a cycle. Once that
+    // month is closed (see closeAccrualsMonth, which force-recomputes this cache), the tracker
+    // advances and next month's periods naturally come into view on their own.
+    const { month: openMonthForRange, year: openYearForRange } = getAccrualsOpenMonthYear();
+    const rangeEnd = new Date(openYearForRange, openMonthForRange, 0);
 
     const rows = [];
     (state.units || []).forEach(unit => {
@@ -13387,6 +13392,12 @@ function closeAccrualsMonth(){
   // Follow the view to the newly-open (empty) month so it's obvious the close succeeded.
   _accrualsViewMonth = nextMonth; _accrualsViewYear = nextYear;
 
+  // Missing Periods is capped at the end of whichever month is open (see
+  // renderAccrualsMissingPeriods) — now that the tracker just advanced, a still-cached scan
+  // would keep hiding next month's periods until something else happened to force a recompute.
+  // Force one now so they become visible/accruable immediately, not just after the operator
+  // happens to re-enter that sub-tab or trigger some unrelated re-render.
+  renderAccrualsMissingPeriods(true);
   renderAccrualsAccruedList();
   updateAccrueUnitButton();
 }
