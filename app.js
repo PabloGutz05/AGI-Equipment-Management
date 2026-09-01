@@ -7429,7 +7429,7 @@ function renderReport(){
     }
 
     function buildSheetData(unitsArr, dayStateFn, title){
-      const headers = ['Unit','Lease','Supplier','Arrangement','Invoicing','Status'];
+      const headers = ['Unit','Lease','AGI Company','Supplier','Arrangement','Invoicing','Status'];
       const dayHeaders = Array.from({length: daysInMonth}, (_,i)=> {
         const d = new Date(year, month, i+1);
         return { v: d, s: Object.assign({}, styles.header, { numFmt: 'mmm d' }) };
@@ -7446,7 +7446,7 @@ function renderReport(){
       const aoa = [ titleRow, headerRow.map(h => (typeof h === 'string' ? ({ v: h, s: styles.header }) : h)) ];
       unitsArr.forEach((u, idxRow) => {
         const zebra = (idxRow % 2 === 1) ? styles.zebra : null;
-        const base = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational']
+        const base = [u.unitId||'', u.lease||'', u.company||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational']
           .map(v => ({ v, s: mergeStyles(styles.info, zebra) }));
         const days = [];
         for(let d=1; d<=daysInMonth; d++){
@@ -7480,7 +7480,7 @@ function renderReport(){
       ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
       // Column widths: a bit wider for info columns, compact for days
       ws['!cols'] = [
-        {wch:14},{wch:12},{wch:14},{wch:14},{wch:12},{wch:10},
+        {wch:14},{wch:12},{wch:14},{wch:14},{wch:14},{wch:12},{wch:10},
         ...Array.from({length: daysInMonth}, ()=> ({wch:6})),
         ...Array.from({length: maxComments}, ()=> ({wch:28}))
       ];
@@ -7588,7 +7588,7 @@ function renderReport(){
 
     // Consecutive Months Without Invoicing sheet
     if(computedNoInvoiceRows.length){
-      const headers = ['#','Unit','Lease','Supplier','Description','Invoicing','Last WD Number','Status','Consecutive Months (no rental invoice)','Period'];
+      const headers = ['#','Unit','Lease','AGI Company','Supplier','Description','Invoicing','Last WD Number','Status','Consecutive Months (no rental invoice)','Period'];
       const titleText = `No Rental Invoicing — ${new Date(year, month, 1).toLocaleString(undefined, { month:'long' })} ${year}`;
       const aoa = [];
       // title row merged later
@@ -7599,6 +7599,7 @@ function renderReport(){
           String(idx + 1),
           row.u.unitId||'',
           row.u.lease||'',
+          row.u.company||'',
           row.u.supplier||'',
           row.u.description||'',
           row.u.invoicing||'',
@@ -7613,7 +7614,7 @@ function renderReport(){
       const totalCols = headers.length;
       wsMonths['!rows'] = [{ hpt: 22 }, { hpt: 18 }];
       wsMonths['!merges'] = [{ s: { r:0, c:0 }, e: { r:0, c: totalCols-1 } }];
-      wsMonths['!cols'] = [{wch:6},{wch:14},{wch:12},{wch:18},{wch:12},{wch:16},{wch:12},{wch:14},{wch:20}];
+      wsMonths['!cols'] = [{wch:6},{wch:14},{wch:12},{wch:14},{wch:18},{wch:12},{wch:16},{wch:12},{wch:14},{wch:20}];
       XLSX.utils.book_append_sheet(wb, wsMonths, 'No Invoicing');
     }
 
@@ -7815,6 +7816,7 @@ function renderReport(){
     const headerDefs = [
       { text: 'Unit', key: 'unitId' },
       { text: 'Lease', key: 'lease' },
+      { text: 'AGI Company', key: 'company' },
       { text: 'Supplier', key: 'supplier' },
       { text: 'Arrangement', key: 'arrangement' },
       { text: 'Invoicing', key: 'invoicing' },
@@ -7882,7 +7884,7 @@ function renderReport(){
         tdCounter.textContent = String(idx + 1);
         tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
         tr.appendChild(tdCounter);
-        const infoCells = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        const infoCells = [u.unitId||'', u.lease||'', u.company||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
         infoCells.forEach((val, idx) => {
           const td = document.createElement('td');
           td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
@@ -7908,13 +7910,13 @@ function renderReport(){
                 td.appendChild(alertIcon);
               }
             }catch(e){}
-            td.addEventListener('click', (ev)=>{ 
-              ev.stopPropagation(); 
+            td.addEventListener('click', (ev)=>{
+              ev.stopPropagation();
               // Select the row
               const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
               if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
               if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
-              try{ openUnitWdNumbersModal(u.unitId, year, month, fullyCovered.map(x => x.unitId)); }catch(e){} 
+              try{ openUnitWdNumbersModal(u.unitId, year, month, fullyCovered.map(x => x.unitId)); }catch(e){}
             });
           } else { td.textContent = String(val); }
           tr.appendChild(td);
@@ -8043,6 +8045,7 @@ function renderReport(){
     const headerDefsMissing = [
       { text: 'Unit', key: 'unitId' },
       { text: 'Lease', key: 'lease' },
+      { text: 'AGI Company', key: 'company' },
       { text: 'Supplier', key: 'supplier' },
       { text: 'Arrangement', key: 'arrangement' },
       { text: 'Invoicing', key: 'invoicing' },
@@ -8127,7 +8130,7 @@ function renderReport(){
         tdCounter.textContent = String(idx + 1);
         tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
         tr.appendChild(tdCounter);
-        const infoCells = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        const infoCells = [u.unitId||'', u.lease||'', u.company||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
         infoCells.forEach((val, idx) => {
           const td = document.createElement('td');
           td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
@@ -8149,13 +8152,13 @@ function renderReport(){
                 td.appendChild(alertIcon);
               }
             }catch(e){}
-            td.addEventListener('click', (ev)=>{ 
-              ev.stopPropagation(); 
+            td.addEventListener('click', (ev)=>{
+              ev.stopPropagation();
               // Select the row
               const trEl = td.parentNode; const tbodyEl = trEl && trEl.parentNode;
               if(tbodyEl){ Array.from(tbodyEl.querySelectorAll('tr')).forEach(row => { row.dataset.selected=''; row.style.backgroundColor=''; }); }
               if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#e6f0ff'; }
-              try{ openUnitWdNumbersModal(u.unitId, year, month, missingUnits.map(x => x.unitId)); }catch(e){} 
+              try{ openUnitWdNumbersModal(u.unitId, year, month, missingUnits.map(x => x.unitId)); }catch(e){}
             });
           } else { td.textContent = String(val); }
           tr.appendChild(td);
@@ -8278,6 +8281,7 @@ function renderReport(){
     const headerDefsOverlap = [
       { text: 'Unit', key: 'unitId' },
       { text: 'Lease', key: 'lease' },
+      { text: 'AGI Company', key: 'company' },
       { text: 'Supplier', key: 'supplier' },
       { text: 'Arrangement', key: 'arrangement' },
       { text: 'Invoicing', key: 'invoicing' },
@@ -8314,11 +8318,11 @@ function renderReport(){
         tdCounter.textContent = String(idx + 1);
         tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
         tr.appendChild(tdCounter);
-        const info = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
-        info.forEach((val, idx) => { 
-          const td=document.createElement('td'); 
-          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px'; 
-          if(idx===0){ 
+        const info = [u.unitId||'', u.lease||'', u.company||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        info.forEach((val, idx) => {
+          const td=document.createElement('td');
+          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
+          if(idx===0){
             td.style.cursor='pointer'; td.style.color='#0b74de'; td.title='View unit details';
             td.appendChild(document.createTextNode(String(val)));
             // Add red ! indicator if the unit has comments for selected month
@@ -8336,7 +8340,7 @@ function renderReport(){
                 td.appendChild(alertIcon);
               }
             }catch(e){}
-            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#ffe4e6'; } try{ openUnitWdNumbersModal(u.unitId, year, month, overlapUnits.map(x => x.unitId));}catch(e){} }); 
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#ffe4e6'; } try{ openUnitWdNumbersModal(u.unitId, year, month, overlapUnits.map(x => x.unitId));}catch(e){} });
           } else { td.textContent = String(val); }
           tr.appendChild(td);
         });
@@ -8439,6 +8443,7 @@ function renderReport(){
     const headerDefsCredit = [
       { text: 'Unit', key: 'unitId' },
       { text: 'Lease', key: 'lease' },
+      { text: 'AGI Company', key: 'company' },
       { text: 'Supplier', key: 'supplier' },
       { text: 'Arrangement', key: 'arrangement' },
       { text: 'Invoicing', key: 'invoicing' },
@@ -8474,11 +8479,11 @@ function renderReport(){
         tdCounter.textContent = String(idx + 1);
         tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
         tr.appendChild(tdCounter);
-        const info = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
-        info.forEach((val, idx) => { 
-          const td=document.createElement('td'); 
-          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px'; 
-          if(idx===0){ 
+        const info = [u.unitId||'', u.lease||'', u.company||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        info.forEach((val, idx) => {
+          const td=document.createElement('td');
+          td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
+          if(idx===0){
             td.style.cursor='pointer'; td.style.color='#0b74de'; td.title='View unit details';
             td.appendChild(document.createTextNode(String(val)));
             // Add red ! indicator if the unit has comments for selected month
@@ -8496,9 +8501,9 @@ function renderReport(){
                 td.appendChild(alertIcon);
               }
             }catch(e){}
-            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#fff4e5'; } try{ openUnitWdNumbersModal(u.unitId, year, month, creditUnits.map(x => x.unitId));}catch(e){} }); 
+            td.addEventListener('click',(ev)=>{ ev.stopPropagation(); const trEl=td.parentNode, tb=trEl&&trEl.parentNode; if(tb){ Array.from(tb.querySelectorAll('tr')).forEach(r=>{ r.dataset.selected=''; r.style.backgroundColor=''; }); } if(trEl){ trEl.dataset.selected='true'; trEl.style.backgroundColor='#fff4e5'; } try{ openUnitWdNumbersModal(u.unitId, year, month, creditUnits.map(x => x.unitId));}catch(e){} });
           } else { td.textContent = String(val); }
-          tr.appendChild(td); 
+          tr.appendChild(td);
         });
 
         const creditDays = creditMap.get(u.id || u.unitId) || [];
@@ -8621,6 +8626,7 @@ function renderReport(){
     const headerDefsDC = [
       { text: 'Unit', key: 'unitId' },
       { text: 'Lease', key: 'lease' },
+      { text: 'AGI Company', key: 'company' },
       { text: 'Supplier', key: 'supplier' },
       { text: 'Arrangement', key: 'arrangement' },
       { text: 'Invoicing', key: 'invoicing' },
@@ -8675,7 +8681,7 @@ function renderReport(){
         tdCounter.textContent = String(idx + 1);
         tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
         tr.appendChild(tdCounter);
-        const info = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+        const info = [u.unitId||'', u.lease||'', u.company||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
         info.forEach((val, idx) => {
           const td=document.createElement('td');
           td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
@@ -8850,6 +8856,7 @@ function renderReport(){
       const headerDefsFOM = [
         { text: 'Unit', key: 'unitId' },
         { text: 'Lease', key: 'lease' },
+        { text: 'AGI Company', key: 'company' },
         { text: 'Supplier', key: 'supplier' },
         { text: 'Arrangement', key: 'arrangement' },
         { text: 'Invoicing', key: 'invoicing' },
@@ -8905,7 +8912,7 @@ function renderReport(){
           tdCounter.textContent = String(idx + 1);
           tdCounter.style.textAlign='center'; tdCounter.style.padding='6px'; tdCounter.style.borderBottom='1px solid #eef2f7'; tdCounter.style.fontSize='12px';
           tr.appendChild(tdCounter);
-          const infoCellsFOM = [u.unitId||'', u.lease||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
+          const infoCellsFOM = [u.unitId||'', u.lease||'', u.company||'', u.supplier||'', u.arrangement||'', u.invoicing||'', u.status||'Operational'];
           infoCellsFOM.forEach((val, cIdx) => {
             const td = document.createElement('td');
             td.style.padding='6px'; td.style.borderBottom='1px solid #eef2f7'; td.style.fontSize='12px';
@@ -9110,6 +9117,7 @@ function renderReport(){
           if(key === 'lastWd') return row.lastWdAt || 0;
           if(key === 'unitId') return (row.u.unitId || row.u.id || '').toString();
           if(key === 'lease') return (row.u.lease || '').toString();
+          if(key === 'company') return (row.u.company || '').toString();
           if(key === 'supplier') return (row.u.supplier || '').toString();
           if(key === 'description') return (row.u.description || '').toString();
           if(key === 'invoicing') return (row.u.invoicing || '').toString();
@@ -9163,6 +9171,7 @@ function renderReport(){
       const headerDefsMonths = [
         { text: 'Unit', key: 'unitId' },
         { text: 'Lease', key: 'lease' },
+        { text: 'AGI Company', key: 'company' },
         { text: 'Supplier', key: 'supplier' },
         { text: 'Description', key: 'description' },
         { text: 'Invoicing', key: 'invoicing' },
@@ -9217,6 +9226,7 @@ function renderReport(){
           const cells = [
             row.u.unitId||'',
             row.u.lease||'',
+            row.u.company||'',
             row.u.supplier||'',
             row.u.description||'',
             row.u.invoicing||'',
