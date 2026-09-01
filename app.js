@@ -15992,6 +15992,13 @@ function startEditingInvoiceTrackingRecord(record){
   const form = qs('#invoiceTrackingForm'); if(!form) return;
   const wdInput = qs('#itWdInvoiceNum'); if(!wdInput) return;
 
+  // editingId MUST be set before the WD lookup runs below (dispatchEvent runs its 'input'
+  // listener synchronously) -- lookupInvoiceTrackingWd() reads it to exclude this record's own
+  // existing entry from the "already tracked" duplicate check. Set after the dispatch, this
+  // record's own WD number always looked like a duplicate of itself, blocking every edit with
+  // "already tracked as a dispute" and wiping the form back to empty.
+  form.dataset.editingId = record.id;
+
   wdInput.value = record.wdInvoiceNum || '';
   wdInput.dispatchEvent(new Event('input'));
 
@@ -16011,7 +16018,6 @@ function startEditingInvoiceTrackingRecord(record){
   const reqField = qs('#itRequest'); if(reqField) reqField.value = record.request || '';
   const statusField = qs('#itStatus'); if(statusField) statusField.value = record.status || '';
 
-  form.dataset.editingId = record.id;
   const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Save Changes';
   const cancelBtn = qs('#itCancelEditBtn'); if(cancelBtn) cancelBtn.style.display = '';
   try{ form.scrollIntoView({ behavior: 'smooth', block: 'start' }); }catch(e){}
