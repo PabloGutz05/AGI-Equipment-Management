@@ -5706,6 +5706,24 @@ function isDateInDisabledPeriod(year, month, day, disabledPeriods){
   });
 }
 
+// Counts total days in [fromIso, toIso] (inclusive both ends, matching every other period range
+// in this app) and how many of those days the unit was Disabled — used to pro-rate an Invoice
+// Dispute Tracking amount down to just the days actually affected, rather than disputing the
+// unit's whole invoiced amount for a period it was only partly out of service for.
+function computeDisabledDaysInPeriod(unit, fromIso, toIso){
+  if(!fromIso || !toIso) return { totalDays: 0, disabledDays: 0 };
+  const from = new Date(fromIso + 'T00:00:00');
+  const to = new Date(toIso + 'T00:00:00');
+  if(isNaN(from) || isNaN(to) || from > to) return { totalDays: 0, disabledDays: 0 };
+  const disabledPeriods = getDisabledPeriods(unit);
+  let totalDays = 0, disabledDays = 0;
+  for(let cur = new Date(from); cur <= to; cur.setDate(cur.getDate() + 1)){
+    totalDays++;
+    if(isDateInDisabledPeriod(cur.getFullYear(), cur.getMonth(), cur.getDate(), disabledPeriods)) disabledDays++;
+  }
+  return { totalDays, disabledDays };
+}
+
 // Every date range this unit is covered by an invoice that's currently tracked as disputed
 // (Invoice Tracking tab) — mirrors getDisabledPeriods/isDateInDisabledPeriod so day-square
 // rendering can flag disputed coverage the same way it already flags disabled periods.
@@ -14938,18 +14956,27 @@ function getInvoiceTrackingCostCenterSummary(){
   return computeCostCenterSummaryForUnits(getInvoiceTrackingCheckedUnits());
 }
 
-// Checking/unchecking a row's dispute box re-sums every currently-checked row's Total Charge
-// into Amount in Dispute — a convenience starting point, still freely editable by hand
-// afterward (checking further boxes will re-sum again, overwriting a manual edit).
+// Checking/unchecking a row's dispute box re-sums a PRO-RATED starting estimate into Amount in
+// Dispute — still freely editable by hand afterward (checking further boxes will re-sum again,
+// overwriting a manual edit). A dispute here is specifically about days the unit was DISABLED
+// but still invoiced for: only Amount (Charge) + Other Charges scale down to the disabled
+// portion of that unit's own invoice period (per-row, since a quarterly registry can invoice
+// different units for different sub-periods) — tax is excluded entirely, since the supplier
+// recalculates tax when they reissue a corrected invoice. A unit disabled for the invoice's
+// ENTIRE period naturally computes to its full Amount+Other (disabledDays === totalDays), no
+// special-casing needed. A unit that was never disabled during that period contributes 0.
 function updateInvoiceTrackingDisputeAmountFromChecked(){
   const wrap = qs('#itUnitAmountBreakdown');
   let sum = 0;
   if(wrap){
     wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
       const cb = row.querySelector('.itb-dispute-checkbox');
-      if(cb && cb.checked){
-        sum += (parseCurrency(row.dataset.tax || '') || 0) + (parseCurrency(row.dataset.other || '') || 0) + (parseCurrency(row.dataset.charge || '') || 0);
-      }
+      if(!cb || !cb.checked) return;
+      const chargeAndOther = (parseCurrency(row.dataset.other || '') || 0) + (parseCurrency(row.dataset.charge || '') || 0);
+      if(!chargeAndOther) return;
+      const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (row.dataset.unitId || '').toString().trim().toLowerCase());
+      const { totalDays, disabledDays } = unitRec ? computeDisabledDaysInPeriod(unitRec, row.dataset.periodFrom, row.dataset.periodTo) : { totalDays: 0, disabledDays: 0 };
+      sum += totalDays > 0 ? chargeAndOther * (disabledDays / totalDays) : 0;
     });
   }
   const disputeField = qs('#itAmountInDispute');
@@ -14985,7 +15012,23 @@ function renderInvoiceTrackingUnitBreakdown(){
     return;
   }
 
-  const details = getRegistryUnitDetails(registry);
+  // Per-unit coverage slice (quarterly-aware) — a quarterly registry can invoice different units
+  // for different sub-periods, so the "days in period" used to pro-rate a dispute has to be each
+  // unit's OWN slice, not the registry's single overall periodStart/periodEnd.
+  const periodSlices = getRegistryCoveragePeriods(registry);
+  // getRegistryUnitDetails only ever reflects Period 1 (or the registry's own single period, for
+  // a non-quarterly invoice) — copy it (never mutate the registry's own array) and add in any
+  // unit that only appears in a LATER quarterly sub-period, so it's selectable here too.
+  const details = getRegistryUnitDetails(registry).slice();
+  const seenUnits = new Set(details.map(d => (d.unit || '').toString().trim().toLowerCase()));
+  periodSlices.slice(1).forEach(slice => {
+    (slice.unitDetails || []).forEach(d => {
+      const key = (d.unit || '').toString().trim().toLowerCase();
+      if(!key || seenUnits.has(key)) return;
+      seenUnits.add(key);
+      details.push(d);
+    });
+  });
   wrap.innerHTML = '';
   if(details.length === 0){
     wrap.style.display = 'none';
@@ -15032,11 +15075,22 @@ function renderInvoiceTrackingUnitBreakdown(){
     row.dataset.other = d.other || '';
     row.dataset.charge = d.charge || '';
     row.dataset.otherChargeDetails = JSON.stringify(d.otherChargeDetails || []);
+    const uidLower = uid.toString().trim().toLowerCase();
+    const slice = periodSlices.find(s => (s.units || []).some(u => (u || '').toString().trim().toLowerCase() === uidLower)) || periodSlices[0] || { from: '', to: '' };
+    row.dataset.periodFrom = slice.from || '';
+    row.dataset.periodTo = slice.to || '';
 
     const isDisabled = unitRec && (unitRec.status || '').toLowerCase() === 'disabled';
     if(isDisabled){
       row.style.background = '#fee2e2';
-      row.title = 'This unit is Disabled';
+      const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, slice.from, slice.to);
+      if(totalDays > 0){
+        const chargeAndOther = (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0);
+        const estAmount = chargeAndOther * (disabledDays / totalDays);
+        row.title = `This unit is Disabled — disabled ${disabledDays} of ${totalDays} day(s) in this invoice's period (${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to}) → dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax excluded)`;
+      } else {
+        row.title = 'This unit is Disabled';
+      }
     }
 
     const cbCell = document.createElement('div'); cbCell.style.cssText = 'flex:0 0 60px;display:flex;align-items:center;';
