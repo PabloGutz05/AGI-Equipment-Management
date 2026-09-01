@@ -284,6 +284,11 @@ const DB = {
         // see computeAccrualChargeEstimate in app.js.
         overrideSourceFrom: String(a.overrideSourceFrom || ''),
         overrideSourceTo: String(a.overrideSourceTo || ''),
+        // One entry per month a comment was left for this record — { month, year, text,
+        // timestamp }. Which entry counts as "this record's current comment" is resolved by
+        // getAccrualCommentMonthYear (app.js): a closed record's own stamped accrualMonth/Year,
+        // or whichever month is presently open for accruals otherwise.
+        accrualComments: (() => { const v = DB.parseField(a.accrualComments); return Array.isArray(v) ? v : []; })(),
         createdAt: String(a.createdAt || '')
       }));
 
@@ -449,11 +454,13 @@ const DB = {
   },
 
   async saveAccrual(record) {
-    return DB.post({ action: 'save', sheet: 'Accruals', data: record });
+    const data = { ...record, accrualComments: Array.isArray(record.accrualComments) ? JSON.stringify(record.accrualComments) : (record.accrualComments || '[]') };
+    return DB.post({ action: 'save', sheet: 'Accruals', data });
   },
 
   async updateAccrual(record) {
-    return DB.post({ action: 'update', sheet: 'Accruals', id: record.id, data: record });
+    const data = { ...record, accrualComments: Array.isArray(record.accrualComments) ? JSON.stringify(record.accrualComments) : (record.accrualComments || '[]') };
+    return DB.post({ action: 'update', sheet: 'Accruals', id: record.id, data });
   },
 
   async deleteAccrual(id) {
@@ -464,7 +471,8 @@ const DB = {
   // bulkSaveManualCoverage/bulkDeleteManualCoverage.
   async bulkSaveAccruals(records) {
     if (!records || records.length === 0) return { saved: 0 };
-    return DB.post({ action: 'bulkSave', sheet: 'Accruals', data: records }, 120000);
+    const data = records.map(r => ({ ...r, accrualComments: Array.isArray(r.accrualComments) ? JSON.stringify(r.accrualComments) : (r.accrualComments || '[]') }));
+    return DB.post({ action: 'bulkSave', sheet: 'Accruals', data }, 120000);
   },
   async bulkDeleteAccruals(ids) {
     if (!ids || ids.length === 0) return { deleted: 0 };

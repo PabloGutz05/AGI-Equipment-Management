@@ -1060,6 +1060,23 @@
   </div>
 
   <!-- Accrual Charge Detail modal -->
+  <!-- One comment slot per accrual record per current month (open month, or the record's own
+       stamped accrualMonth/Year once closed) -- see getAccrualComment/setAccrualComment. -->
+  <div id="accrualCommentModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="document">
+      <h3 id="accrualCommentTitle">Comment</h3>
+      <textarea id="accrualCommentText" rows="4" style="width:100%;padding:8px;border:1px solid #e6e9ee;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box;" placeholder="Add a note for this month..."></textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+        <button type="button" id="accrualCommentDeleteBtn" class="small-link" style="color:#dc2626;">Clear</button>
+        <div style="display:flex;gap:8px;">
+          <button type="button" id="accrualCommentCancelBtn">Cancel</button>
+          <button type="button" id="accrualCommentSaveBtn" class="btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="accrualChargeDetailModal" class="modal" role="dialog" aria-hidden="true" style="display:none;">
     <div class="modal-backdrop"></div>
     <div class="modal-dialog" role="document">
@@ -1503,8 +1520,8 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.43"></script>
-  <script src="app.js?v=11.43"></script>
-  <script src="pdfImport.js?v=11.43"></script>
+  <script src="db.js?v=11.45"></script>
+  <script src="app.js?v=11.45"></script>
+  <script src="pdfImport.js?v=11.45"></script>
 </body>
 </html>

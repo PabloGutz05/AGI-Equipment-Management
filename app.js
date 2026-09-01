@@ -5177,6 +5177,7 @@ function startAutoRefresh(){
           notAccruable: String(a.notAccruable || ''),
           overrideSourceFrom: String(a.overrideSourceFrom || ''),
           overrideSourceTo: String(a.overrideSourceTo || ''),
+          accrualComments: (() => { const v = DB.parseField(a.accrualComments); return Array.isArray(v) ? v : []; })(),
           createdAt: String(a.createdAt || '')
         }));
       }
@@ -12291,6 +12292,95 @@ function accrualMonthName(month){
   return ['January','February','March','April','May','June','July','August','September','October','November','December'][month - 1] || '';
 }
 
+// Which month/year a comment left on this accrual record right now would belong to: a CLOSED
+// record's own stamped accrualMonth/Year (fixed forever, same as its dollar figures), or
+// whichever month is presently open for accruals otherwise (covers both still-open accrued
+// records and Not Accruable records, which never get an accrualMonth/Year of their own). This is
+// what makes "current month" mean the accrual cycle's own current month everywhere in this
+// feature, not real wall-clock today.
+function getAccrualCommentMonthYear(record){
+  if(record.accrualMonth && record.accrualYear){
+    return { month: Number(record.accrualMonth), year: Number(record.accrualYear) };
+  }
+  return getAccrualsOpenMonthYear();
+}
+
+// One comment slot per (record, month) — not a growing thread. Reading always looks up
+// whichever month getAccrualCommentMonthYear resolves to right now, so a Not Accruable row that
+// sits across several closed cycles shows a fresh blank slate each time a new month opens,
+// rather than one comment that just persists forever.
+function getAccrualComment(record){
+  const { month, year } = getAccrualCommentMonthYear(record);
+  const list = Array.isArray(record.accrualComments) ? record.accrualComments : [];
+  return list.find(c => Number(c.month) === month && Number(c.year) === year) || null;
+}
+
+// Upserts (or, for blank text, clears) this record's comment for the CURRENT month only — any
+// comment already saved for a different month is left untouched, preserving that history.
+function setAccrualComment(record, text){
+  const { month, year } = getAccrualCommentMonthYear(record);
+  const list = (Array.isArray(record.accrualComments) ? record.accrualComments : []).filter(c => !(Number(c.month) === month && Number(c.year) === year));
+  const trimmed = (text || '').toString().trim();
+  if(trimmed) list.push({ month, year, text: trimmed, timestamp: new Date().toISOString() });
+  record.accrualComments = list;
+}
+
+// Shared by both accrual tables' "Disabled Date" column — looks up the unit's CURRENT live
+// status/disabledDate (not whatever status the accrual record itself snapshotted when created),
+// since a unit can be disabled well after its accrual record already exists.
+function getUnitDisabledDateText(unitId){
+  const unit = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
+  if(!unit || (unit.status || '').toString().trim().toLowerCase() !== 'disabled') return '';
+  return unit.disabledDate ? formatDate(unit.disabledDate) : '';
+}
+
+// Module state for the small "Comment" modal shared by both accrual tables (Periods Ready to
+// Accrue and Not Accruable) — one comment slot per (record, current month), see
+// getAccrualCommentMonthYear/getAccrualComment/setAccrualComment above.
+let _accrualCommentRecord = null;
+let _accrualCommentOnSaved = null;
+function openAccrualCommentModal(record, onSaved){
+  const modal = qs('#accrualCommentModal');
+  const titleEl = qs('#accrualCommentTitle');
+  const textEl = qs('#accrualCommentText');
+  if(!modal || !textEl) return;
+  _accrualCommentRecord = record;
+  _accrualCommentOnSaved = typeof onSaved === 'function' ? onSaved : null;
+  const { month, year } = getAccrualCommentMonthYear(record);
+  if(titleEl) titleEl.textContent = `Comment — ${record.unitId} (${accrualMonthName(month)} ${year})`;
+  const existing = getAccrualComment(record);
+  textEl.value = existing ? existing.text : '';
+  modal.style.display = 'flex';
+  try{ textEl.focus(); }catch(e){}
+}
+function closeAccrualCommentModal(){
+  const modal = qs('#accrualCommentModal');
+  if(modal) modal.style.display = 'none';
+  _accrualCommentRecord = null;
+  _accrualCommentOnSaved = null;
+}
+function saveAccrualCommentFromModal(text){
+  if(!_accrualCommentRecord) return;
+  setAccrualComment(_accrualCommentRecord, text);
+  _accrualsSyncInFlight = true;
+  DB.updateAccrual(_accrualCommentRecord).catch(e => console.error('Accrual comment save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  try{ saveState(); }catch(e){}
+  const cb = _accrualCommentOnSaved;
+  closeAccrualCommentModal();
+  if(cb) cb();
+}
+const accrualCommentSaveBtn = qs('#accrualCommentSaveBtn');
+if(accrualCommentSaveBtn) accrualCommentSaveBtn.addEventListener('click', () => {
+  const textEl = qs('#accrualCommentText');
+  saveAccrualCommentFromModal(textEl ? textEl.value : '');
+});
+const accrualCommentDeleteBtn = qs('#accrualCommentDeleteBtn');
+if(accrualCommentDeleteBtn) accrualCommentDeleteBtn.addEventListener('click', () => { saveAccrualCommentFromModal(''); });
+const accrualCommentCancelBtn = qs('#accrualCommentCancelBtn');
+if(accrualCommentCancelBtn) accrualCommentCancelBtn.addEventListener('click', closeAccrualCommentModal);
+const accrualCommentBackdrop = qs('#accrualCommentModal .modal-backdrop');
+if(accrualCommentBackdrop) accrualCommentBackdrop.addEventListener('click', closeAccrualCommentModal);
+
 // Which of the Accruals tab's sub-tabs is currently on screen — both share the one coverage
 // panel (physically moved between #accrualsPanelSlotMissing/#accrualsPanelSlotManual by
 // switchAccrualsSubTab), so this also decides which row list Prev/Next nav and the height-sync
@@ -13218,9 +13308,20 @@ function downloadAccrualsDeliverable(){
     const split = splitAccrualAmountByViewMonth(r, estimate.chargePerDay, month, year);
     return {
       unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
-      periodText: `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, days: Number(r.days) || 0,
+      // The record's own full span, kept for traceability (the same underlying accrual can
+      // produce a row on BOTH tabs, and this is how a reader ties them back together) — but
+      // never shown as "the" period next to a tab-specific amount, since a record spanning e.g.
+      // Apr 1 – Aug 31 would then look like its Accumulated figure includes August too. Each
+      // tab instead gets its OWN period text below, scoped to exactly the days that amount
+      // actually covers.
+      fullPeriodText: `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`,
       lastInvoiceAmount: estimate.totalAmount, chargePerDay: estimate.chargePerDay,
-      accumulated: split.accumulatedAmount, currentMonth: split.currentMonthAmount, total: split.totalAmount
+      accumulated: split.accumulatedAmount, accumulatedDays: split.accumulatedDays,
+      accumulatedPeriodText: split.accumulatedStart ? `${fmtMDY(split.accumulatedStart)} - ${fmtMDY(split.accumulatedEnd)}` : '',
+      currentMonth: split.currentMonthAmount, currentMonthDays: split.currentMonthDays,
+      currentMonthPeriodText: split.currentMonthStart ? `${fmtMDY(split.currentMonthStart)} - ${fmtMDY(split.currentMonthEnd)}` : '',
+      total: split.totalAmount,
+      comment: (() => { const c = getAccrualComment(r); return c ? c.text : ''; })()
     };
   });
 
@@ -13276,13 +13377,15 @@ function downloadAccrualsDeliverable(){
   // sheet_to_json) treat the cell as blank even though .v is set. Always stamp it explicitly.
   function cell(v, s){ return { v, t: (typeof v === 'number') ? 'n' : 's', s }; }
 
-  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Period', 'Days', 'Last Invoice Amount', 'Charge/Day'];
+  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Full Accrual Period', 'Last Invoice Amount', 'Charge/Day'];
 
   // amountKey/amountLabel: the ONE amount metric this tab is scoped to (Accumulated or Current
   // Month) — kept as the tab's own single dollar column, separate from the other tab's metric,
-  // so the boss can analyze each independently rather than one mixed table.
-  function buildTabSheet(tabTitle, amountLabel, amountKey, tabRows, tabTotal){
-    const headerRow = HEADERS.concat([amountLabel]).map(h => cell(h, styles.header));
+  // so the boss can analyze each independently rather than one mixed table. periodTextKey/
+  // daysKey point at that same tab's own scoped period/day-count fields (see the row-building
+  // above), so what's shown always matches exactly what the amount column covers.
+  function buildTabSheet(tabTitle, amountLabel, amountKey, periodTextKey, daysKey, tabRows, tabTotal){
+    const headerRow = HEADERS.concat([`${amountLabel} Period`, `${amountLabel} Days`, amountLabel, 'Comment']).map(h => cell(h, styles.header));
     const totalCols = headerRow.length;
     const titleText = `${tabTitle} — ${accrualMonthName(month)} ${year}`;
     const blankRow = () => Array.from({ length: totalCols }, () => cell(''));
@@ -13298,19 +13401,25 @@ function downloadAccrualsDeliverable(){
         cell(r.supplier, mergeStyles(styles.info, zebra)),
         cell(r.costCenter, mergeStyles(styles.info, zebra)),
         cell(r.status, mergeStyles(styles.info, zebra)),
-        cell(r.periodText, mergeStyles(styles.info, zebra)),
-        cell(r.days, mergeStyles(styles.info, zebra, { alignment: { horizontal: 'right' } })),
+        cell(r.fullPeriodText, mergeStyles(styles.info, zebra)),
         cell(r.lastInvoiceAmount, mergeStyles(styles.money, zebra)),
         cell(r.chargePerDay, mergeStyles(styles.money, zebra)),
-        cell(r[amountKey], mergeStyles(styles.money, zebra))
+        cell(r[periodTextKey], mergeStyles(styles.info, zebra)),
+        cell(r[daysKey], mergeStyles(styles.info, zebra, { alignment: { horizontal: 'right' } })),
+        cell(r[amountKey], mergeStyles(styles.money, zebra)),
+        cell(r.comment, mergeStyles(styles.info, zebra, { alignment: { wrapText: true } }))
       ]);
     });
+
+    // Amount column is second-to-last now that Comment trails it — label/value land just
+    // before it rather than assuming the amount is always the very last column.
+    const amountColIdx = totalCols - 2;
 
     // This tab's own total — sums exactly the rows actually listed above, nothing more.
     aoa.push(blankRow());
     const totalRow = blankRow();
-    totalRow[totalCols - 2] = cell(`Total ${amountLabel}:`, styles.tabTotalLabel);
-    totalRow[totalCols - 1] = cell(tabTotal, styles.tabTotalValue);
+    totalRow[amountColIdx - 1] = cell(`Total ${amountLabel}:`, styles.tabTotalLabel);
+    totalRow[amountColIdx] = cell(tabTotal, styles.tabTotalValue);
     aoa.push(totalRow);
 
     // Informative overview, in its own separated space below — all three headline figures for
@@ -13322,8 +13431,8 @@ function downloadAccrualsDeliverable(){
     aoa.push([cell('Overview — whole open batch (informative only)', styles.infoLabel)]);
     const infoLine = (label, value) => {
       const r = blankRow();
-      r[totalCols - 2] = cell(label, styles.infoLabel);
-      r[totalCols - 1] = cell(value, styles.infoValue);
+      r[amountColIdx - 1] = cell(label, styles.infoLabel);
+      r[amountColIdx] = cell(value, styles.infoValue);
       return r;
     };
     aoa.push(infoLine('Total Accumulated:', totalAccumulated));
@@ -13334,7 +13443,7 @@ function downloadAccrualsDeliverable(){
     const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + tabRows.length, c: totalCols - 1 } });
     ws['!autofilter'] = { ref: range };
     ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
-    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:24}, {wch:8}, {wch:16}, {wch:12}, {wch:16} ];
+    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:24}, {wch:16}, {wch:12}, {wch:22}, {wch:10}, {wch:16}, {wch:30} ];
     ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }];
     return ws;
   }
@@ -13342,9 +13451,9 @@ function downloadAccrualsDeliverable(){
   const accumulatedRows = rows.filter(r => r.accumulated !== 0);
   const currentRows = rows.filter(r => r.currentMonth !== 0);
 
-  const wsAccumulated = buildTabSheet('Accumulated Amounts', 'Accumulated', 'accumulated', accumulatedRows, totalAccumulated);
+  const wsAccumulated = buildTabSheet('Accumulated Amounts', 'Accumulated', 'accumulated', 'accumulatedPeriodText', 'accumulatedDays', accumulatedRows, totalAccumulated);
   XLSX.utils.book_append_sheet(wb, wsAccumulated, 'Accumulated');
-  const wsCurrent = buildTabSheet('Current Month Amounts', 'Current Month', 'currentMonth', currentRows, totalCurrentMonth);
+  const wsCurrent = buildTabSheet('Current Month Amounts', 'Current Month', 'currentMonth', 'currentMonthPeriodText', 'currentMonthDays', currentRows, totalCurrentMonth);
   XLSX.utils.book_append_sheet(wb, wsCurrent, 'Current Month');
 
   const fname = `Accruals_Deliverable_${accrualMonthName(month)}_${year}.xlsx`;
@@ -14053,7 +14162,17 @@ function splitAccrualAmountByViewMonth(record, chargePerDay, viewMonth, viewYear
   const currentMonthAmount = chargePerDay * currentMonthDays;
   return {
     accumulatedDays, accumulatedAmount,
+    // The exact sub-range these accumulated days actually cover (periodStart through the last
+    // day of the prior reporting month) — null when there's no accumulated portion at all
+    // (accumulatedDays === 0), since the dates would be meaningless in that case. Lets a caller
+    // display "what period is this dollar figure actually for" instead of the record's whole
+    // (possibly much wider) periodStart/periodEnd, which would make an Accumulated-only amount
+    // look like it includes the current reporting month too.
+    accumulatedStart: accumulatedDays > 0 ? dateToIsoStr(periodStart) : null,
+    accumulatedEnd: accumulatedDays > 0 ? dateToIsoStr(accumulatedCap) : null,
     currentMonthDays, currentMonthAmount,
+    currentMonthStart: currentMonthDays > 0 ? dateToIsoStr(currentMonthStart) : null,
+    currentMonthEnd: currentMonthDays > 0 ? dateToIsoStr(periodEnd) : null,
     totalAmount: accumulatedAmount + currentMonthAmount
   };
 }
@@ -14220,6 +14339,7 @@ function renderAccrualsAccruedList(){
     { key: 'supplier', label: 'Supplier', get: r => r.supplier },
     { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
     { key: 'status', label: 'Status', get: r => r.status },
+    { key: 'disabledDate', label: 'Disabled Date', get: r => getUnitDisabledDateText(r.unitId) },
     { key: 'period', label: 'Missing Period', get: r => r.periodStart || '' },
     { key: 'days', label: 'Days', get: r => Number(r.days) || 0, numeric: true, alignRight: true },
     { key: 'lastInvoiceAmount', label: 'Last Invoice Amount', get: r => chargeEstimates.get(r.id).totalAmount, numeric: true, alignRight: true },
@@ -14277,6 +14397,10 @@ function renderAccrualsAccruedList(){
     });
     headerRow.appendChild(th);
   });
+  const thComment = document.createElement('th');
+  thComment.textContent = 'Comment';
+  thComment.style.cssText = 'text-align:center;padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
+  headerRow.appendChild(thComment);
   thead.appendChild(headerRow);
   table.appendChild(thead);
 
@@ -14309,10 +14433,10 @@ function renderAccrualsAccruedList(){
     tdCounter.style.cssText = 'padding:4px 6px;color:#6b7280;';
     tr.appendChild(tdCounter);
 
-    [r.unitId, r.lease, r.supplier, r.costCenter, r.status, `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
+    [r.unitId, r.lease, r.supplier, r.costCenter, r.status, getUnitDisabledDateText(r.unitId), `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
       const td = document.createElement('td');
       td.textContent = val;
-      td.style.cssText = `padding:4px 6px;${ci === 6 ? 'text-align:right;' : ''}`;
+      td.style.cssText = `padding:4px 6px;${ci === 7 ? 'text-align:right;' : ''}`;
       if(ci === 0){
         // Same coverage-history popup used everywhere else a UnitId is clickable — lets the
         // operator make a last visual check of this unit's calendar before sending the report.
@@ -14389,6 +14513,22 @@ function renderAccrualsAccruedList(){
     tdTotal.style.cssText = 'padding:4px 6px;text-align:right;font-weight:600;';
     tr.appendChild(tdTotal);
 
+    // Comment icon — one slot per (record, current month); see getAccrualComment. Editable
+    // regardless of open/closed, since a note isn't part of the frozen dollar figures.
+    const tdComment = document.createElement('td');
+    tdComment.style.cssText = 'padding:4px 6px;text-align:center;cursor:pointer;';
+    const existingComment = getAccrualComment(r);
+    const commentIcon = document.createElement('span');
+    commentIcon.textContent = '💬';
+    commentIcon.style.cssText = existingComment ? 'color:#0b74de;font-weight:700;' : 'color:#c0c5cc;';
+    tdComment.title = existingComment ? existingComment.text : 'Add a comment for this month';
+    tdComment.appendChild(commentIcon);
+    tdComment.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openAccrualCommentModal(r, () => renderAccrualsAccruedList());
+    });
+    tr.appendChild(tdComment);
+
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -14407,8 +14547,10 @@ function renderAccrualsAccruedList(){
   const tdFootLabel = document.createElement('td');
   tdFootLabel.textContent = 'Totals';
   // Spans everything up through Charge/Day -- i.e. every column except the three amount
-  // columns being summed -- regardless of whether the leading Remove column is present.
-  tdFootLabel.colSpan = (isViewingOpenMonth ? 1 : 0) + 1 + 9;
+  // columns being summed -- regardless of whether the leading Remove column is present. (The
+  // trailing Comment column has no footer entry — this row is simply shorter than the header,
+  // which is fine; it doesn't shift any of the cells that do exist.)
+  tdFootLabel.colSpan = (isViewingOpenMonth ? 1 : 0) + 1 + 10;
   tdFootLabel.style.cssText = 'padding:6px;text-align:right;color:#374151;';
   footRow.appendChild(tdFootLabel);
 
@@ -14494,6 +14636,7 @@ function renderAccrualsNotAccruableList(){
     { key: 'supplier', label: 'Supplier', get: r => r.supplier },
     { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
     { key: 'status', label: 'Status', get: r => r.status },
+    { key: 'disabledDate', label: 'Disabled Date', get: r => getUnitDisabledDateText(r.unitId) },
     { key: 'period', label: 'Period', get: r => r.periodStart || '' },
     { key: 'days', label: 'Days', get: r => Number(r.days) || 0, numeric: true, alignRight: true }
   ];
@@ -14541,6 +14684,10 @@ function renderAccrualsNotAccruableList(){
     });
     headerRow.appendChild(th);
   });
+  const thComment = document.createElement('th');
+  thComment.textContent = 'Comment';
+  thComment.style.cssText = 'text-align:center;padding:4px 6px;font-size:10px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;position:sticky;top:0;';
+  headerRow.appendChild(thComment);
   thead.appendChild(headerRow);
   table.appendChild(thead);
 
@@ -14573,10 +14720,10 @@ function renderAccrualsNotAccruableList(){
     tdCounter.style.cssText = 'padding:4px 6px;color:#6b7280;';
     tr.appendChild(tdCounter);
 
-    [r.unitId, r.lease, r.supplier, r.costCenter, r.status, `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
+    [r.unitId, r.lease, r.supplier, r.costCenter, r.status, getUnitDisabledDateText(r.unitId), `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
       const td = document.createElement('td');
       td.textContent = val;
-      td.style.cssText = `padding:4px 6px;${ci === 6 ? 'text-align:right;' : ''}`;
+      td.style.cssText = `padding:4px 6px;${ci === 7 ? 'text-align:right;' : ''}`;
       if(ci === 0){
         // Same coverage-history popup as everywhere else a UnitId is clickable.
         td.style.color = '#0b74de';
@@ -14592,6 +14739,23 @@ function renderAccrualsNotAccruableList(){
       }
       tr.appendChild(td);
     });
+
+    // Comment icon — one slot per (record, current month); see getAccrualComment. A Not
+    // Accruable row never closes, so this is the ONLY per-cycle note mechanism it has.
+    const tdComment = document.createElement('td');
+    tdComment.style.cssText = 'padding:4px 6px;text-align:center;cursor:pointer;';
+    const existingComment = getAccrualComment(r);
+    const commentIcon = document.createElement('span');
+    commentIcon.textContent = '💬';
+    commentIcon.style.cssText = existingComment ? 'color:#0b74de;font-weight:700;' : 'color:#c0c5cc;';
+    tdComment.title = existingComment ? existingComment.text : 'Add a comment for this month';
+    tdComment.appendChild(commentIcon);
+    tdComment.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openAccrualCommentModal(r, () => renderAccrualsNotAccruableList());
+    });
+    tr.appendChild(tdComment);
+
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
