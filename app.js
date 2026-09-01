@@ -13309,13 +13309,11 @@ function downloadAccrualsDeliverable(){
     return {
       unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
       disabledDate: getUnitDisabledDateText(r.unitId),
-      // The record's own full span, kept for traceability (the same underlying accrual can
-      // produce a row on BOTH tabs, and this is how a reader ties them back together) — but
-      // never shown as "the" period next to a tab-specific amount, since a record spanning e.g.
-      // Apr 1 – Aug 31 would then look like its Accumulated figure includes August too. Each
-      // tab instead gets its OWN period text below, scoped to exactly the days that amount
-      // actually covers.
-      fullPeriodText: `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`,
+      // No column shows the record's own full raw span (periodStart/periodEnd) here — only each
+      // tab's own scoped period below (accumulatedPeriodText/currentMonthPeriodText), which is
+      // the exact range that tab's dollar amount actually covers. A record spanning e.g. Apr 1 –
+      // Aug 31 would otherwise show that whole range next to its Accumulated figure and read as
+      // if the amount covered August too, which is exactly the confusion a live user hit.
       lastInvoiceAmount: estimate.totalAmount, chargePerDay: estimate.chargePerDay,
       accumulated: split.accumulatedAmount, accumulatedDays: split.accumulatedDays,
       accumulatedPeriodText: split.accumulatedStart ? `${fmtMDY(split.accumulatedStart)} - ${fmtMDY(split.accumulatedEnd)}` : '',
@@ -13378,13 +13376,17 @@ function downloadAccrualsDeliverable(){
   // sheet_to_json) treat the cell as blank even though .v is set. Always stamp it explicitly.
   function cell(v, s){ return { v, t: (typeof v === 'number') ? 'n' : 's', s }; }
 
-  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Disabled Date', 'Full Accrual Period', 'Last Invoice Amount', 'Charge/Day'];
+  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Disabled Date', 'Last Invoice Amount', 'Charge/Day'];
 
   // amountKey/amountLabel: the ONE amount metric this tab is scoped to (Accumulated or Current
   // Month) — kept as the tab's own single dollar column, separate from the other tab's metric,
   // so the boss can analyze each independently rather than one mixed table. periodTextKey/
   // daysKey point at that same tab's own scoped period/day-count fields (see the row-building
-  // above), so what's shown always matches exactly what the amount column covers.
+  // above), so what's shown always matches exactly what the amount column covers. There is
+  // deliberately no "full record period" column here at all — one was tried (both up front, and
+  // later demoted to a reference-only column after the amount) and in practice a reader kept
+  // reading whichever one they saw first as THE period this amount covers, even when it wasn't.
+  // Simplest fix: don't show a period that isn't the one being reported on.
   function buildTabSheet(tabTitle, amountLabel, amountKey, periodTextKey, daysKey, tabRows, tabTotal){
     const headerRow = HEADERS.concat([`${amountLabel} Period`, `${amountLabel} Days`, amountLabel, 'Comment']).map(h => cell(h, styles.header));
     const totalCols = headerRow.length;
@@ -13403,7 +13405,6 @@ function downloadAccrualsDeliverable(){
         cell(r.costCenter, mergeStyles(styles.info, zebra)),
         cell(r.status, mergeStyles(styles.info, zebra)),
         cell(r.disabledDate, mergeStyles(styles.info, zebra)),
-        cell(r.fullPeriodText, mergeStyles(styles.info, zebra)),
         cell(r.lastInvoiceAmount, mergeStyles(styles.money, zebra)),
         cell(r.chargePerDay, mergeStyles(styles.money, zebra)),
         cell(r[periodTextKey], mergeStyles(styles.info, zebra)),
@@ -13445,7 +13446,7 @@ function downloadAccrualsDeliverable(){
     const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + tabRows.length, c: totalCols - 1 } });
     ws['!autofilter'] = { ref: range };
     ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
-    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:14}, {wch:24}, {wch:16}, {wch:12}, {wch:22}, {wch:10}, {wch:16}, {wch:30} ];
+    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:14}, {wch:16}, {wch:12}, {wch:22}, {wch:10}, {wch:16}, {wch:30} ];
     ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }];
     return ws;
   }
