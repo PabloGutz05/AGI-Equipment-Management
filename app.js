@@ -8812,13 +8812,20 @@ function renderReport(){
       let nextYearFOM = year;
       if(nextMonthFOM > 11){ nextMonthFOM = 0; nextYearFOM = year + 1; }
 
-      const firstOfMonthUnits = units.filter(u => {
+      const firstOfMonthUnitsAll = units.filter(u => {
         const invoicingVal = (u.invoicing || '').toString().trim();
         if(invoicingVal !== 'First of the Month') return false;
         // Skip units already disabled before next month starts — nothing to invoice
         if(isDateInDisabledPeriod(nextYearFOM, nextMonthFOM, 1, getDisabledPeriods(u))) return false;
         return true;
       });
+
+      // "Only show units with coverage this period" checkbox — persisted, defaults off (shows
+      // everything tagged First of the Month, same as before this was added).
+      state.meta.reportSimple.fomOnlyCovered = !!state.meta.reportSimple.fomOnlyCovered;
+      const firstOfMonthUnits = state.meta.reportSimple.fomOnlyCovered
+        ? firstOfMonthUnitsAll.filter(u => (coverageArrayForUnit(u, nextYearFOM, nextMonthFOM) || []).some(Boolean))
+        : firstOfMonthUnitsAll;
 
       // Sort handling for First of the Month table
       state.meta.reportSimple.sortFOM = state.meta.reportSimple.sortFOM || { column: 'unitId', ascending: true };
@@ -8834,11 +8841,30 @@ function renderReport(){
       const daysInMonthFOM = new Date(nextYearFOM, nextMonthFOM + 1, 0).getDate();
       const monthNameFOM = monthNames[nextMonthFOM];
 
+      const titleRowFOM = document.createElement('div');
+      titleRowFOM.style.cssText = 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:12px 0 8px;';
+
       const titleFOM = document.createElement('div');
       titleFOM.textContent = `Units Tagged "First of the Month" — Preview for ${monthNameFOM} ${nextYearFOM}`;
-      titleFOM.style.margin = '12px 0 8px';
       titleFOM.style.fontWeight = '600';
-      resultsWrap.appendChild(titleFOM);
+      titleRowFOM.appendChild(titleFOM);
+
+      const filterLabelFOM = document.createElement('label');
+      filterLabelFOM.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;font-weight:400;color:#374151;cursor:pointer;';
+      const filterCheckboxFOM = document.createElement('input');
+      filterCheckboxFOM.type = 'checkbox';
+      filterCheckboxFOM.style.cursor = 'pointer';
+      filterCheckboxFOM.checked = state.meta.reportSimple.fomOnlyCovered;
+      filterCheckboxFOM.addEventListener('change', () => {
+        state.meta.reportSimple.fomOnlyCovered = filterCheckboxFOM.checked;
+        try{ saveState(); }catch(e){}
+        run();
+      });
+      filterLabelFOM.appendChild(filterCheckboxFOM);
+      filterLabelFOM.appendChild(document.createTextNode(`Only show units with coverage in ${monthNameFOM} ${nextYearFOM}`));
+      titleRowFOM.appendChild(filterLabelFOM);
+
+      resultsWrap.appendChild(titleRowFOM);
 
       const scrollerFOM = document.createElement('div');
       scrollerFOM.style.maxHeight = '600px';
@@ -8895,7 +8921,11 @@ function renderReport(){
 
       if(firstOfMonthUnits.length === 0){
         const tr = document.createElement('tr'); const td = document.createElement('td');
-        td.colSpan = headerDefsFOM.length + daysInMonthFOM + 1; td.textContent = `No units tagged "First of the Month" for ${monthNameFOM} ${nextYearFOM}.`; td.className = 'small-muted'; td.style.padding='12px';
+        td.colSpan = headerDefsFOM.length + daysInMonthFOM + 1;
+        td.textContent = state.meta.reportSimple.fomOnlyCovered && firstOfMonthUnitsAll.length > 0
+          ? `No units tagged "First of the Month" have any coverage in ${monthNameFOM} ${nextYearFOM} — ${firstOfMonthUnitsAll.length} tagged unit(s) hidden by the filter above.`
+          : `No units tagged "First of the Month" for ${monthNameFOM} ${nextYearFOM}.`;
+        td.className = 'small-muted'; td.style.padding='12px';
         tr.appendChild(td); tbodyFOM.appendChild(tr);
       } else {
         firstOfMonthUnits.forEach((u, idx) => {
