@@ -12425,6 +12425,15 @@ function getUnitDisabledDateText(unitId){
   return unit.disabledDate ? formatDate(unit.disabledDate) : '';
 }
 
+// Same lookup pattern as getUnitDisabledDateText above — the accrual record itself doesn't carry
+// the unit's AGI Company (only unitId/lease/supplier/costCenter/status were ever snapshotted onto
+// it), so it's read live off the current unit record, same as every other "AGI Company" column
+// elsewhere in this app (Report All Tables, etc.).
+function getUnitCompanyText(unitId){
+  const unit = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
+  return unit ? (unit.company || '') : '';
+}
+
 // Module state for the small "Comment" modal shared by both accrual tables (Periods Ready to
 // Accrue and Not Accruable) — one comment slot per (record, current month), see
 // getAccrualCommentMonthYear/getAccrualComment/setAccrualComment above.
@@ -13398,12 +13407,13 @@ function downloadAccrualsDeliverable(){
     const estimate = computeAccrualChargeEstimate(r);
     const split = splitAccrualAmountByViewMonth(r, estimate.chargePerDay, month, year);
     return {
-      unitId: r.unitId, lease: r.lease, supplier: r.supplier, costCenter: r.costCenter, status: r.status,
+      unitId: r.unitId, lease: r.lease, supplier: r.supplier, company: getUnitCompanyText(r.unitId), costCenter: r.costCenter, status: r.status,
       disabledDate: getUnitDisabledDateText(r.unitId),
       // "Last WD/Period/Amount" are always the NATURAL closest-prior invoice, regardless of any
-      // override — "Accrual Amount Used" is the amount actually driving Charge/Day and the
-      // Accumulated/Current Month figures, which only differs from the natural one when an
-      // operator has deliberately picked a different source period ("Use Block to Accrue").
+      // override — "Actual Cost Per Unit" (accrualAmountUsed) is the amount actually driving
+      // Charge/Day and the Accumulated/Current Month figures, which only differs from the
+      // natural one when an operator has deliberately picked a different source period
+      // ("Use Block to Accrue").
       lastWdInvoiceNumber: estimate.naturalSourceWd,
       lastInvoicePeriodText: estimate.naturalFound ? `${fmtMDY(estimate.naturalSourceFrom)} - ${fmtMDY(estimate.naturalSourceTo)}` : '',
       lastInvoiceAmount: estimate.naturalTotalAmount,
@@ -13478,7 +13488,16 @@ function downloadAccrualsDeliverable(){
   // recalculate formulas; Excel itself recalculates .f on open and overwrites the cached .v.
   function formulaCellFn(formula, fallbackValue, s){ return { f: formula, v: fallbackValue, t: 's', s }; }
 
-  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'Cost Center', 'Status', 'Disabled Date', 'Last WD Invoice Number', 'Last Invoice Period', 'Last Invoice Amount', 'Charge/Day', 'Accrual Amount Used'];
+  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'AGI Company', 'Cost Center', 'Status', 'Disabled Date', 'Last WD Invoice Number', 'Last Invoice Period', 'Last Invoice Amount', 'Charge/Day', 'Actual Cost Per Unit'];
+
+  // Rounds UP to the next whole dollar — 7650.58 becomes 7651, and a value already whole (e.g.
+  // 100.00) stays put, never bumps to the next dollar. Snaps to the cent first so day-based
+  // division's ordinary floating-point noise (e.g. 100.00000000001 from a repeating decimal
+  // chargePerDay) can never falsely push an amount that's really exactly $100.00 up to $101.
+  function roundUpToDollar(v){
+    const cents = Math.round((Number(v) || 0) * 100) / 100;
+    return Math.ceil(cents);
+  }
 
   // amountKey/amountLabel: the ONE amount metric this tab is scoped to (Accumulated or Current
   // Month) — kept as the tab's own single dollar column, separate from the other tab's metric,
@@ -13489,10 +13508,14 @@ function downloadAccrualsDeliverable(){
   // later demoted to a reference-only column after the amount) and in practice a reader kept
   // reading whichever one they saw first as THE period this amount covers, even when it wasn't.
   // Simplest fix: don't show a period that isn't the one being reported on.
-  function buildTabSheet(tabTitle, amountLabel, amountKey, periodTextKey, daysKey, tabRows, tabTotal){
-    const headerRow = HEADERS.concat([`${amountLabel} Period`, `${amountLabel} Days`, amountLabel, 'Comment', 'Accounting Summary']).map(h => cell(h, styles.header));
+  // amountLabel stays the short form ("Accumulated"/"Current Month") and still drives Period/
+  // Days/the Round column's name; amountColumnLabel is ONLY the amount column's own header text
+  // ("Accumulated Accrual"/"Current Month Accrual") — kept separate since the Round column is
+  // named off the SHORT label ("Accumulated (Round)"), not the Accrual-suffixed one.
+  function buildTabSheet(tabTitle, titleDateText, amountLabel, amountColumnLabel, amountKey, periodTextKey, daysKey, tabRows, tabTotal){
+    const headerRow = HEADERS.concat([`${amountLabel} Period`, `${amountLabel} Days`, amountColumnLabel, `${amountLabel} (Round)`, 'Comment', 'Accounting Summary']).map(h => cell(h, styles.header));
     const totalCols = headerRow.length;
-    const titleText = `${tabTitle} — ${accrualMonthName(month)} ${year}`;
+    const titleText = `${tabTitle} — ${titleDateText}`;
     const blankRow = (s) => Array.from({ length: totalCols }, () => cell('', s));
     const aoa = [
       [cell(titleText, styles.title)].concat(Array.from({ length: totalCols - 1 }, () => cell('', styles.title))),
@@ -13503,7 +13526,7 @@ function downloadAccrualsDeliverable(){
     // removed ahead of it.
     const colLetter = (idx) => XLSX.utils.encode_col(idx);
     const colUnitId = colLetter(0), colLease = colLetter(1), colSupplier = colLetter(2);
-    const colLastWd = colLetter(6), colLastInvoicePeriod = colLetter(7);
+    const colLastWd = colLetter(7), colLastInvoicePeriod = colLetter(8);
     const colTabPeriod = colLetter(HEADERS.length); // first column appended after HEADERS
     tabRows.forEach((r, idx) => {
       const zebra = (idx % 2 === 1) ? styles.zebra : null;
@@ -13517,6 +13540,7 @@ function downloadAccrualsDeliverable(){
         cell(r.unitId, mergeStyles(styles.info, zebra)),
         cell(r.lease, mergeStyles(styles.info, zebra)),
         cell(r.supplier, mergeStyles(styles.info, zebra)),
+        cell(r.company, mergeStyles(styles.info, zebra)),
         cell(r.costCenter, mergeStyles(styles.info, zebra)),
         cell(r.status, mergeStyles(styles.info, zebra)),
         cell(r.disabledDate, mergeStyles(styles.info, zebra)),
@@ -13528,14 +13552,18 @@ function downloadAccrualsDeliverable(){
         cell(r[periodTextKey], mergeStyles(styles.info, zebra)),
         cell(r[daysKey], mergeStyles(styles.info, zebra, { alignment: { horizontal: 'right' } })),
         cell(r[amountKey], mergeStyles(styles.money, zebra)),
+        // Rounded UP to the next whole dollar (never nearest — 7650.58 becomes 7651, never 7650)
+        // — a separate column, the exact amount above is never overwritten/replaced.
+        cell(roundUpToDollar(r[amountKey]), mergeStyles(styles.money, zebra)),
         cell(r.comment, mergeStyles(styles.info, zebra, { alignment: { wrapText: true } })),
         formulaCellFn(summaryFormula, summaryFallback, mergeStyles(styles.info, zebra, { alignment: { wrapText: true } }))
       ]);
     });
 
-    // Amount column now sits three from the end (Comment and Accounting Summary trail after
-    // it) — label/value land there, not assuming the amount is the very last column.
-    const amountColIdx = totalCols - 3;
+    // Amount column now sits four from the end (Rounded Up, Comment, and Accounting Summary
+    // trail after it) — label/value land there, not assuming the amount is the very last column.
+    const amountColIdx = totalCols - 4;
+    const roundedColIdx = amountColIdx + 1;
 
     // This tab's own total — sums exactly the rows actually listed above, nothing more. Kept as
     // the ONLY totals row on this tab (an earlier version also repeated a second "Overview —
@@ -13550,13 +13578,17 @@ function downloadAccrualsDeliverable(){
     const totalRow = blankRow(footerBorder);
     totalRow[amountColIdx - 1] = cell(`Total ${amountLabel}:`, mergeStyles(styles.tabTotalLabel, footerBorder));
     totalRow[amountColIdx] = cell(tabTotal, mergeStyles(styles.tabTotalValue, footerBorder));
+    // Sum of the ALREADY-rounded-up per-row figures (not the raw total rounded up) — lands
+    // directly under the "(Round)" column, right next to the exact total for comparison.
+    const tabTotalRounded = tabRows.reduce((s, r) => s + roundUpToDollar(r[amountKey]), 0);
+    totalRow[roundedColIdx] = cell(tabTotalRounded, mergeStyles(styles.tabTotalValue, footerBorder));
     aoa.push(totalRow);
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + tabRows.length, c: totalCols - 1 } });
     ws['!autofilter'] = { ref: range };
     ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
-    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:14}, {wch:10}, {wch:14}, {wch:16}, {wch:22}, {wch:16}, {wch:12}, {wch:16}, {wch:22}, {wch:10}, {wch:16}, {wch:30}, {wch:70} ];
+    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:18}, {wch:14}, {wch:10}, {wch:14}, {wch:16}, {wch:22}, {wch:16}, {wch:12}, {wch:16}, {wch:22}, {wch:10}, {wch:16}, {wch:16}, {wch:30}, {wch:70} ];
     ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }];
     return ws;
   }
@@ -13564,9 +13596,18 @@ function downloadAccrualsDeliverable(){
   const accumulatedRows = rows.filter(r => r.accumulated !== 0);
   const currentRows = rows.filter(r => r.currentMonth !== 0);
 
-  const wsAccumulated = buildTabSheet('Accumulated Amounts', 'Accumulated', 'accumulated', 'accumulatedPeriodText', 'accumulatedDays', accumulatedRows, totalAccumulated);
+  // Accumulated's title shows the actual cutoff date it covers THROUGH — the last day of the
+  // last CLOSED month (the day right before the currently-open month starts) — rather than the
+  // open month's own name, since "Accumulated" by definition never includes the open month.
+  // new Date(year, month - 1, 0) rolls back across a January open month into December of the
+  // prior year automatically, same as every other month-math in this app.
+  const lastClosedDate = new Date(year, month - 1, 0);
+  const lastClosedDateText = isNaN(lastClosedDate) ? '' :
+    `${String(lastClosedDate.getMonth() + 1).padStart(2, '0')}/${String(lastClosedDate.getDate()).padStart(2, '0')}/${lastClosedDate.getFullYear()}`;
+
+  const wsAccumulated = buildTabSheet('Accumulated Amounts', lastClosedDateText, 'Accumulated', 'Accumulated Accrual', 'accumulated', 'accumulatedPeriodText', 'accumulatedDays', accumulatedRows, totalAccumulated);
   XLSX.utils.book_append_sheet(wb, wsAccumulated, 'Accumulated');
-  const wsCurrent = buildTabSheet('Current Month Amounts', 'Current Month', 'currentMonth', 'currentMonthPeriodText', 'currentMonthDays', currentRows, totalCurrentMonth);
+  const wsCurrent = buildTabSheet('Current Month Amounts', `${accrualMonthName(month)} ${year}`, 'Current Month', 'Current Month Accrual', 'currentMonth', 'currentMonthPeriodText', 'currentMonthDays', currentRows, totalCurrentMonth);
   XLSX.utils.book_append_sheet(wb, wsCurrent, 'Current Month');
 
   const fname = `Accruals_Deliverable_${accrualMonthName(month)}_${year}.xlsx`;
@@ -13767,7 +13808,7 @@ function computeAccrualChargeEstimate(record){
     sourceWd: '', sourceDoc: '', sourceFrom: '', sourceTo: '', unitDetail: null, isOverridden: false,
     // The natural (never-overridden) closest-prior pick, exposed alongside the possibly-
     // overridden "used" fields above — the Accruals Deliverable shows both side by side
-    // ("Last Invoice Amount/Period/WD#" = this; "Accrual Amount Used" = the used fields above),
+    // ("Last Invoice Amount/Period/WD#" = this; "Actual Cost Per Unit" = the used fields above),
     // since an override deliberately makes those two different on purpose.
     naturalFound: false, naturalTotalAmount: 0, naturalSourceWd: '', naturalSourceDoc: '', naturalSourceFrom: '', naturalSourceTo: ''
   };
