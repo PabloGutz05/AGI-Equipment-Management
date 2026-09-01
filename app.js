@@ -1248,7 +1248,7 @@ function updateInvoiceQuarterlyPeriod1Mode(){
         label: 'Period 1',
         fromValue: _invoicePeriod1.fromDate,
         toValue: _invoicePeriod1.toDate,
-        onFromChange: (v) => { _invoicePeriod1.fromDate = v; },
+        onFromChange: (v) => { _invoicePeriod1.fromDate = v; if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown(); },
         onToChange: (v) => { _invoicePeriod1.toDate = v; }
       });
       _invoicePeriod1.fromInputEl = fromInput;
@@ -1271,6 +1271,7 @@ function updateInvoiceQuarterlyPeriod1Mode(){
 function renderInvoicePeriodTable(period, seed){
   renderUnitBreakdownTable(period.wrapId, period.units, null, seed, {
     showEmptyRow: true,
+    disputeFromDate: period.fromDate || '',
     onRemoveUnit: (uid) => {
       period.units = period.units.filter(u => u !== uid);
       renderInvoicePeriodTable(period);
@@ -1290,7 +1291,7 @@ function renderInvoicePeriodBlock(period, seed){
     label: 'Additional Period',
     fromValue: period.fromDate,
     toValue: period.toDate,
-    onFromChange: (v) => { period.fromDate = v; },
+    onFromChange: (v) => { period.fromDate = v; renderInvoicePeriodTable(period); },
     onToChange: (v) => { period.toDate = v; },
     onRemove: () => {
       _invoicePeriods = _invoicePeriods.filter(p => p.id !== period.id);
@@ -1443,7 +1444,13 @@ function resetInvoiceQuarterlyPeriods(){
 
 const invoicePeriodStartEl = qs('#invoicePeriodStart');
 const invoicePeriodEndEl = qs('#invoicePeriodEnd');
-if(invoicePeriodStartEl) invoicePeriodStartEl.addEventListener('input', () => { updateInvoicePeriodDateBounds(); validateInvoicePeriodRanges(); });
+if(invoicePeriodStartEl) invoicePeriodStartEl.addEventListener('input', () => {
+  updateInvoicePeriodDateBounds(); validateInvoicePeriodRanges();
+  // Re-render so the "possible dispute" red highlight (unit returned on/after this From Date)
+  // updates live as the operator fills the date in — existing entered Tax/Other/Amount values
+  // are preserved (renderUnitBreakdownTable reads them back off the DOM before rebuilding).
+  if(typeof renderInvoiceUnitBreakdown === 'function') renderInvoiceUnitBreakdown();
+});
 if(invoicePeriodEndEl) invoicePeriodEndEl.addEventListener('input', () => { updateInvoicePeriodDateBounds(); validateInvoicePeriodRanges(); });
 
 const invoiceAddPeriodBtn = qs('#invoiceAddPeriodBtn');
@@ -1927,6 +1934,14 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
   wrap.appendChild(rowsContainer);
   rowsContainer.appendChild(header);
 
+  // Same "should this probably be disputed?" signal used on the Invoice Dispute Tracking screens
+  // (computeUnitReturnDisputeFlag) — opt-in via opts.disputeFromDate so this stays a no-op for
+  // every OTHER caller of this shared table (Registry Edit included). When the invoice being
+  // registered has a From Date entered, a unit that was still Disabled at or after that date
+  // (never returned, or returned on/after it) gets flagged here too — so the operator can catch
+  // a likely dispute candidate at registration time, before it ever reaches the Dispute tab.
+  const disputeFromDate = opts && opts.disputeFromDate;
+
   rows.forEach(({uid, unitRec}, rowIdx) => {
     const row = document.createElement('div'); row.className = 'unit-breakdown-row'; row.dataset.unitId = uid;
     row.style.cssText = 'display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;';
@@ -1934,11 +1949,25 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     // via a CSS class (not inline style) so hover/selected highlighting still overrides it.
     row.classList.add(rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd');
 
+    const disputeFlag = (disputeFromDate && unitRec) ? computeUnitReturnDisputeFlag(unitRec, disputeFromDate) : { flagged: false };
+    if(disputeFlag.flagged){
+      row.style.background = '#fee2e2';
+      row.title = disputeFlag.stillDisabled
+        ? `Possible dispute — still Disabled (not yet returned) since ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom}`
+        : `Possible dispute — Disabled ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} → Returned ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}, on/after this invoice's From Date`;
+    }
+
     const mkCell = (text, w) => { const d = document.createElement('div'); d.textContent = text; d.style.cssText = `flex:1 0 ${w}px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`; return d; };
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
       const cell = mkCell(col.get(unitRec, uid), getColWidth(wrap, col.key, col.width));
       if(col.key === 'unitId' && uid){
-        cell.style.color = '#0b74de';
+        if(disputeFlag.flagged){
+          cell.textContent = uid + (disputeFlag.stillDisabled ? ' (Disabled)' : ' (Returned Late)');
+          cell.style.color = '#b91c1c';
+          cell.style.fontWeight = '600';
+        } else {
+          cell.style.color = '#0b74de';
+        }
         cell.style.cursor = 'pointer';
         cell.title = 'View coverage history';
         cell.addEventListener('click', (e) => {
@@ -1987,6 +2016,18 @@ function renderUnitBreakdownTable(wrapId, unitIds, amountFieldId, seed, opts){
     chargeInput.addEventListener('focus', selectRow);
 
     row.appendChild(taxInput); row.appendChild(otherCell); row.appendChild(otherHiddenInput); row.appendChild(chargeInput); row.appendChild(rowTotalEl);
+
+    // Same trailing Disabled/Returned date text used on the Invoice Dispute Tracking breakdown —
+    // lets the operator compare it against the invoice's own From/To Date right here, without
+    // switching tabs.
+    if(disputeFlag.flagged){
+      const returnDateCell = document.createElement('div');
+      returnDateCell.textContent = disputeFlag.stillDisabled
+        ? `Disabled: ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} (not yet returned)`
+        : `Disabled: ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} — Returned: ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`;
+      returnDateCell.style.cssText = 'flex:1 1 220px;font-size:11px;color:#b91c1c;font-weight:600;white-space:nowrap;';
+      row.appendChild(returnDateCell);
+    }
     rowsContainer.appendChild(row);
 
     // Indented sub-rows (one per named subcharge) directly beneath this unit's row — striped
@@ -2274,7 +2315,13 @@ function refreshInvoiceBreakdownIfVisible(){
 }
 function renderInvoiceUnitBreakdown(seed){
   if(typeof updateInvoiceQuarterlyPeriod1Mode === 'function') updateInvoiceQuarterlyPeriod1Mode();
-  renderUnitBreakdownTable('invoiceUnitBreakdown', getSelectedInvoiceUnits(), 'invoiceAmount', seed, { showEmptyRow: true });
+  // In quarterly mode this table is scoped to Period 1's own From date (a separate field from
+  // the invoice's overall declared From/To above) — same distinction the amount/day math
+  // elsewhere in this app already makes between a quarterly registry's overall span and each
+  // sub-period's own range.
+  const periodStartEl = qs('#invoicePeriodStart');
+  const disputeFromDate = _invoiceQuarterlyPeriod1Active ? (_invoicePeriod1.fromDate || '') : (periodStartEl ? periodStartEl.value : '');
+  renderUnitBreakdownTable('invoiceUnitBreakdown', getSelectedInvoiceUnits(), 'invoiceAmount', seed, { showEmptyRow: true, disputeFromDate });
 }
 
 // Generic "X" quick-clear button for a search input: shown only while it has text, clears
@@ -5722,6 +5769,29 @@ function computeDisabledDaysInPeriod(unit, fromIso, toIso){
     if(isDateInDisabledPeriod(cur.getFullYear(), cur.getMonth(), cur.getDate(), disabledPeriods)) disabledDays++;
   }
   return { totalDays, disabledDays };
+}
+
+// Flags whether a unit's disabled history overlaps enough of an invoice's own coverage window
+// that a return-timing dispute likely applies — a quick "should this probably be disputed?"
+// signal an operator can eyeball across the Invoice Registration, Invoice Dispute Tracking, and
+// Dispute Detail screens, well before running the actual day-by-day pro-ration. Flags true when
+// the unit has a disabled period that either never returned (still disabled today) or returned
+// ON OR AFTER the invoice's own From Date — meaning it was still out of service for at least
+// part of what that invoice is billing for. Scans every disabled period (not just the current
+// one) so a unit with multiple disable/return cycles is still caught correctly; prefers the
+// LATEST qualifying period for the returned/disabledFrom dates shown back to the operator, since
+// that's the one most likely relevant to a recent invoice.
+function computeUnitReturnDisputeFlag(unit, invoiceFromIso){
+  const empty = { flagged: false, disabledFrom: '', returnedDate: '', stillDisabled: false };
+  if(!unit || !invoiceFromIso) return empty;
+  const periods = getDisabledPeriods(unit);
+  for(let i = periods.length - 1; i >= 0; i--){
+    const p = periods[i];
+    if(!p.toDate || p.toDate > invoiceFromIso){
+      return { flagged: true, disabledFrom: p.fromDate || '', returnedDate: p.toDate || '', stillDisabled: !p.toDate };
+    }
+  }
+  return empty;
 }
 
 // Every date range this unit is covered by an invoice that's currently tracked as disputed
@@ -15080,16 +15150,24 @@ function renderInvoiceTrackingUnitBreakdown(){
     row.dataset.periodFrom = slice.from || '';
     row.dataset.periodTo = slice.to || '';
 
-    const isDisabled = unitRec && (unitRec.status || '').toLowerCase() === 'disabled';
-    if(isDisabled){
+    // Flagged when the unit has a disabled period that never returned, or returned ON OR AFTER
+    // this invoice's own From Date — i.e. it was still out of service for at least part of what
+    // this invoice bills for, regardless of whether it's disabled RIGHT NOW. Catches the case a
+    // simple "is this unit currently Disabled?" check misses: a unit that WAS disabled during
+    // the invoice's period but has since been returned to service.
+    const disputeFlag = unitRec ? computeUnitReturnDisputeFlag(unitRec, slice.from) : { flagged: false };
+    if(disputeFlag.flagged){
       row.style.background = '#fee2e2';
+      const returnText = disputeFlag.stillDisabled
+        ? `still Disabled (not yet returned) since ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom}`
+        : `Disabled ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} → Returned ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`;
       const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, slice.from, slice.to);
       if(totalDays > 0){
         const chargeAndOther = (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0);
         const estAmount = chargeAndOther * (disabledDays / totalDays);
-        row.title = `This unit is Disabled — disabled ${disabledDays} of ${totalDays} day(s) in this invoice's period (${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to}) → dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax excluded)`;
+        row.title = `${returnText} — invoice period ${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to} — disabled ${disabledDays} of ${totalDays} day(s) in it → dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax excluded)`;
       } else {
-        row.title = 'This unit is Disabled';
+        row.title = returnText;
       }
     }
 
@@ -15106,8 +15184,8 @@ function renderInvoiceTrackingUnitBreakdown(){
     UNIT_BREAKDOWN_COLUMNS.forEach(col => {
       const cell = mkCell(col.get(unitRec, uid), getColWidth(wrap, col.key, col.width));
       if(col.key === 'unitId' && uid){
-        if(isDisabled){
-          cell.textContent = uid + ' (Disabled)';
+        if(disputeFlag.flagged){
+          cell.textContent = uid + (disputeFlag.stillDisabled ? ' (Disabled)' : ' (Returned Late)');
           cell.style.color = '#b91c1c';
           cell.style.fontWeight = '600';
         } else {
@@ -15134,10 +15212,15 @@ function renderInvoiceTrackingUnitBreakdown(){
       row.appendChild(c);
     });
 
-    if(isDisabled && unitRec && unitRec.disabledDate){
+    // Shown for ANY flagged unit (not just currently-disabled ones) so the operator can compare
+    // the actual disabled/return dates against the invoice's own From/To Date without having to
+    // open a separate coverage view.
+    if(disputeFlag.flagged){
       const disabledDateCell = document.createElement('div');
-      disabledDateCell.textContent = 'Disabled: ' + (formatDate(unitRec.disabledDate) || unitRec.disabledDate);
-      disabledDateCell.style.cssText = 'flex:1 1 140px;font-size:11px;color:#b91c1c;font-weight:600;white-space:nowrap;';
+      disabledDateCell.textContent = disputeFlag.stillDisabled
+        ? `Disabled: ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} (not yet returned)`
+        : `Disabled: ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} — Returned: ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`;
+      disabledDateCell.style.cssText = 'flex:1 1 220px;font-size:11px;color:#b91c1c;font-weight:600;white-space:nowrap;';
       row.appendChild(disabledDateCell);
     }
 
@@ -15909,25 +15992,47 @@ function renderInvoiceTrackingDetailModal(record){
     if(details.length === 0){
       unitTableEl.innerHTML = '<div class="small-muted">No unit detail recorded.</div>';
     } else {
+      // Every row here is already a disputed unit (unitAmountDetails only ever holds the
+      // disputed set), so each one gets an outline — RED when the automatic return-timing signal
+      // agrees this unit was actually still out of service into the invoice's own period (the
+      // background highlight + Disabled/Returned dates below the UnitId make the same case),
+      // YELLOW when it doesn't (disputed for some other reason — price, a billing error, etc.)
+      // so the operator has an easy visual double-check that a non-return-timing dispute is
+      // actually explained somewhere (Description of Issue) rather than an oversight.
       const rowsHtml = details.map(d => {
         const total = (parseCurrency(d.tax || '') || 0) + (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0);
+        const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (d.unit || '').toString().trim().toLowerCase());
+        const disputeFlag = unitRec ? computeUnitReturnDisputeFlag(unitRec, record.fromDate) : { flagged: false };
+        const outlineColor = disputeFlag.flagged ? '#dc2626' : '#eab308';
+        const bgStyle = disputeFlag.flagged ? 'background:#fee2e2;' : '';
+        const returnText = disputeFlag.flagged
+          ? (disputeFlag.stillDisabled
+              ? `Disabled: ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} (not yet returned)`
+              : `Disabled: ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} — Returned: ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`)
+          : '';
+        const returnNote = returnText ? `<div style="font-size:10px;font-weight:600;color:#b91c1c;white-space:nowrap;">${escapeHtml(returnText)}</div>` : '';
+        const tdBorder = (edge) => `border-top:2px solid ${outlineColor};border-bottom:2px solid ${outlineColor};` + (edge === 'first' ? `border-left:2px solid ${outlineColor};` : (edge === 'last' ? `border-right:2px solid ${outlineColor};` : ''));
         const subcharges = Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails.filter(s => s && (s.name || parseCurrency(s.amount||'') || parseCurrency(s.tax||''))) : [];
-        const subchargesHtml = subcharges.length ? `<tr><td colspan="5" style="padding:0 8px 4px 24px;">` +
+        const subchargesHtml = subcharges.length ? `<tr><td colspan="5" style="padding:0 8px 4px 24px;${tdBorder('last')}">` +
           subcharges.map(s => {
             const subTotal = (parseCurrency(s.amount || '') || 0) + (parseCurrency(s.tax || '') || 0);
             const descNote = s.description ? ` <span style="font-style:italic;">— ${escapeHtml(s.description)}</span>` : '';
             return `<div style="font-size:11px;color:#6b7280;">↳ ${escapeHtml(s.name || '(unnamed)')}: ${formatCurrency(subTotal.toFixed(2))}${descNote}</div>`;
           }).join('') + `</td></tr>` : '';
-        return `<tr style="border-bottom:1px solid #f0f0f0;">
-          <td style="padding:4px 8px;">${escapeHtml(d.unit || '')}</td>
-          <td style="padding:4px 8px;">${d.tax ? formatCurrency(d.tax) : ''}</td>
-          <td style="padding:4px 8px;">${d.other ? formatCurrency(d.other) : ''}</td>
-          <td style="padding:4px 8px;">${d.charge ? formatCurrency(d.charge) : ''}</td>
-          <td style="padding:4px 8px;font-weight:600;">${total ? formatCurrency(total.toFixed(2)) : ''}</td>
+        return `<tr style="${bgStyle}">
+          <td style="padding:4px 8px;${tdBorder('first')}">${escapeHtml(d.unit || '')}${returnNote}</td>
+          <td style="padding:4px 8px;${tdBorder()}">${d.tax ? formatCurrency(d.tax) : ''}</td>
+          <td style="padding:4px 8px;${tdBorder()}">${d.other ? formatCurrency(d.other) : ''}</td>
+          <td style="padding:4px 8px;${tdBorder()}">${d.charge ? formatCurrency(d.charge) : ''}</td>
+          <td style="padding:4px 8px;font-weight:600;${tdBorder('last')}">${total ? formatCurrency(total.toFixed(2)) : ''}</td>
         </tr>${subchargesHtml}`;
       }).join('');
       unitTableEl.innerHTML = `
         <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">Units in Dispute</div>
+        <div style="font-size:10px;color:#6b7280;margin-bottom:4px;">
+          <span style="display:inline-block;width:10px;height:10px;border:2px solid #dc2626;margin-right:4px;vertical-align:middle;"></span>Return-timing dispute confirmed
+          &nbsp;&nbsp;<span style="display:inline-block;width:10px;height:10px;border:2px solid #eab308;margin-right:4px;vertical-align:middle;"></span>Disputed for another reason — verify
+        </div>
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
           <thead><tr style="border-bottom:2px solid #e6e9ee;">
             <th style="text-align:left;padding:4px 8px;">UnitId</th>
