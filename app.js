@@ -16024,6 +16024,55 @@ if(itBinnacleHideAutoCheckbox){
   });
 }
 
+// Every unit actually on the matched registry/invoice — not just the disputed subset — for the
+// Dispute Detail popup's "see everything this invoice covers" view (quarterly-aware, mirrors the
+// same Period-1 + later-sub-period merge renderInvoiceTrackingUnitBreakdown already does). A
+// disputed unit shows its SAVED snapshot (record.unitAmountDetails, exactly what actually drove
+// Amount in Dispute) rather than live registry data, so what's displayed always matches what was
+// actually disputed even if the source invoice was corrected since; every other unit on the
+// invoice (never disputed) shows live registry data instead, since no snapshot exists for it.
+// A disputed unit no longer present on the live registry (e.g. removed from the invoice since)
+// still shows up, from its saved snapshot alone — it's still part of this record.
+function getInvoiceTrackingFullUnitList(record){
+  const disputedSet = new Set((record.unitsInDispute || []).map(u => (u || '').toString().trim().toLowerCase()));
+  const savedByUnit = new Map((Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : []).map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
+
+  const reg = (state.registries || []).find(r => (r.wdNumber || '').toString().trim().toLowerCase() === (record.wdInvoiceNum || '').toString().trim().toLowerCase());
+  if(!reg){
+    // No live registry to expand from (e.g. deleted since) -- fall back to just the disputed
+    // snapshot, same as this view showed before this feature existed.
+    return (Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : []).map(d => Object.assign({}, d, { isDisputed: true }));
+  }
+
+  const periodSlices = getRegistryCoveragePeriods(reg);
+  const liveDetails = getRegistryUnitDetails(reg).slice();
+  const seenUnits = new Set(liveDetails.map(d => (d.unit || '').toString().trim().toLowerCase()));
+  periodSlices.slice(1).forEach(slice => {
+    (slice.unitDetails || []).forEach(d => {
+      const key = (d.unit || '').toString().trim().toLowerCase();
+      if(!key || seenUnits.has(key)) return;
+      seenUnits.add(key);
+      liveDetails.push(d);
+    });
+  });
+
+  const merged = liveDetails.map(d => {
+    const key = (d.unit || '').toString().trim().toLowerCase();
+    const isDisputed = disputedSet.has(key);
+    const source = (isDisputed && savedByUnit.has(key)) ? savedByUnit.get(key) : d;
+    return Object.assign({}, source, { unit: d.unit, isDisputed });
+  });
+
+  const seenAfterLive = new Set(liveDetails.map(d => (d.unit || '').toString().trim().toLowerCase()));
+  (Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : []).forEach(d => {
+    const key = (d.unit || '').toString().trim().toLowerCase();
+    if(!key || seenAfterLive.has(key)) return;
+    merged.push(Object.assign({}, d, { isDisputed: true }));
+  });
+
+  return merged;
+}
+
 function renderInvoiceTrackingDetailModal(record){
   if(!record) return;
 
@@ -16061,22 +16110,24 @@ function renderInvoiceTrackingDetailModal(record){
 
   const unitTableEl = qs('#itDetailUnitTable');
   if(unitTableEl){
-    const details = Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : [];
+    const details = getInvoiceTrackingFullUnitList(record);
     if(details.length === 0){
       unitTableEl.innerHTML = '<div class="small-muted">No unit detail recorded.</div>';
     } else {
-      // Every row here is already a disputed unit (unitAmountDetails only ever holds the
-      // disputed set), so each one gets an outline — RED when the automatic return-timing signal
-      // agrees this unit was actually still out of service into the invoice's own period (the
-      // background highlight + Disabled/Returned dates below the UnitId make the same case),
-      // YELLOW when it doesn't (disputed for some other reason — price, a billing error, etc.)
-      // so the operator has an easy visual double-check that a non-return-timing dispute is
-      // actually explained somewhere (Description of Issue) rather than an oversight.
+      // Shows EVERY unit actually on this invoice, not just the disputed ones, so the operator
+      // can see the full picture of what the invoice covers. Only a DISPUTED row (d.isDisputed)
+      // gets the plain yellow outline — just marking "this is the unit chosen from the invoice",
+      // nothing more; there's no unified/structured dispute reason field to compare it against,
+      // so the outline never tries to signal a reason. The RED background is separate and
+      // unrelated, and applies to ANY row (disputed or not): it flags whether the unit was
+      // actually Disabled at/after the invoice's own From Date (the Disabled/Returned dates below
+      // the UnitId make the same case) — including units that maybe SHOULD have been disputed
+      // but weren't selected.
       const rowsHtml = details.map(d => {
         const total = (parseCurrency(d.tax || '') || 0) + (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0);
         const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (d.unit || '').toString().trim().toLowerCase());
         const disputeFlag = unitRec ? computeUnitReturnDisputeFlag(unitRec, record.fromDate) : { flagged: false };
-        const outlineColor = disputeFlag.flagged ? '#dc2626' : '#eab308';
+        const outlineColor = '#eab308';
         const bgStyle = disputeFlag.flagged ? 'background:#fee2e2;' : '';
         const returnText = disputeFlag.flagged
           ? (disputeFlag.stillDisabled
@@ -16084,7 +16135,9 @@ function renderInvoiceTrackingDetailModal(record){
               : `Disabled: ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} — Returned: ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`)
           : '';
         const returnNote = returnText ? `<div style="font-size:10px;font-weight:600;color:#b91c1c;white-space:nowrap;">${escapeHtml(returnText)}</div>` : '';
-        const tdBorder = (edge) => `border-top:2px solid ${outlineColor};border-bottom:2px solid ${outlineColor};` + (edge === 'first' ? `border-left:2px solid ${outlineColor};` : (edge === 'last' ? `border-right:2px solid ${outlineColor};` : ''));
+        const tdBorder = (edge) => d.isDisputed
+          ? (`border-top:2px solid ${outlineColor};border-bottom:2px solid ${outlineColor};` + (edge === 'first' ? `border-left:2px solid ${outlineColor};` : (edge === 'last' ? `border-right:2px solid ${outlineColor};` : '')))
+          : '';
         const subcharges = Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails.filter(s => s && (s.name || parseCurrency(s.amount||'') || parseCurrency(s.tax||''))) : [];
         const subchargesHtml = subcharges.length ? `<tr><td colspan="5" style="padding:0 8px 4px 24px;${tdBorder('last')}">` +
           subcharges.map(s => {
@@ -16101,10 +16154,10 @@ function renderInvoiceTrackingDetailModal(record){
         </tr>${subchargesHtml}`;
       }).join('');
       unitTableEl.innerHTML = `
-        <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">Units in Dispute</div>
+        <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px;">All Units on This Invoice</div>
         <div style="font-size:10px;color:#6b7280;margin-bottom:4px;">
-          <span style="display:inline-block;width:10px;height:10px;border:2px solid #dc2626;margin-right:4px;vertical-align:middle;"></span>Return-timing dispute confirmed
-          &nbsp;&nbsp;<span style="display:inline-block;width:10px;height:10px;border:2px solid #eab308;margin-right:4px;vertical-align:middle;"></span>Disputed for another reason — verify
+          <span style="display:inline-block;width:10px;height:10px;border:2px solid #eab308;margin-right:4px;vertical-align:middle;"></span>Unit selected for this dispute
+          &nbsp;&nbsp;<span style="display:inline-block;width:10px;height:10px;background:#fee2e2;margin-right:4px;vertical-align:middle;"></span>Unit was Disabled at/after the invoice's From Date
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
           <thead><tr style="border-bottom:2px solid #e6e9ee;">
