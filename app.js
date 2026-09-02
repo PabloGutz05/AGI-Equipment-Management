@@ -3017,6 +3017,20 @@ function getRegistryCoveragePeriods(reg){
     const pUnitDetails = Array.isArray(p.unitDetails) ? p.unitDetails : [];
     slices.push({ from: p.fromDate || '', to: p.toDate || '', units: pUnitDetails.map(d => d.unit), unitDetails: pUnitDetails });
   });
+
+  // Any slice past Period 1 with a genuinely missing from/to (a period card whose date was never
+  // filled in, or malformed source data) left that bound blank until now — which silently zeroes
+  // out every day-based calculation built on top of it (accrual charge estimate, dispute
+  // pro-ration) with no indication why: the red "possible dispute" highlight elsewhere only ever
+  // needs a slice's `from`, so it still shows correctly even when `to` is missing, making a
+  // dollar amount that quietly computes to $0 right next to it look like a totally separate bug.
+  // Backfill from the neighboring slice's own bound first (periods are chronological and
+  // shouldn't gap), falling back to the registry's own overall span only at the very ends —
+  // exactly the same fallback Period 1 above already gets.
+  for(let i = 1; i < slices.length; i++){
+    if(!slices[i].from) slices[i].from = slices[i-1].to ? addDaysToDateStr(slices[i-1].to, 1) : (reg.periodStart || '');
+    if(!slices[i].to) slices[i].to = (i + 1 < slices.length && slices[i+1].from) ? addDaysToDateStr(slices[i+1].from, -1) : (reg.periodEnd || '');
+  }
   return slices;
 }
 
@@ -15239,6 +15253,12 @@ function renderInvoiceTrackingUnitBreakdown(){
       if(totalDays > 0){
         const estAmount = computeUnitDisputeShare(uid, d.charge, d.tax, d.other, d.otherChargeDetails, slice.from, slice.to);
         row.title = `${returnText} — invoice period ${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to} — disabled ${disabledDays} of ${totalDays} day(s) in it → dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax included, proportional to Charge/Other Charges)`;
+      } else if(!slice.from || !slice.to){
+        // Safety net: this unit's own invoice period couldn't be resolved at all (both
+        // getRegistryCoveragePeriods' own fallbacks AND the registry's overall periodStart/
+        // periodEnd came back empty) — checking this row will silently sum to $0 with no
+        // days to prorate against. Flag it visibly rather than leaving that a mystery.
+        row.title = `${returnText} — ⚠ could not determine this unit's invoice period (missing From/To date on the source registry) — checking this box will NOT add anything to Amount in Dispute; enter the amount by hand instead`;
       } else {
         row.title = returnText;
       }
