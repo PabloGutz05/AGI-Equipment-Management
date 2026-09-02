@@ -15114,56 +15114,63 @@ function getInvoiceTrackingCostCenterSummary(){
 // the live checkbox-driven auto-sum (updateInvoiceTrackingDisputeAmountFromChecked, below), the
 // Refresh Data recompute (refreshInvoiceTrackingRecordFromSource), and the row tooltip estimate
 // (renderInvoiceTrackingUnitBreakdown) — factored out specifically so none of the three can ever
-// drift out of sync with each other. A dispute is specifically about days the unit was DISABLED
-// but still invoiced for: the Charge (rent) and each Other Charge scale down to the disabled
-// portion of the unit's own invoice period — a unit disabled for the invoice's ENTIRE period
-// naturally resolves to its full amount (disabledDays === totalDays); one never disabled at all
-// during that period resolves to 0.
+// drift out of sync with each other.
 //
-// Tax IS included (aim: an accurate credit amount to actually cancel the invoice), but tax is
-// never itself pro-rated directly — it's expressed as the % it represents of its own charge
-// (taxRate = tax / charge), and that SAME % is applied to the pro-rated (disputed) portion of
-// that charge. A unit disabled the whole period naturally lands on the full tax too, since the
-// pro-rated fraction is 1. Other Charges are each taxed at their OWN rate — never blended into
-// the main charge's rate — since a named subcharge (Freight, Fuel, etc.) can carry a different
-// tax rate than the rent itself; each is pro-rated and taxed individually, then summed in. Only
-// truly legacy "other" data with no per-item breakdown at all falls back to a flat pro-rate with
-// no tax added (there's no rate to derive it from).
-function computeUnitDisputeShare(unitId, chargeVal, taxVal, otherVal, otherChargeDetails, periodFrom, periodTo){
+// The Charge (rent) portion is DAY-PRORATED: a dispute is specifically about days the unit was
+// DISABLED but still invoiced for, so it scales down to the disabled portion of the unit's own
+// invoice period — a unit disabled for the invoice's ENTIRE period naturally resolves to its
+// full charge (disabledDays === totalDays); one never disabled at all resolves to 0. Tax is
+// never itself pro-rated directly — it's expressed as the % it represents of the charge
+// (taxRate = tax / charge), and that SAME % is applied to the pro-rated (disputed) portion —
+// a unit disabled the whole period naturally lands on the full tax too, since the fraction is 1.
+//
+// Other Charges (Freight, Gasoline, etc.) are handled completely differently: NEVER prorated by
+// day at all, and only counted when the operator has explicitly checked that specific line's own
+// checkbox (`sub.disputed`, or `otherSelected` for a legacy lump with no named breakdown) — a
+// flat charge like Freight is typically owed in FULL the moment the unit operated for any part of
+// the period, or fully disputable if it wasn't there for any of it, which is the operator's own
+// judgment call per charge, not something day-math can decide. A checked charge counts at its
+// FULL amount plus its own tax (each subcharge can carry a different tax rate than the others or
+// the main charge, so each is added at its own rate, never blended).
+function computeUnitDisputeShare(unitId, chargeVal, taxVal, otherVal, otherChargeDetails, otherSelected, periodFrom, periodTo){
   const charge = parseCurrency(chargeVal || '') || 0;
   const tax = parseCurrency(taxVal || '') || 0;
   const other = parseCurrency(otherVal || '') || 0;
   const details = Array.isArray(otherChargeDetails) ? otherChargeDetails : [];
-  if(!charge && !other) return 0;
-  const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
-  if(!unitRec) return 0;
-  const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, periodFrom, periodTo);
-  if(totalDays <= 0) return 0;
-  const fraction = disabledDays / totalDays;
 
-  const disputedCharge = charge * fraction;
-  const chargeTaxRate = charge > 0 ? tax / charge : 0;
-  let total = disputedCharge + (disputedCharge * chargeTaxRate);
+  let total = 0;
+
+  if(charge){
+    const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
+    if(unitRec){
+      const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, periodFrom, periodTo);
+      if(totalDays > 0){
+        const disputedCharge = charge * (disabledDays / totalDays);
+        const chargeTaxRate = tax / charge;
+        total += disputedCharge + (disputedCharge * chargeTaxRate);
+      }
+    }
+  }
 
   if(details.length > 0){
     details.forEach(sub => {
+      if(!sub.disputed) return;
       const subAmt = parseCurrency(sub.amount || '') || 0;
-      if(!subAmt) return;
       const subTax = parseCurrency(sub.tax || '') || 0;
-      const disputedSub = subAmt * fraction;
-      const subTaxRate = subTax / subAmt;
-      total += disputedSub + (disputedSub * subTaxRate);
+      total += subAmt + subTax;
     });
-  } else if(other){
-    total += other * fraction;
+  } else if(other && otherSelected){
+    total += other;
   }
 
   return total;
 }
 
-// Checking/unchecking a row's dispute box re-sums a PRO-RATED starting estimate into Amount in
-// Dispute — still freely editable by hand afterward (checking further boxes will re-sum again,
-// overwriting a manual edit).
+// Checking/unchecking a unit's dispute box, or any of its individual Other Charge checkboxes,
+// re-sums a starting estimate into Amount in Dispute — still freely editable by hand afterward
+// (checking further boxes will re-sum again, overwriting a manual edit). Reads each subcharge's
+// live checked state off row._subcharges (set at render time — see renderInvoiceTrackingUnitBreakdown),
+// not the original registry snapshot, since that's exactly what the operator has been toggling.
 function updateInvoiceTrackingDisputeAmountFromChecked(){
   const wrap = qs('#itUnitAmountBreakdown');
   let sum = 0;
@@ -15171,9 +15178,12 @@ function updateInvoiceTrackingDisputeAmountFromChecked(){
     wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
       const cb = row.querySelector('.itb-dispute-checkbox');
       if(!cb || !cb.checked) return;
-      let otherChargeDetails = [];
-      try{ otherChargeDetails = JSON.parse(row.dataset.otherChargeDetails || '[]'); }catch(e){ otherChargeDetails = []; }
-      sum += computeUnitDisputeShare(row.dataset.unitId, row.dataset.charge, row.dataset.tax, row.dataset.other, otherChargeDetails, row.dataset.periodFrom, row.dataset.periodTo);
+      const subEntries = Array.isArray(row._subcharges) ? row._subcharges : [];
+      const otherChargeDetails = subEntries.filter(s => !s.isLegacyOther)
+        .map(s => ({ name: s.name, amount: s.amount, tax: s.tax, disputed: !!(s.checkbox && s.checkbox.checked) }));
+      const legacyEntry = subEntries.find(s => s.isLegacyOther);
+      const otherSelected = !!(legacyEntry && legacyEntry.checkbox && legacyEntry.checkbox.checked);
+      sum += computeUnitDisputeShare(row.dataset.unitId, row.dataset.charge, row.dataset.tax, row.dataset.other, otherChargeDetails, otherSelected, row.dataset.periodFrom, row.dataset.periodTo);
     });
   }
   const disputeField = qs('#itAmountInDispute');
@@ -15277,14 +15287,18 @@ function renderInvoiceTrackingUnitBreakdown(){
         : `Disabled ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} → Returned ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`;
       const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, slice.from, slice.to);
       if(totalDays > 0){
-        const estAmount = computeUnitDisputeShare(uid, d.charge, d.tax, d.other, d.otherChargeDetails, slice.from, slice.to);
-        row.title = `${returnText} — invoice period ${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to} — disabled ${disabledDays} of ${totalDays} day(s) in it → dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax included, proportional to Charge/Other Charges)`;
+        // Charge-only estimate — Other Charges are never auto-included now (see the per-charge
+        // checkboxes below), so they're deliberately left out of this starting-point number too.
+        const estAmount = computeUnitDisputeShare(uid, d.charge, d.tax, '', [], false, slice.from, slice.to);
+        row.title = `${returnText} — invoice period ${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to} — disabled ${disabledDays} of ${totalDays} day(s) in it → charge-only dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax included proportionally; review each Other Charge below individually)`;
       } else if(!slice.from || !slice.to){
         // Safety net: this unit's own invoice period couldn't be resolved at all (both
         // getRegistryCoveragePeriods' own fallbacks AND the registry's overall periodStart/
-        // periodEnd came back empty) — checking this row will silently sum to $0 with no
-        // days to prorate against. Flag it visibly rather than leaving that a mystery.
-        row.title = `${returnText} — ⚠ could not determine this unit's invoice period (missing From/To date on the source registry) — checking this box will NOT add anything to Amount in Dispute; enter the amount by hand instead`;
+        // periodEnd came back empty) — the Charge portion specifically has no days to prorate
+        // against and will silently contribute $0. Flag it visibly rather than leaving that a
+        // mystery. Other Charges are unaffected by this — those checkboxes still add their full
+        // amount regardless, since they were never day-based to begin with.
+        row.title = `${returnText} — ⚠ could not determine this unit's invoice period (missing From/To date on the source registry) — the Charge amount will NOT be added to Amount in Dispute; enter it by hand instead (Other Charges below are unaffected and still work normally)`;
       } else {
         row.title = returnText;
       }
@@ -15345,20 +15359,60 @@ function renderInvoiceTrackingUnitBreakdown(){
 
     rowsContainer.appendChild(row);
 
-    // Read-only breakdown of this unit's named "Other" subcharges (Freight, Gasoline, etc.),
-    // if any were entered when the invoice was registered — mirrors the editable version's
-    // indented sub-line style so operators can see exactly what makes up the Other total.
-    (Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails : []).forEach(sub => {
+    // Each named "Other" subcharge (Freight, Gasoline, etc.) gets its OWN checkbox — unlike the
+    // main Charge (rent), which naturally prorates by how many days the unit was disabled, a
+    // charge like Freight is typically a flat, one-time cost: owed in FULL the moment the unit
+    // operated for ANY part of the invoice's period, or fully disputable if it wasn't there for
+    // any of it. That's the operator's own judgment call per charge, not something day-math can
+    // decide — so checking one includes its FULL amount + its own tax (never prorated); leaving
+    // it unchecked contributes nothing. Kept as plain JS references on the row (row._subcharges),
+    // not just DOM attributes, so the submit handler and the live sum can read exactly which
+    // boxes are checked without re-querying by unit id. Defaults to unchecked (a deliberate
+    // choice every time) unless a saved dispute record already decided it — see
+    // startEditingInvoiceTrackingRecord, which restores that after this first render.
+    row._subcharges = [];
+    const subcharges = Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails : [];
+    const mkSubchargeCheckbox = (title) => {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.className = 'itb-subcharge-checkbox'; cb.style.cssText = 'cursor:pointer;flex:0 0 auto;';
+      cb.title = title;
+      cb.addEventListener('change', () => { updateInvoiceTrackingDisputeAmountFromChecked(); });
+      return cb;
+    };
+    subcharges.forEach(sub => {
       const subAmt = parseCurrency(sub.amount || '') || 0;
       const subTax = parseCurrency(sub.tax || '') || 0;
       if(!sub.name && !subAmt && !subTax) return;
       const subRow = document.createElement('div');
       subRow.className = rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd';
-      subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 40px;font-size:11px;color:#6b7280;';
+      subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 20px;font-size:11px;color:#6b7280;';
+      const subCb = mkSubchargeCheckbox('Include this charge in the dispute — full amount, not prorated by day (a flat charge like Freight is either owed in full or fully disputable, not something to split by days)');
       const descNote = sub.description ? ` <span style="font-style:italic;">— ${escapeHtml(sub.description)}</span>` : '';
-      subRow.innerHTML = `<span style="color:#9ca3af;">↳</span><span style="flex:1 1 auto;">${escapeHtml(sub.name || '(unnamed)')}${descNote}</span><span>${formatCurrency((subAmt + subTax).toFixed(2))}</span>`;
+      const label = document.createElement('span');
+      label.style.cssText = 'flex:1 1 auto;';
+      label.innerHTML = `<span style="color:#9ca3af;">↳</span> ${escapeHtml(sub.name || '(unnamed)')}${descNote}`;
+      const amountSpan = document.createElement('span');
+      amountSpan.textContent = formatCurrency((subAmt + subTax).toFixed(2));
+      subRow.appendChild(subCb); subRow.appendChild(label); subRow.appendChild(amountSpan);
       rowsContainer.appendChild(subRow);
+      row._subcharges.push({ checkbox: subCb, name: sub.name || '', amount: sub.amount || '', tax: sub.tax || '' });
     });
+    // Legacy "Other Charges" with no named breakdown at all — still a single manual, full-amount
+    // decision, same reasoning as above, just one combined line instead of several.
+    if(subcharges.length === 0 && parseCurrency(d.other || '')){
+      const subRow = document.createElement('div');
+      subRow.className = rowIdx % 2 === 0 ? 'unit-breakdown-row-even' : 'unit-breakdown-row-odd';
+      subRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 0 2px 20px;font-size:11px;color:#6b7280;';
+      const subCb = mkSubchargeCheckbox('Include Other Charges in the dispute — full amount, not prorated by day');
+      const label = document.createElement('span');
+      label.style.cssText = 'flex:1 1 auto;';
+      label.innerHTML = `<span style="color:#9ca3af;">↳</span> Other Charges`;
+      const amountSpan = document.createElement('span');
+      amountSpan.textContent = formatCurrency((parseCurrency(d.other || '') || 0).toFixed(2));
+      subRow.appendChild(subCb); subRow.appendChild(label); subRow.appendChild(amountSpan);
+      rowsContainer.appendChild(subRow);
+      row._subcharges.push({ checkbox: subCb, isLegacyOther: true });
+    }
   });
 
   wrap.style.display = 'block';
@@ -15766,13 +15820,23 @@ if(invoiceTrackingForm){
       status: ((qs('#itStatus') || {}).value || '').trim(),
       unitAmountDetails: checkedUnits.map(uid => {
         const row = rowForUnit(uid);
-        let otherChargeDetails = [];
-        try{ otherChargeDetails = row ? JSON.parse(row.dataset.otherChargeDetails || '[]') : []; }catch(e){ otherChargeDetails = []; }
+        // Each subcharge's `disputed` flag (and the legacy lump's `otherSelected`) is captured
+        // from the actual checkbox state right now — see renderInvoiceTrackingUnitBreakdown's
+        // row._subcharges — not re-parsed from the original registry snapshot, which never had
+        // that flag at all. Persisting it here is what lets startEditingInvoiceTrackingRecord
+        // restore exactly which charges were chosen the next time this entry is edited, and what
+        // lets refreshInvoiceTrackingRecordFromSource carry the same choices across a refresh.
+        const subEntries = row && Array.isArray(row._subcharges) ? row._subcharges : [];
+        const otherChargeDetails = subEntries.filter(s => !s.isLegacyOther)
+          .map(s => ({ name: s.name, amount: s.amount, tax: s.tax, disputed: !!(s.checkbox && s.checkbox.checked) }));
+        const legacyEntry = subEntries.find(s => s.isLegacyOther);
+        const otherSelected = !!(legacyEntry && legacyEntry.checkbox && legacyEntry.checkbox.checked);
         return {
           unit: uid,
           tax: row ? row.dataset.tax : '',
           other: row ? row.dataset.other : '',
           otherChargeDetails,
+          otherSelected,
           charge: row ? row.dataset.charge : ''
         };
       })
@@ -16393,9 +16457,26 @@ function startEditingInvoiceTrackingRecord(record){
   const wrap = qs('#itUnitAmountBreakdown');
   if(wrap){
     const disputedSet = new Set((record.unitsInDispute || []).map(u => u.toString().trim().toLowerCase()));
+    const savedByUnit = new Map((Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : []).map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
     wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
+      const uidKey = (row.dataset.unitId || '').toString().trim().toLowerCase();
       const cb = row.querySelector('.itb-dispute-checkbox');
-      if(cb) cb.checked = disputedSet.has((row.dataset.unitId || '').toString().trim().toLowerCase());
+      if(cb) cb.checked = disputedSet.has(uidKey);
+      // Restore exactly which Other Charges were previously chosen for this unit — the freshly
+      // re-rendered breakdown above only ever defaults every subcharge checkbox to unchecked
+      // (see renderInvoiceTrackingUnitBreakdown), since it has no idea a saved dispute record
+      // exists at all until now. Matched by subcharge NAME (the live registry's amounts may have
+      // since changed, but the name is the stable identifier).
+      const saved = savedByUnit.get(uidKey);
+      if(saved && Array.isArray(row._subcharges)){
+        const savedSubByName = new Map((Array.isArray(saved.otherChargeDetails) ? saved.otherChargeDetails : []).map(s => [(s.name || '').toString().trim().toLowerCase(), s]));
+        row._subcharges.forEach(entry => {
+          if(!entry.checkbox) return;
+          if(entry.isLegacyOther){ entry.checkbox.checked = !!saved.otherSelected; return; }
+          const savedSub = savedSubByName.get((entry.name || '').toString().trim().toLowerCase());
+          entry.checkbox.checked = !!(savedSub && savedSub.disputed);
+        });
+      }
     });
   }
   const disputeField = qs('#itAmountInDispute'); if(disputeField) disputeField.value = record.amountInDispute || '';
@@ -16446,6 +16527,11 @@ function refreshInvoiceTrackingRecordFromSource(record){
   record.supplier = (firstLeaseRec && firstLeaseRec.supplier) || record.supplier;
   record.costCenter = computeCostCenterSummaryForUnits(record.unitsInDispute);
 
+  // Capture the previously-saved per-charge dispute selections BEFORE they're overwritten below
+  // (keyed by unit, then by subcharge name) — a Refresh Data re-syncs the live amounts, but must
+  // never silently reset every manually-made "include this charge" decision back to unchecked.
+  const priorByUnit = new Map((Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : []).map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
+
   // Every unit on the registry (Period 1 + every quarterly sub-period), each already tagged with
   // the exact period slice its own detail entry came from — getRegistryUnitDetails alone only
   // ever reflects Period 1, which used to silently BLANK OUT tax/other/charge entirely for any
@@ -16455,20 +16541,31 @@ function refreshInvoiceTrackingRecordFromSource(record){
   // must NOT carry the internal __slice field into what gets persisted), once for the pro-ration.
   const sourceByUnit = new Map(getRegistryUnitDetailsWithSlice(reg).map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
   record.unitAmountDetails = (record.unitsInDispute || []).map(uid => {
-    const d = sourceByUnit.get(uid.toString().trim().toLowerCase());
-    return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails: d ? (d.otherChargeDetails || []) : [], charge: d ? d.charge : '' };
+    const key = uid.toString().trim().toLowerCase();
+    const d = sourceByUnit.get(key);
+    const prior = priorByUnit.get(key);
+    const priorSubByName = new Map((prior && Array.isArray(prior.otherChargeDetails) ? prior.otherChargeDetails : []).map(s => [(s.name || '').toString().trim().toLowerCase(), s]));
+    const otherChargeDetails = (d && Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails : []).map(sub => {
+      const priorSub = priorSubByName.get((sub.name || '').toString().trim().toLowerCase());
+      return Object.assign({}, sub, { disputed: !!(priorSub && priorSub.disputed) });
+    });
+    return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails, otherSelected: !!(prior && prior.otherSelected), charge: d ? d.charge : '' };
   });
 
   // Amount in Dispute is re-derived the SAME way the checkbox auto-sum computes it
-  // (computeUnitDisputeShare) — each unit's own Charge/Other Charges scaled down to just the days
-  // it was actually Disabled within ITS OWN period slice above (the exact one its Tax/Other/
-  // Amount actually came from — see getRegistryUnitDetailsWithSlice), WITH tax included
-  // proportionally. Refreshing must never silently drift from that same formula.
+  // (computeUnitDisputeShare) — each unit's own Charge scaled down to just the days it was
+  // actually Disabled within ITS OWN period slice above (the exact one its Tax/Charge actually
+  // came from — see getRegistryUnitDetailsWithSlice), with tax included proportionally; each
+  // Other Charge counted at its full amount, only for whichever ones were previously selected
+  // (carried over just above). Refreshing must never silently drift from that same formula.
+  const unitAmountDetailsByUnit = new Map(record.unitAmountDetails.map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
   const recomputedDispute = (record.unitsInDispute || []).reduce((sum, uid) => {
-    const d = sourceByUnit.get((uid || '').toString().trim().toLowerCase());
+    const key = (uid || '').toString().trim().toLowerCase();
+    const d = sourceByUnit.get(key);
     if(!d) return sum;
+    const saved = unitAmountDetailsByUnit.get(key);
     const slice = d.__slice || { from: '', to: '' };
-    return sum + computeUnitDisputeShare(uid, d.charge, d.tax, d.other, d.otherChargeDetails, slice.from, slice.to);
+    return sum + computeUnitDisputeShare(uid, saved.charge, saved.tax, saved.other, saved.otherChargeDetails, saved.otherSelected, slice.from, slice.to);
   }, 0);
   record.amountInDispute = recomputedDispute ? recomputedDispute.toFixed(2) : '';
   const invoiceAmountNum = parseCurrency(record.invoiceAmount || '') || 0;
