@@ -3039,38 +3039,65 @@ function getRegistryCoveragePeriods(reg){
   return slices;
 }
 
-// Every unit on a registry (Period 1 + every periods[] sub-period for a quarterly invoice), each
-// tagged with the EXACT period slice its own detail entry actually came from (as `d.__slice`) —
-// built in a single pass specifically so a unit's displayed Tax/Other/Amount and the date range
-// used to prorate a dispute against it can never disagree with each other, even when the SAME
-// unit legitimately appears in more than one period with a different charge each time (a
-// quarterly invoice bills each period separately, so the same unit can show up in July, August,
-// AND September, each with its own Amount). Two independent .find() lookups over the same data —
-// one to pick which detail entry to show, another to separately pick which period's dates to
-// prorate against — can silently disagree about which period a unit belongs to; building both
-// from ONE pass removes that whole class of bug by construction. A unit present in more than one
-// period keeps only its FIRST occurrence (Period 1 first, then periods[] in listed order) — same
-// "first wins" precedent getRegistryUnitDetails/getRegistryCoveragePeriods already establish.
+// Every unit on a registry (Period 1 + every periods[] sub-period for a quarterly invoice),
+// collapsed to ONE row per unit — but a unit invoiced separately in MORE THAN ONE period within
+// the SAME quarterly registry (the normal case: e.g. billed once per month across a 3-month WD
+// invoice) is no longer reduced to just its FIRST period's charge, discarding the rest. That used
+// to silently zero out a dispute for a unit whose actually-relevant charge (the month it was
+// really disabled in) wasn't the first one found — the day-proration would run against the WRONG
+// month's dates (0 overlap with the real disabled period), landing on $0 with no error, while the
+// visible red "possible dispute" flag (which only ever needs SOME disabled period to exist,
+// regardless of which month) kept showing correctly right next to it — exactly the kind of silent
+// mismatch this function exists to prevent.
+//
+// tax/other/charge here are the SUM across every period this unit actually appears in — the most
+// representative single figure for "how much has this unit been charged on this invoice, total".
+// otherChargeDetails is the concatenation of every period's own named subcharges (never summed
+// into one blended line — each stays its own separately-selectable, non-prorated charge no matter
+// which month it came from). chargePeriods carries each period's own charge+tax+dates SEPARATELY
+// (not summed) — computeUnitDisputeShare prorates and taxes EACH one against its own dates, then
+// sums the results, so a unit not yet disabled in July but disabled from mid-August naturally
+// resolves to $0 for July and a genuine amount for August/September, all from one checkbox.
+// __slice (the first period found) is kept only as a rough reference date for
+// computeUnitReturnDisputeFlag's "should this probably be disputed?" flag, which only needs ANY
+// one of the unit's periods to determine that, not a precise scope.
 function getRegistryUnitDetailsWithSlice(reg){
   const periodSlices = getRegistryCoveragePeriods(reg);
   const fallbackSlice = periodSlices[0] || { from: reg.periodStart || '', to: reg.periodEnd || '' };
-  const seenUnits = new Set();
-  const result = [];
+
+  const rawEntries = [];
   getRegistryUnitDetails(reg).forEach(d => {
-    const key = (d.unit || '').toString().trim().toLowerCase();
-    if(!key || seenUnits.has(key)) return;
-    seenUnits.add(key);
-    result.push(Object.assign({}, d, { __slice: fallbackSlice }));
+    if((d.unit || '').toString().trim()) rawEntries.push({ d, slice: fallbackSlice });
   });
   periodSlices.slice(1).forEach(slice => {
     (slice.unitDetails || []).forEach(d => {
-      const key = (d.unit || '').toString().trim().toLowerCase();
-      if(!key || seenUnits.has(key)) return;
-      seenUnits.add(key);
-      result.push(Object.assign({}, d, { __slice: slice }));
+      if((d.unit || '').toString().trim()) rawEntries.push({ d, slice });
     });
   });
-  return result;
+
+  const byUnit = new Map();
+  rawEntries.forEach(({ d, slice }) => {
+    const key = d.unit.toString().trim().toLowerCase();
+    if(!byUnit.has(key)){
+      byUnit.set(key, { unit: d.unit, taxSum: 0, otherSum: 0, chargeSum: 0, otherChargeDetails: [], chargePeriods: [], __slice: slice });
+    }
+    const agg = byUnit.get(key);
+    agg.taxSum += parseCurrency(d.tax || '') || 0;
+    agg.otherSum += parseCurrency(d.other || '') || 0;
+    agg.chargeSum += parseCurrency(d.charge || '') || 0;
+    if(Array.isArray(d.otherChargeDetails)) agg.otherChargeDetails = agg.otherChargeDetails.concat(d.otherChargeDetails);
+    agg.chargePeriods.push({ charge: d.charge || '', tax: d.tax || '', periodFrom: slice.from || '', periodTo: slice.to || '' });
+  });
+
+  return Array.from(byUnit.values()).map(agg => ({
+    unit: agg.unit,
+    tax: agg.taxSum ? agg.taxSum.toFixed(2) : '',
+    other: agg.otherSum ? agg.otherSum.toFixed(2) : '',
+    charge: agg.chargeSum ? agg.chargeSum.toFixed(2) : '',
+    otherChargeDetails: agg.otherChargeDetails,
+    chargePeriods: agg.chargePeriods,
+    __slice: agg.__slice
+  }));
 }
 
 // Read-only sortable Company/UnitId/Lease/Cost Center/Tax/Charge detail table for a registry's
@@ -15116,13 +15143,17 @@ function getInvoiceTrackingCostCenterSummary(){
 // (renderInvoiceTrackingUnitBreakdown) — factored out specifically so none of the three can ever
 // drift out of sync with each other.
 //
-// The Charge (rent) portion is DAY-PRORATED: a dispute is specifically about days the unit was
-// DISABLED but still invoiced for, so it scales down to the disabled portion of the unit's own
-// invoice period — a unit disabled for the invoice's ENTIRE period naturally resolves to its
-// full charge (disabledDays === totalDays); one never disabled at all resolves to 0. Tax is
-// never itself pro-rated directly — it's expressed as the % it represents of the charge
-// (taxRate = tax / charge), and that SAME % is applied to the pro-rated (disputed) portion —
-// a unit disabled the whole period naturally lands on the full tax too, since the fraction is 1.
+// The Charge (rent) portion is DAY-PRORATED, PER PERIOD: `chargePeriods` carries each period this
+// unit was actually invoiced in on this registry (a quarterly invoice bills a unit separately
+// per month, so there can be several) — each one is prorated and taxed against its OWN dates
+// separately, then summed, rather than picking just one period's charge (which used to silently
+// zero out a dispute whenever the unit's actually-relevant month wasn't the first one found: the
+// day-math would run against the WRONG month's dates, landing on $0 with no error). A dispute is
+// specifically about days the unit was DISABLED but still invoiced for, so each period's charge
+// scales down to its own disabled-day overlap — a period the unit was disabled for ENTIRELY
+// naturally resolves to its full charge; one it was never disabled in at all resolves to 0. Tax
+// is never itself pro-rated directly — it's expressed as the % it represents of that SAME
+// period's own charge (taxRate = tax / charge), applied to that period's own disputed portion.
 //
 // Other Charges (Freight, Gasoline, etc.) are handled completely differently: NEVER prorated by
 // day at all, and only counted when the operator has explicitly checked that specific line's own
@@ -15131,25 +15162,26 @@ function getInvoiceTrackingCostCenterSummary(){
 // the period, or fully disputable if it wasn't there for any of it, which is the operator's own
 // judgment call per charge, not something day-math can decide. A checked charge counts at its
 // FULL amount plus its own tax (each subcharge can carry a different tax rate than the others or
-// the main charge, so each is added at its own rate, never blended).
-function computeUnitDisputeShare(unitId, chargeVal, taxVal, otherVal, otherChargeDetails, otherSelected, periodFrom, periodTo){
-  const charge = parseCurrency(chargeVal || '') || 0;
-  const tax = parseCurrency(taxVal || '') || 0;
+// any charge period, so each is added at its own rate, never blended).
+function computeUnitDisputeShare(unitId, chargePeriods, otherVal, otherChargeDetails, otherSelected){
+  const periods = Array.isArray(chargePeriods) ? chargePeriods : [];
   const other = parseCurrency(otherVal || '') || 0;
   const details = Array.isArray(otherChargeDetails) ? otherChargeDetails : [];
 
   let total = 0;
 
-  if(charge){
-    const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
-    if(unitRec){
-      const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, periodFrom, periodTo);
-      if(totalDays > 0){
-        const disputedCharge = charge * (disabledDays / totalDays);
-        const chargeTaxRate = tax / charge;
-        total += disputedCharge + (disputedCharge * chargeTaxRate);
-      }
-    }
+  const unitRec = periods.length ? (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase()) : null;
+  if(unitRec){
+    periods.forEach(cp => {
+      const charge = parseCurrency(cp.charge || '') || 0;
+      if(!charge) return;
+      const tax = parseCurrency(cp.tax || '') || 0;
+      const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, cp.periodFrom, cp.periodTo);
+      if(totalDays <= 0) return;
+      const disputedCharge = charge * (disabledDays / totalDays);
+      const chargeTaxRate = tax / charge;
+      total += disputedCharge + (disputedCharge * chargeTaxRate);
+    });
   }
 
   if(details.length > 0){
@@ -15183,7 +15215,7 @@ function updateInvoiceTrackingDisputeAmountFromChecked(){
         .map(s => ({ name: s.name, amount: s.amount, tax: s.tax, disputed: !!(s.checkbox && s.checkbox.checked) }));
       const legacyEntry = subEntries.find(s => s.isLegacyOther);
       const otherSelected = !!(legacyEntry && legacyEntry.checkbox && legacyEntry.checkbox.checked);
-      sum += computeUnitDisputeShare(row.dataset.unitId, row.dataset.charge, row.dataset.tax, row.dataset.other, otherChargeDetails, otherSelected, row.dataset.periodFrom, row.dataset.periodTo);
+      sum += computeUnitDisputeShare(row.dataset.unitId, row._chargePeriods, row.dataset.other, otherChargeDetails, otherSelected);
     });
   }
   const disputeField = qs('#itAmountInDispute');
@@ -15270,6 +15302,12 @@ function renderInvoiceTrackingUnitBreakdown(){
     row.dataset.other = d.other || '';
     row.dataset.charge = d.charge || '';
     row.dataset.otherChargeDetails = JSON.stringify(d.otherChargeDetails || []);
+    // Every period this unit is actually invoiced for on this registry (a quarterly invoice can
+    // bill the same unit separately per month) — see getRegistryUnitDetailsWithSlice. The dispute
+    // sum prorates and taxes EACH one against its own dates, then sums the results, rather than
+    // picking just one (which used to silently zero out a dispute whenever the unit's actually-
+    // relevant month wasn't the first one found).
+    row._chargePeriods = Array.isArray(d.chargePeriods) ? d.chargePeriods : [];
     const slice = d.__slice || { from: '', to: '' };
     row.dataset.periodFrom = slice.from || '';
     row.dataset.periodTo = slice.to || '';
@@ -15287,9 +15325,11 @@ function renderInvoiceTrackingUnitBreakdown(){
         : `Disabled ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} → Returned ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`;
       const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, slice.from, slice.to);
       if(totalDays > 0){
-        // Charge-only estimate — Other Charges are never auto-included now (see the per-charge
-        // checkboxes below), so they're deliberately left out of this starting-point number too.
-        const estAmount = computeUnitDisputeShare(uid, d.charge, d.tax, '', [], false, slice.from, slice.to);
+        // Charge-only estimate (summed across ALL of this unit's periods on this registry, each
+        // prorated against its own dates) — Other Charges are never auto-included now (see the
+        // per-charge checkboxes below), so they're deliberately left out of this starting-point
+        // number too.
+        const estAmount = computeUnitDisputeShare(uid, row._chargePeriods, '', [], false);
         row.title = `${returnText} — invoice period ${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to} — disabled ${disabledDays} of ${totalDays} day(s) in it → charge-only dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax included proportionally; review each Other Charge below individually)`;
       } else if(!slice.from || !slice.to){
         // Safety net: this unit's own invoice period couldn't be resolved at all (both
@@ -15837,7 +15877,11 @@ if(invoiceTrackingForm){
           other: row ? row.dataset.other : '',
           otherChargeDetails,
           otherSelected,
-          charge: row ? row.dataset.charge : ''
+          charge: row ? row.dataset.charge : '',
+          // Each period this unit is actually invoiced for on this registry — needed so a later
+          // Refresh Data can re-prorate against the SAME set of periods, not just a single
+          // summed charge/tax that would lose which specific months it came from.
+          chargePeriods: row && Array.isArray(row._chargePeriods) ? row._chargePeriods : []
         };
       })
     };
@@ -16532,13 +16576,12 @@ function refreshInvoiceTrackingRecordFromSource(record){
   // never silently reset every manually-made "include this charge" decision back to unchecked.
   const priorByUnit = new Map((Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : []).map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
 
-  // Every unit on the registry (Period 1 + every quarterly sub-period), each already tagged with
-  // the exact period slice its own detail entry came from — getRegistryUnitDetails alone only
-  // ever reflects Period 1, which used to silently BLANK OUT tax/other/charge entirely for any
-  // disputed unit that only appears in a LATER quarterly sub-period (a real gap: Refresh Data
-  // could wipe out a correctly-created dispute's amounts down to nothing). Looked up by unit
-  // (not re-scanned per unit) since it's used twice below — once for the saved snapshot (which
-  // must NOT carry the internal __slice field into what gets persisted), once for the pro-ration.
+  // Every unit on the registry, aggregated across ALL of its periods (Period 1 + every quarterly
+  // sub-period a unit is separately invoiced in) — see getRegistryUnitDetailsWithSlice. Looked up
+  // by unit (not re-scanned per unit) since it's used twice below — once for the saved snapshot
+  // (which must NOT carry the internal __slice field into what gets persisted), once for the
+  // pro-ration. chargePeriods is always re-pulled LIVE here (that's the whole point of a
+  // refresh) — only the operator's own charge/subcharge SELECTIONS are carried over from before.
   const sourceByUnit = new Map(getRegistryUnitDetailsWithSlice(reg).map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
   record.unitAmountDetails = (record.unitsInDispute || []).map(uid => {
     const key = uid.toString().trim().toLowerCase();
@@ -16549,23 +16592,25 @@ function refreshInvoiceTrackingRecordFromSource(record){
       const priorSub = priorSubByName.get((sub.name || '').toString().trim().toLowerCase());
       return Object.assign({}, sub, { disputed: !!(priorSub && priorSub.disputed) });
     });
-    return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails, otherSelected: !!(prior && prior.otherSelected), charge: d ? d.charge : '' };
+    return {
+      unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails,
+      otherSelected: !!(prior && prior.otherSelected), charge: d ? d.charge : '',
+      chargePeriods: d && Array.isArray(d.chargePeriods) ? d.chargePeriods : []
+    };
   });
 
   // Amount in Dispute is re-derived the SAME way the checkbox auto-sum computes it
-  // (computeUnitDisputeShare) — each unit's own Charge scaled down to just the days it was
-  // actually Disabled within ITS OWN period slice above (the exact one its Tax/Charge actually
-  // came from — see getRegistryUnitDetailsWithSlice), with tax included proportionally; each
-  // Other Charge counted at its full amount, only for whichever ones were previously selected
-  // (carried over just above). Refreshing must never silently drift from that same formula.
+  // (computeUnitDisputeShare) — each unit's own Charge summed across ALL of its periods above
+  // (each prorated against its own dates — see getRegistryUnitDetailsWithSlice), tax included
+  // proportionally per period; each Other Charge counted at its full amount, only for whichever
+  // ones were previously selected (carried over just above). Refreshing must never silently
+  // drift from that same formula.
   const unitAmountDetailsByUnit = new Map(record.unitAmountDetails.map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
   const recomputedDispute = (record.unitsInDispute || []).reduce((sum, uid) => {
     const key = (uid || '').toString().trim().toLowerCase();
-    const d = sourceByUnit.get(key);
-    if(!d) return sum;
+    if(!sourceByUnit.has(key)) return sum;
     const saved = unitAmountDetailsByUnit.get(key);
-    const slice = d.__slice || { from: '', to: '' };
-    return sum + computeUnitDisputeShare(uid, saved.charge, saved.tax, saved.other, saved.otherChargeDetails, saved.otherSelected, slice.from, slice.to);
+    return sum + computeUnitDisputeShare(uid, saved.chargePeriods, saved.other, saved.otherChargeDetails, saved.otherSelected);
   }, 0);
   record.amountInDispute = recomputedDispute ? recomputedDispute.toFixed(2) : '';
   const invoiceAmountNum = parseCurrency(record.invoiceAmount || '') || 0;
