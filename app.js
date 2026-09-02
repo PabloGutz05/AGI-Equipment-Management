@@ -3024,14 +3024,53 @@ function getRegistryCoveragePeriods(reg){
   // pro-ration) with no indication why: the red "possible dispute" highlight elsewhere only ever
   // needs a slice's `from`, so it still shows correctly even when `to` is missing, making a
   // dollar amount that quietly computes to $0 right next to it look like a totally separate bug.
-  // Backfill from the neighboring slice's own bound first (periods are chronological and
-  // shouldn't gap), falling back to the registry's own overall span only at the very ends —
-  // exactly the same fallback Period 1 above already gets.
+  // Two clean passes rather than one combined pass: forward for every `.from` (each may lean on
+  // the PRECEDING slice's own already-resolved `.to`), then backward for every `.to` (each may
+  // lean on the FOLLOWING slice's own already-resolved `.from`) — so two ADJACENT slices that are
+  // BOTH missing the date on their shared boundary still resolve correctly, instead of one of
+  // them reading its neighbor's bound before that neighbor's own fallback ever ran. Only the very
+  // ends fall back to the registry's own overall span — exactly what Period 1 above already gets.
   for(let i = 1; i < slices.length; i++){
     if(!slices[i].from) slices[i].from = slices[i-1].to ? addDaysToDateStr(slices[i-1].to, 1) : (reg.periodStart || '');
+  }
+  for(let i = slices.length - 1; i >= 0; i--){
     if(!slices[i].to) slices[i].to = (i + 1 < slices.length && slices[i+1].from) ? addDaysToDateStr(slices[i+1].from, -1) : (reg.periodEnd || '');
   }
   return slices;
+}
+
+// Every unit on a registry (Period 1 + every periods[] sub-period for a quarterly invoice), each
+// tagged with the EXACT period slice its own detail entry actually came from (as `d.__slice`) —
+// built in a single pass specifically so a unit's displayed Tax/Other/Amount and the date range
+// used to prorate a dispute against it can never disagree with each other, even when the SAME
+// unit legitimately appears in more than one period with a different charge each time (a
+// quarterly invoice bills each period separately, so the same unit can show up in July, August,
+// AND September, each with its own Amount). Two independent .find() lookups over the same data —
+// one to pick which detail entry to show, another to separately pick which period's dates to
+// prorate against — can silently disagree about which period a unit belongs to; building both
+// from ONE pass removes that whole class of bug by construction. A unit present in more than one
+// period keeps only its FIRST occurrence (Period 1 first, then periods[] in listed order) — same
+// "first wins" precedent getRegistryUnitDetails/getRegistryCoveragePeriods already establish.
+function getRegistryUnitDetailsWithSlice(reg){
+  const periodSlices = getRegistryCoveragePeriods(reg);
+  const fallbackSlice = periodSlices[0] || { from: reg.periodStart || '', to: reg.periodEnd || '' };
+  const seenUnits = new Set();
+  const result = [];
+  getRegistryUnitDetails(reg).forEach(d => {
+    const key = (d.unit || '').toString().trim().toLowerCase();
+    if(!key || seenUnits.has(key)) return;
+    seenUnits.add(key);
+    result.push(Object.assign({}, d, { __slice: fallbackSlice }));
+  });
+  periodSlices.slice(1).forEach(slice => {
+    (slice.unitDetails || []).forEach(d => {
+      const key = (d.unit || '').toString().trim().toLowerCase();
+      if(!key || seenUnits.has(key)) return;
+      seenUnits.add(key);
+      result.push(Object.assign({}, d, { __slice: slice }));
+    });
+  });
+  return result;
 }
 
 // Read-only sortable Company/UnitId/Lease/Cost Center/Tax/Charge detail table for a registry's
@@ -15170,23 +15209,11 @@ function renderInvoiceTrackingUnitBreakdown(){
     return;
   }
 
-  // Per-unit coverage slice (quarterly-aware) — a quarterly registry can invoice different units
-  // for different sub-periods, so the "days in period" used to pro-rate a dispute has to be each
-  // unit's OWN slice, not the registry's single overall periodStart/periodEnd.
-  const periodSlices = getRegistryCoveragePeriods(registry);
-  // getRegistryUnitDetails only ever reflects Period 1 (or the registry's own single period, for
-  // a non-quarterly invoice) — copy it (never mutate the registry's own array) and add in any
-  // unit that only appears in a LATER quarterly sub-period, so it's selectable here too.
-  const details = getRegistryUnitDetails(registry).slice();
-  const seenUnits = new Set(details.map(d => (d.unit || '').toString().trim().toLowerCase()));
-  periodSlices.slice(1).forEach(slice => {
-    (slice.unitDetails || []).forEach(d => {
-      const key = (d.unit || '').toString().trim().toLowerCase();
-      if(!key || seenUnits.has(key)) return;
-      seenUnits.add(key);
-      details.push(d);
-    });
-  });
+  // Every unit on the registry (Period 1 + every quarterly sub-period), each already tagged with
+  // the exact period slice its own detail entry came from (d.__slice) — see
+  // getRegistryUnitDetailsWithSlice for why this has to be built in one pass rather than two
+  // independent lookups (one for what to display, one for which dates to prorate against).
+  const details = getRegistryUnitDetailsWithSlice(registry);
   wrap.innerHTML = '';
   if(details.length === 0){
     wrap.style.display = 'none';
@@ -15233,8 +15260,7 @@ function renderInvoiceTrackingUnitBreakdown(){
     row.dataset.other = d.other || '';
     row.dataset.charge = d.charge || '';
     row.dataset.otherChargeDetails = JSON.stringify(d.otherChargeDetails || []);
-    const uidLower = uid.toString().trim().toLowerCase();
-    const slice = periodSlices.find(s => (s.units || []).some(u => (u || '').toString().trim().toLowerCase() === uidLower)) || periodSlices[0] || { from: '', to: '' };
+    const slice = d.__slice || { from: '', to: '' };
     row.dataset.periodFrom = slice.from || '';
     row.dataset.periodTo = slice.to || '';
 
@@ -16064,17 +16090,7 @@ function getInvoiceTrackingFullUnitList(record){
     return (Array.isArray(record.unitAmountDetails) ? record.unitAmountDetails : []).map(d => Object.assign({}, d, { isDisputed: true }));
   }
 
-  const periodSlices = getRegistryCoveragePeriods(reg);
-  const liveDetails = getRegistryUnitDetails(reg).slice();
-  const seenUnits = new Set(liveDetails.map(d => (d.unit || '').toString().trim().toLowerCase()));
-  periodSlices.slice(1).forEach(slice => {
-    (slice.unitDetails || []).forEach(d => {
-      const key = (d.unit || '').toString().trim().toLowerCase();
-      if(!key || seenUnits.has(key)) return;
-      seenUnits.add(key);
-      liveDetails.push(d);
-    });
-  });
+  const liveDetails = getRegistryUnitDetailsWithSlice(reg);
 
   const merged = liveDetails.map(d => {
     const key = (d.unit || '').toString().trim().toLowerCase();
@@ -16430,25 +16446,29 @@ function refreshInvoiceTrackingRecordFromSource(record){
   record.supplier = (firstLeaseRec && firstLeaseRec.supplier) || record.supplier;
   record.costCenter = computeCostCenterSummaryForUnits(record.unitsInDispute);
 
-  const sourceDetails = getRegistryUnitDetails(reg);
+  // Every unit on the registry (Period 1 + every quarterly sub-period), each already tagged with
+  // the exact period slice its own detail entry came from — getRegistryUnitDetails alone only
+  // ever reflects Period 1, which used to silently BLANK OUT tax/other/charge entirely for any
+  // disputed unit that only appears in a LATER quarterly sub-period (a real gap: Refresh Data
+  // could wipe out a correctly-created dispute's amounts down to nothing). Looked up by unit
+  // (not re-scanned per unit) since it's used twice below — once for the saved snapshot (which
+  // must NOT carry the internal __slice field into what gets persisted), once for the pro-ration.
+  const sourceByUnit = new Map(getRegistryUnitDetailsWithSlice(reg).map(d => [(d.unit || '').toString().trim().toLowerCase(), d]));
   record.unitAmountDetails = (record.unitsInDispute || []).map(uid => {
-    const d = sourceDetails.find(x => (x.unit || '').toString().trim().toLowerCase() === uid.toString().trim().toLowerCase());
+    const d = sourceByUnit.get(uid.toString().trim().toLowerCase());
     return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails: d ? (d.otherChargeDetails || []) : [], charge: d ? d.charge : '' };
   });
 
   // Amount in Dispute is re-derived the SAME way the checkbox auto-sum computes it
   // (computeUnitDisputeShare) — each unit's own Charge/Other Charges scaled down to just the days
-  // it was actually Disabled within its own invoice period (quarterly-aware), WITH tax included
-  // proportionally (each charge's own tax rate applied to its own disputed portion). Refreshing
-  // must never silently drift from that same formula.
-  const periodSlices = getRegistryCoveragePeriods(reg);
-  const sliceForUnit = (uid) => {
-    const uidLower = (uid || '').toString().trim().toLowerCase();
-    return periodSlices.find(s => (s.units || []).some(u => (u || '').toString().trim().toLowerCase() === uidLower)) || periodSlices[0] || { from: '', to: '' };
-  };
-  const recomputedDispute = record.unitAmountDetails.reduce((sum, d) => {
-    const slice = sliceForUnit(d.unit);
-    return sum + computeUnitDisputeShare(d.unit, d.charge, d.tax, d.other, d.otherChargeDetails, slice.from, slice.to);
+  // it was actually Disabled within ITS OWN period slice above (the exact one its Tax/Other/
+  // Amount actually came from — see getRegistryUnitDetailsWithSlice), WITH tax included
+  // proportionally. Refreshing must never silently drift from that same formula.
+  const recomputedDispute = (record.unitsInDispute || []).reduce((sum, uid) => {
+    const d = sourceByUnit.get((uid || '').toString().trim().toLowerCase());
+    if(!d) return sum;
+    const slice = d.__slice || { from: '', to: '' };
+    return sum + computeUnitDisputeShare(uid, d.charge, d.tax, d.other, d.otherChargeDetails, slice.from, slice.to);
   }, 0);
   record.amountInDispute = recomputedDispute ? recomputedDispute.toFixed(2) : '';
   const invoiceAmountNum = parseCurrency(record.invoiceAmount || '') || 0;
