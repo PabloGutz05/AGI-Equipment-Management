@@ -15058,23 +15058,54 @@ function getInvoiceTrackingCostCenterSummary(){
 }
 
 // Single source of truth for "how much of one unit's charge is actually in dispute" — shared by
-// the live checkbox-driven auto-sum (updateInvoiceTrackingDisputeAmountFromChecked, below) AND
-// the Refresh Data recompute (refreshInvoiceTrackingRecordFromSource) — factored out specifically
-// so the two can never drift out of sync with each other the way they did before this existed
-// (Refresh Data kept summing the FULL tax+other+charge, ignoring disabled days entirely, long
-// after the checkbox path was taught to pro-rate). A dispute is specifically about days the unit
-// was DISABLED but still invoiced for: only Amount (Charge) + Other Charges scale down to the
-// disabled portion of the unit's own invoice period — tax is excluded entirely, since the
-// supplier recalculates tax when they reissue a corrected invoice. A unit disabled for the
-// invoice's ENTIRE period naturally resolves to its full Amount+Other (disabledDays ===
-// totalDays); one never disabled at all during that period resolves to 0.
-function computeUnitDisputeShare(unitId, chargeVal, otherVal, periodFrom, periodTo){
-  const chargeAndOther = (parseCurrency(chargeVal || '') || 0) + (parseCurrency(otherVal || '') || 0);
-  if(!chargeAndOther) return 0;
+// the live checkbox-driven auto-sum (updateInvoiceTrackingDisputeAmountFromChecked, below), the
+// Refresh Data recompute (refreshInvoiceTrackingRecordFromSource), and the row tooltip estimate
+// (renderInvoiceTrackingUnitBreakdown) — factored out specifically so none of the three can ever
+// drift out of sync with each other. A dispute is specifically about days the unit was DISABLED
+// but still invoiced for: the Charge (rent) and each Other Charge scale down to the disabled
+// portion of the unit's own invoice period — a unit disabled for the invoice's ENTIRE period
+// naturally resolves to its full amount (disabledDays === totalDays); one never disabled at all
+// during that period resolves to 0.
+//
+// Tax IS included (aim: an accurate credit amount to actually cancel the invoice), but tax is
+// never itself pro-rated directly — it's expressed as the % it represents of its own charge
+// (taxRate = tax / charge), and that SAME % is applied to the pro-rated (disputed) portion of
+// that charge. A unit disabled the whole period naturally lands on the full tax too, since the
+// pro-rated fraction is 1. Other Charges are each taxed at their OWN rate — never blended into
+// the main charge's rate — since a named subcharge (Freight, Fuel, etc.) can carry a different
+// tax rate than the rent itself; each is pro-rated and taxed individually, then summed in. Only
+// truly legacy "other" data with no per-item breakdown at all falls back to a flat pro-rate with
+// no tax added (there's no rate to derive it from).
+function computeUnitDisputeShare(unitId, chargeVal, taxVal, otherVal, otherChargeDetails, periodFrom, periodTo){
+  const charge = parseCurrency(chargeVal || '') || 0;
+  const tax = parseCurrency(taxVal || '') || 0;
+  const other = parseCurrency(otherVal || '') || 0;
+  const details = Array.isArray(otherChargeDetails) ? otherChargeDetails : [];
+  if(!charge && !other) return 0;
   const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
   if(!unitRec) return 0;
   const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, periodFrom, periodTo);
-  return totalDays > 0 ? chargeAndOther * (disabledDays / totalDays) : 0;
+  if(totalDays <= 0) return 0;
+  const fraction = disabledDays / totalDays;
+
+  const disputedCharge = charge * fraction;
+  const chargeTaxRate = charge > 0 ? tax / charge : 0;
+  let total = disputedCharge + (disputedCharge * chargeTaxRate);
+
+  if(details.length > 0){
+    details.forEach(sub => {
+      const subAmt = parseCurrency(sub.amount || '') || 0;
+      if(!subAmt) return;
+      const subTax = parseCurrency(sub.tax || '') || 0;
+      const disputedSub = subAmt * fraction;
+      const subTaxRate = subTax / subAmt;
+      total += disputedSub + (disputedSub * subTaxRate);
+    });
+  } else if(other){
+    total += other * fraction;
+  }
+
+  return total;
 }
 
 // Checking/unchecking a row's dispute box re-sums a PRO-RATED starting estimate into Amount in
@@ -15087,7 +15118,9 @@ function updateInvoiceTrackingDisputeAmountFromChecked(){
     wrap.querySelectorAll('.unit-breakdown-row').forEach(row => {
       const cb = row.querySelector('.itb-dispute-checkbox');
       if(!cb || !cb.checked) return;
-      sum += computeUnitDisputeShare(row.dataset.unitId, row.dataset.charge, row.dataset.other, row.dataset.periodFrom, row.dataset.periodTo);
+      let otherChargeDetails = [];
+      try{ otherChargeDetails = JSON.parse(row.dataset.otherChargeDetails || '[]'); }catch(e){ otherChargeDetails = []; }
+      sum += computeUnitDisputeShare(row.dataset.unitId, row.dataset.charge, row.dataset.tax, row.dataset.other, otherChargeDetails, row.dataset.periodFrom, row.dataset.periodTo);
     });
   }
   const disputeField = qs('#itAmountInDispute');
@@ -15204,9 +15237,8 @@ function renderInvoiceTrackingUnitBreakdown(){
         : `Disabled ${formatDate(disputeFlag.disabledFrom) || disputeFlag.disabledFrom} → Returned ${formatDate(disputeFlag.returnedDate) || disputeFlag.returnedDate}`;
       const { totalDays, disabledDays } = computeDisabledDaysInPeriod(unitRec, slice.from, slice.to);
       if(totalDays > 0){
-        const chargeAndOther = (parseCurrency(d.other || '') || 0) + (parseCurrency(d.charge || '') || 0);
-        const estAmount = chargeAndOther * (disabledDays / totalDays);
-        row.title = `${returnText} — invoice period ${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to} — disabled ${disabledDays} of ${totalDays} day(s) in it → dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax excluded)`;
+        const estAmount = computeUnitDisputeShare(uid, d.charge, d.tax, d.other, d.otherChargeDetails, slice.from, slice.to);
+        row.title = `${returnText} — invoice period ${formatDate(slice.from) || slice.from} – ${formatDate(slice.to) || slice.to} — disabled ${disabledDays} of ${totalDays} day(s) in it → dispute estimate: ${formatCurrency(estAmount.toFixed(2))} (tax included, proportional to Charge/Other Charges)`;
       } else {
         row.title = returnText;
       }
@@ -16331,11 +16363,11 @@ function refreshInvoiceTrackingRecordFromSource(record){
     return { unit: uid, tax: d ? d.tax : '', other: d ? d.other : '', otherChargeDetails: d ? (d.otherChargeDetails || []) : [], charge: d ? d.charge : '' };
   });
 
-  // Amount in Dispute is re-derived the SAME pro-rated way the checkbox auto-sum computes it
-  // (computeUnitDisputeShare) — each unit's own charge+other scaled down to just the days it was
-  // actually Disabled within its own invoice period (quarterly-aware), tax excluded — never the
-  // full tax+other+charge. Refreshing must never silently blow a correctly-scoped dispute amount
-  // back up to the unit's whole invoiced amount.
+  // Amount in Dispute is re-derived the SAME way the checkbox auto-sum computes it
+  // (computeUnitDisputeShare) — each unit's own Charge/Other Charges scaled down to just the days
+  // it was actually Disabled within its own invoice period (quarterly-aware), WITH tax included
+  // proportionally (each charge's own tax rate applied to its own disputed portion). Refreshing
+  // must never silently drift from that same formula.
   const periodSlices = getRegistryCoveragePeriods(reg);
   const sliceForUnit = (uid) => {
     const uidLower = (uid || '').toString().trim().toLowerCase();
@@ -16343,7 +16375,7 @@ function refreshInvoiceTrackingRecordFromSource(record){
   };
   const recomputedDispute = record.unitAmountDetails.reduce((sum, d) => {
     const slice = sliceForUnit(d.unit);
-    return sum + computeUnitDisputeShare(d.unit, d.charge, d.other, slice.from, slice.to);
+    return sum + computeUnitDisputeShare(d.unit, d.charge, d.tax, d.other, d.otherChargeDetails, slice.from, slice.to);
   }, 0);
   record.amountInDispute = recomputedDispute ? recomputedDispute.toFixed(2) : '';
   const invoiceAmountNum = parseCurrency(record.invoiceAmount || '') || 0;
