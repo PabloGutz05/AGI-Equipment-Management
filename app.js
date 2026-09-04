@@ -16170,6 +16170,8 @@ if(itClearFiltersBtnEl) itClearFiltersBtnEl.addEventListener('click', () => {
   closeInvoiceTrackingFilterPopover();
   renderInvoiceTrackingTable();
 });
+const itRefreshAllBtnEl = qs('#itRefreshAllBtn');
+if(itRefreshAllBtnEl) itRefreshAllBtnEl.addEventListener('click', refreshAllInvoiceTrackingRecords);
 
 const invoiceTrackingForm = qs('#invoiceTrackingForm');
 if(invoiceTrackingForm){
@@ -16920,12 +16922,15 @@ if(itDetailEditBtn){
 // registry/unit records — for when that source data changes after the dispute entry was
 // created (e.g. a unit's Cost Center was corrected, or an invoice amount was fixed).
 // Description of Issue, Request, Status, and the binnacle are untouched.
-function refreshInvoiceTrackingRecordFromSource(record){
+// Recomputes ONE record's derived fields from its live source registry/unit data -- no alert, no
+// log entry, no save, no render. This is the shared core behind both the single-record "Refresh
+// Data" button (refreshInvoiceTrackingRecordFromSource, below, which adds its own UI feedback)
+// and the table-wide "Refresh All" button (refreshAllInvoiceTrackingRecords, further below, which
+// reports one combined summary instead of alerting once per record). Returns false (record left
+// untouched) when no matching posted registry exists for this record's WD Invoice Num.
+function recomputeInvoiceTrackingRecordFromSource(record){
   const reg = (state.registries || []).find(r => (r.wdNumber || '').toString().trim().toLowerCase() === (record.wdInvoiceNum || '').toString().trim().toLowerCase());
-  if(!reg){
-    alert('No posted registry found for WD Invoice Num "' + (record.wdInvoiceNum || '') + '" — cannot refresh.');
-    return;
-  }
+  if(!reg) return false;
 
   const registryLeases = Array.isArray(reg.leases) && reg.leases.length
     ? reg.leases
@@ -16987,10 +16992,56 @@ function refreshInvoiceTrackingRecordFromSource(record){
   const amountInDisputeNum = parseCurrency(record.amountInDispute || '') || 0;
   const dueNum = invoiceAmountNum - amountInDisputeNum;
   record.amountDue = dueNum ? dueNum.toFixed(2) : '';
+  return true;
+}
 
+function refreshInvoiceTrackingRecordFromSource(record){
+  const ok = recomputeInvoiceTrackingRecordFromSource(record);
+  if(!ok){
+    alert('No posted registry found for WD Invoice Num "' + (record.wdInvoiceNum || '') + '" — cannot refresh.');
+    return;
+  }
   addInvoiceTrackingLogEntry(record, 'Data refreshed from source registry/unit records (supplier, dates, amounts, unit cost center detail, and Amount in Dispute/Amount Due re-synced).', 'auto-refresh');
   saveInvoiceTrackingRecord(record);
   renderInvoiceTrackingDetailModal(record);
+}
+
+// Refreshes EVERY tracked invoice entry in one pass -- same recompute as the single-record
+// Refresh Data button, but persistence and UI updates are batched (one table re-render, one
+// registries re-render, one summary alert) instead of firing once per record.
+function refreshAllInvoiceTrackingRecords(){
+  const records = state.invoiceTracking || [];
+  if(records.length === 0){ alert('No tracked invoices to refresh yet.'); return; }
+  const noun = records.length === 1 ? 'entry' : 'entries';
+  if(!confirm(`Refresh all ${records.length} tracked invoice ${noun} from their source registries? This re-syncs amounts and other derived fields for each entry.`)) return;
+
+  const refreshedLabels = [];
+  const skippedLabels = [];
+  records.forEach(record => {
+    const ok = recomputeInvoiceTrackingRecordFromSource(record);
+    const label = record.wdInvoiceNum || record.id || '(unnamed entry)';
+    if(ok){
+      addInvoiceTrackingLogEntry(record, 'Data refreshed from source registry/unit records (supplier, dates, amounts, unit cost center detail, and Amount in Dispute/Amount Due re-synced) via Refresh All.', 'auto-refresh');
+      DB.updateInvoiceTracking(record).catch(e => console.error('Invoice Tracking bulk update error:', e));
+      refreshedLabels.push(label);
+    } else {
+      skippedLabels.push(label);
+    }
+  });
+
+  renderInvoiceTrackingTable();
+  if(typeof renderRegistries === 'function') renderRegistries();
+  // If the Detail modal happens to be open on one of the just-refreshed records, reflect the new
+  // numbers there too instead of leaving it showing stale pre-refresh data.
+  const detailModal = qs('#invoiceTrackingDetailModal');
+  if(detailModal && detailModal.style.display !== 'none' && _itDetailList && _itDetailList.length){
+    const current = _itDetailList[_itDetailIndex];
+    if(current) renderInvoiceTrackingDetailModal(current);
+  }
+
+  let msg = `Refreshed ${refreshedLabels.length} of ${records.length} entries.`;
+  if(skippedLabels.length) msg += ` ${skippedLabels.length} skipped (no matching source registry found): ${skippedLabels.join(', ')}.`;
+  alert(msg);
 }
 
 const itDetailRefreshBtn = qs('#itDetailRefreshBtn');
