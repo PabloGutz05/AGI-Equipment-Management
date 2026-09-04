@@ -16001,6 +16001,29 @@ function renderInvoiceTrackingRows(){
     INVOICE_TRACKING_COLUMNS.forEach(col => {
       const td = document.createElement('td');
       td.style.cssText = 'padding:6px 8px;white-space:nowrap;';
+
+      if(col.key === 'unitsInDispute'){
+        // Each unit number is its own clickable link to that unit's coverage history popup
+        // (the same one Unit Control/Report/Accruals open elsewhere) -- Prev/Next inside that
+        // popup cycles through just the units on THIS invoice, not the whole fleet.
+        const units = Array.isArray(r.unitsInDispute) ? r.unitsInDispute.filter(Boolean) : [];
+        units.forEach((uid, idx) => {
+          const link = document.createElement('span');
+          link.textContent = uid;
+          link.title = 'View coverage history';
+          link.style.cssText = 'color:#0b74de;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;';
+          link.addEventListener('click', (e) => {
+            e.stopPropagation();
+            try{ openUnitWdNumbersModal(uid, new Date().getFullYear(), new Date().getMonth(), units); }
+            catch(err){ console.error('Coverage history open error:', err); }
+          });
+          td.appendChild(link);
+          if(idx < units.length - 1) td.appendChild(document.createTextNode(', '));
+        });
+        tr.appendChild(td);
+        return;
+      }
+
       let val = col.get ? col.get(r) : (r[col.key] || '');
       if(col.key === 'invoiceAmount' || col.key === 'amountInDispute'){
         val = val ? formatCurrency(val) : '';
