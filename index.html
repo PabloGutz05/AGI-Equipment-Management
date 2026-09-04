@@ -522,10 +522,11 @@
               <button id="itDownloadReportBtn" type="button" title="Export the Tracked Invoices table to Excel, with a Comments column gathering each entry's manually-written binnacle notes" style="padding:6px 12px;border-radius:6px;border:1px solid #0b74de;background:#0b74de;color:#fff;font-weight:700;font-size:12px;cursor:pointer;">Download Report</button>
             </div>
           </div>
-          <div style="overflow-x:auto">
+          <div id="itTableScrollWrap" class="invisible-scroll" style="overflow:auto;">
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
               <thead>
                 <tr id="invoiceTrackingHeaderRow"></tr>
+                <tr id="invoiceTrackingFilterRow"></tr>
               </thead>
               <tbody id="invoiceTrackingTableBody"></tbody>
             </table>
@@ -1527,8 +1528,8 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.66"></script>
-  <script src="app.js?v=11.66"></script>
-  <script src="pdfImport.js?v=11.66"></script>
+  <script src="db.js?v=11.67"></script>
+  <script src="app.js?v=11.67"></script>
+  <script src="pdfImport.js?v=11.67"></script>
 </body>
 </html>

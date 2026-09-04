@@ -33,6 +33,7 @@ let _invoiceTrackingSort = { column: 'wdInvoiceNum', ascending: true };
 // tells whether anything is filtered.
 let _invoiceTrackingFilters = {};
 let _invoiceTrackingOpenFilterCol = null;
+const INVOICE_TRACKING_VISIBLE_ROWS = 20;
 
 const INVOICE_TRACKING_COLUMNS = [
   { key: 'supplier', label: 'Supplier', filterType: 'multi' },
@@ -15810,10 +15811,17 @@ if(!window.__itFilterOutsideClickWired){
 
 function renderInvoiceTrackingTable(){
   const headerRow = qs('#invoiceTrackingHeaderRow');
+  const filterRow = qs('#invoiceTrackingFilterRow');
   const tbody = qs('#invoiceTrackingTableBody');
-  if(!headerRow || !tbody) return;
+  if(!headerRow || !filterRow || !tbody) return;
 
-  const thStyle = 'text-align:left;padding:6px 8px;font-size:12px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:2px solid #eef2f7;white-space:nowrap;';
+  const thStyle = 'text-align:left;padding:6px 8px;font-size:12px;font-weight:600;color:#374151;background:#f9fafb;border-bottom:1px solid #eef2f7;white-space:nowrap;';
+  const filterCellStyle = 'text-align:left;padding:4px 6px;background:#fff;border-bottom:2px solid #eef2f7;';
+
+  // Sticking the whole <thead> (both the label row and the filter-controls row below it) keeps
+  // both visible while scrolling through the capped ~20-row window -- see updateInvoiceTrackingScrollHeight().
+  const theadEl = headerRow.parentElement;
+  if(theadEl) theadEl.style.cssText = 'position:sticky;top:0;z-index:5;';
 
   headerRow.innerHTML = '';
   const thCounter = document.createElement('th');
@@ -15823,30 +15831,9 @@ function renderInvoiceTrackingTable(){
 
   INVOICE_TRACKING_COLUMNS.forEach(col => {
     const th = document.createElement('th');
+    th.textContent = col.label + (_invoiceTrackingSort.column === col.key ? (_invoiceTrackingSort.ascending ? ' ▲' : ' ▼') : '');
     th.style.cssText = thStyle + 'cursor:pointer;user-select:none;';
     th.title = 'Click to sort';
-    th.dataset.colKey = col.key;
-
-    const inner = document.createElement('div');
-    inner.style.cssText = 'display:flex;align-items:center;gap:3px;';
-    const labelSpan = document.createElement('span');
-    labelSpan.textContent = col.label + (_invoiceTrackingSort.column === col.key ? (_invoiceTrackingSort.ascending ? ' ▲' : ' ▼') : '');
-    inner.appendChild(labelSpan);
-
-    const isActive = !!_invoiceTrackingFilters[col.key];
-    const filterBtn = document.createElement('button');
-    filterBtn.type = 'button';
-    filterBtn.className = 'it-filter-btn';
-    filterBtn.textContent = '▾';
-    filterBtn.title = 'Filter ' + col.label;
-    filterBtn.style.cssText = 'border:none;border-radius:4px;padding:0 4px;font-size:11px;line-height:16px;cursor:pointer;background:' + (isActive ? '#0b74de' : 'transparent') + ';color:' + (isActive ? '#fff' : '#6b7280') + ';';
-    filterBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openInvoiceTrackingFilterPopover(col, th);
-    });
-    inner.appendChild(filterBtn);
-    th.appendChild(inner);
-
     th.addEventListener('click', () => {
       if(_invoiceTrackingSort.column === col.key) _invoiceTrackingSort.ascending = !_invoiceTrackingSort.ascending;
       else _invoiceTrackingSort = { column: col.key, ascending: true };
@@ -15857,6 +15844,87 @@ function renderInvoiceTrackingTable(){
   const thActions = document.createElement('th');
   thActions.style.cssText = thStyle;
   headerRow.appendChild(thActions);
+
+  // Always-visible filter controls, one per column, directly under its label -- this is the
+  // actual filtering UI (a hidden per-header icon proved too easy to miss).
+  filterRow.innerHTML = '';
+  const filterCounterCell = document.createElement('th');
+  filterCounterCell.style.cssText = filterCellStyle;
+  filterRow.appendChild(filterCounterCell);
+
+  INVOICE_TRACKING_COLUMNS.forEach(col => {
+    const cell = document.createElement('th');
+    cell.style.cssText = filterCellStyle;
+    cell.dataset.colKey = col.key;
+
+    if(col.filterType === 'multi'){
+      const f = _invoiceTrackingFilters[col.key];
+      const count = f ? f.values.size : 0;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'it-filter-btn';
+      btn.textContent = count ? `${count} selected ▾` : 'All ▾';
+      btn.title = 'Filter ' + col.label;
+      btn.style.cssText = 'width:100%;max-width:140px;text-align:left;padding:4px 6px;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (count ? 'background:#e6f0fd;border:1px solid #0b74de;color:#0b74de;' : 'background:#fff;border:1px solid #d1d5db;color:#6b7280;');
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openInvoiceTrackingFilterPopover(col, btn);
+      });
+      cell.appendChild(btn);
+    } else if(col.filterType === 'range' || col.filterType === 'daterange'){
+      const isDate = col.filterType === 'daterange';
+      const f = _invoiceTrackingFilters[col.key];
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;gap:3px;';
+      const mkInput = (placeholder, initial) => {
+        const inp = document.createElement('input');
+        inp.type = isDate ? 'date' : 'number';
+        if(!isDate) inp.step = '0.01';
+        inp.placeholder = placeholder;
+        inp.value = initial || '';
+        inp.style.cssText = 'width:' + (isDate ? '112px' : '58px') + ';box-sizing:border-box;padding:3px 4px;border:1px solid #d1d5db;border-radius:4px;font-size:11px;';
+        return inp;
+      };
+      const minInp = mkInput(isDate ? 'From' : 'Min', f ? f.min : '');
+      const maxInp = mkInput(isDate ? 'To' : 'Max', f ? f.max : '');
+      const commit = () => {
+        const min = minInp.value, max = maxInp.value;
+        setInvoiceTrackingFilter(col.key, (min || max) ? { type: col.filterType, min, max } : null);
+      };
+      minInp.addEventListener('change', commit);
+      maxInp.addEventListener('change', commit);
+      wrap.appendChild(minInp); wrap.appendChild(maxInp);
+      cell.appendChild(wrap);
+    } else if(col.filterType === 'text'){
+      const f = _invoiceTrackingFilters[col.key];
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.placeholder = 'Contains…';
+      inp.value = f ? f.value : '';
+      inp.style.cssText = 'width:100%;max-width:150px;box-sizing:border-box;padding:4px 6px;border:1px solid #d1d5db;border-radius:5px;font-size:11px;';
+      // Live-as-you-type, but only re-renders the ROWS (not this filter row / its own input),
+      // so typing never rebuilds -- and loses focus on -- the very input the operator is using.
+      inp.addEventListener('input', () => {
+        if(inp.value) _invoiceTrackingFilters[col.key] = { type: 'text', value: inp.value };
+        else delete _invoiceTrackingFilters[col.key];
+        renderInvoiceTrackingRows();
+      });
+      cell.appendChild(inp);
+    }
+
+    filterRow.appendChild(cell);
+  });
+  const filterActionsCell = document.createElement('th');
+  filterActionsCell.style.cssText = filterCellStyle;
+  filterRow.appendChild(filterActionsCell);
+
+  renderInvoiceTrackingRows();
+}
+
+function renderInvoiceTrackingRows(){
+  const tbody = qs('#invoiceTrackingTableBody');
+  const headerRow = qs('#invoiceTrackingHeaderRow');
+  if(!tbody) return;
 
   const totalCount = (state.invoiceTracking || []).length;
   const rows = (state.invoiceTracking || []).filter(invoiceTrackingRowPassesFilters);
@@ -15876,9 +15944,11 @@ function renderInvoiceTrackingTable(){
   const clearFiltersBtn = qs('#itClearFiltersBtn');
   if(summaryEl) summaryEl.textContent = hasActiveFilters ? `Showing ${rows.length} of ${totalCount}` : '';
   if(clearFiltersBtn) clearFiltersBtn.style.display = hasActiveFilters ? 'inline-block' : 'none';
-  if(_invoiceTrackingOpenFilterCol){
-    const anchorTh = headerRow.querySelector(`th[data-col-key="${_invoiceTrackingOpenFilterCol}"]`);
-    repositionInvoiceTrackingFilterPopover(anchorTh);
+  if(_invoiceTrackingOpenFilterCol && headerRow){
+    const filterRow = qs('#invoiceTrackingFilterRow');
+    const anchorCell = filterRow && filterRow.querySelector(`th[data-col-key="${_invoiceTrackingOpenFilterCol}"]`);
+    const anchorEl = (anchorCell && anchorCell.querySelector('button,input')) || anchorCell;
+    repositionInvoiceTrackingFilterPopover(anchorEl);
   }
 
   tbody.innerHTML = '';
@@ -15891,6 +15961,7 @@ function renderInvoiceTrackingTable(){
     td.textContent = hasActiveFilters ? 'No tracked invoices match the selected filters.' : 'No tracked invoices yet.';
     tr.appendChild(td);
     tbody.appendChild(tr);
+    updateInvoiceTrackingScrollHeight();
     return;
   }
 
@@ -15961,6 +16032,26 @@ function renderInvoiceTrackingTable(){
 
     tbody.appendChild(tr);
   });
+
+  updateInvoiceTrackingScrollHeight();
+}
+
+// Caps the Tracked Invoices table to ~20 visible data rows by setting the scroll wrapper's
+// max-height to (sticky header + filter row + 20 * one data row's real rendered height) --
+// with 20 or fewer rows the table is naturally shorter than that cap so no scrollbar/clipping
+// ever appears; past 20 the wrapper scrolls (scrollbar hidden via the invisible-scroll CSS class,
+// but wheel/trackpad/drag scrolling still works normally).
+function updateInvoiceTrackingScrollHeight(){
+  const wrap = qs('#itTableScrollWrap');
+  const headerRow = qs('#invoiceTrackingHeaderRow');
+  const filterRow = qs('#invoiceTrackingFilterRow');
+  const tbody = qs('#invoiceTrackingTableBody');
+  if(!wrap || !headerRow) return;
+  const headerH = headerRow.getBoundingClientRect().height || 30;
+  const filterH = filterRow ? (filterRow.getBoundingClientRect().height || 30) : 0;
+  const firstRow = tbody && tbody.querySelector('tr');
+  const rowH = firstRow ? (firstRow.getBoundingClientRect().height || 31) : 31;
+  wrap.style.maxHeight = Math.round(headerH + filterH + rowH * INVOICE_TRACKING_VISIBLE_ROWS) + 'px';
 }
 
 // Downloads the Tracked Invoices table to Excel — same rows, same columns, in the same order

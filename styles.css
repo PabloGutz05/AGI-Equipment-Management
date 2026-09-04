@@ -457,5 +457,10 @@ button.lease-more-btn:hover, button.lease-more-btn[title]:hover{
 .searchable-dropdown input[type="text"]{outline:none}
 .searchable-dropdown input[type="text"]:focus{border-bottom-color:#0b74de}
 
+/* Scrolls normally (wheel/trackpad/drag) but never shows a scrollbar track/thumb -- used on the
+   Tracked Invoices table so it can cap itself to ~20 visible rows without an intrusive scrollbar. */
+.invisible-scroll{scrollbar-width:none;-ms-overflow-style:none;}
+.invisible-scroll::-webkit-scrollbar{display:none;width:0;height:0;}
+
 
 
