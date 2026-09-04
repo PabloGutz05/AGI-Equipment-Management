@@ -23,24 +23,35 @@ let state = JSON.parse(JSON.stringify(defaultData));
 // dead zone at that point and throw "Cannot access before initialization".
 let _invoiceTrackingSort = { column: 'wdInvoiceNum', ascending: true };
 
+// Per-column filter state for the Tracked Invoices table's header filter popovers — never
+// persisted (a view convenience, reset on reload), keyed by column key. Shape depends on the
+// owning column's filterType: 'multi' -> { type:'multi', values:Set<string> }, 'range'/
+// 'daterange' -> { type, min:string, max:string }, 'text' -> { type:'text', value:string }.
+// A column key present in this map always means "actively filtering" — a filter that's cleared
+// back to its neutral state (empty Set, both bounds blank, empty text) is deleted from the map
+// entirely rather than kept around inert, so `Object.keys(_invoiceTrackingFilters).length` alone
+// tells whether anything is filtered.
+let _invoiceTrackingFilters = {};
+let _invoiceTrackingOpenFilterCol = null;
+
 const INVOICE_TRACKING_COLUMNS = [
-  { key: 'supplier', label: 'Supplier' },
-  { key: 'lease', label: 'Lease', get: r => (Array.isArray(r.lease) ? r.lease.join(', ') : '') },
-  { key: 'unitsInDispute', label: 'Units in Dispute', get: r => (Array.isArray(r.unitsInDispute) ? r.unitsInDispute.join(', ') : '') },
-  { key: 'supplierInvoiceDoc', label: 'Supplier Invoice Doc' },
-  { key: 'invoiceAmount', label: 'Invoice Amount', numeric: true },
-  { key: 'amountInDispute', label: 'Amount in Dispute', numeric: true },
-  { key: 'amountDue', label: 'Amount Due', numeric: true },
-  { key: 'wdInvoiceNum', label: 'WD Invoice Num' },
-  { key: 'wdInvoiceDate', label: 'WD Invoice Date' },
-  { key: 'invoiceStatus', label: 'Invoice Status' },
-  { key: 'paymentStatus', label: 'Payment Status' },
-  { key: 'fromDate', label: 'From Date' },
-  { key: 'toDate', label: 'To Date' },
-  { key: 'costCenter', label: 'Cost Center' },
-  { key: 'descriptionOfIssue', label: 'Description of Issue' },
-  { key: 'request', label: 'Request' },
-  { key: 'status', label: 'Status' }
+  { key: 'supplier', label: 'Supplier', filterType: 'multi' },
+  { key: 'lease', label: 'Lease', get: r => (Array.isArray(r.lease) ? r.lease.join(', ') : ''), filterType: 'multi' },
+  { key: 'unitsInDispute', label: 'Units in Dispute', get: r => (Array.isArray(r.unitsInDispute) ? r.unitsInDispute.join(', ') : ''), filterType: 'multi' },
+  { key: 'supplierInvoiceDoc', label: 'Supplier Invoice Doc', filterType: 'multi' },
+  { key: 'invoiceAmount', label: 'Invoice Amount', numeric: true, filterType: 'range' },
+  { key: 'amountInDispute', label: 'Amount in Dispute', numeric: true, filterType: 'range' },
+  { key: 'amountDue', label: 'Amount Due', numeric: true, filterType: 'range' },
+  { key: 'wdInvoiceNum', label: 'WD Invoice Num', filterType: 'multi' },
+  { key: 'wdInvoiceDate', label: 'WD Invoice Date', filterType: 'daterange' },
+  { key: 'invoiceStatus', label: 'Invoice Status', filterType: 'multi' },
+  { key: 'paymentStatus', label: 'Payment Status', filterType: 'multi' },
+  { key: 'fromDate', label: 'From Date', filterType: 'daterange' },
+  { key: 'toDate', label: 'To Date', filterType: 'daterange' },
+  { key: 'costCenter', label: 'Cost Center', filterType: 'multi' },
+  { key: 'descriptionOfIssue', label: 'Description of Issue', filterType: 'text' },
+  { key: 'request', label: 'Request', filterType: 'text' },
+  { key: 'status', label: 'Status', filterType: 'multi' }
 ];
 
 // --- Password hashing (PBKDF2-SHA256 via Web Crypto) ---
@@ -15567,6 +15578,236 @@ if(itWdInvoiceNumEl){
 }
 
 
+// --- Tracked Invoices table: per-column header filters ---
+// Raw (unjoined) values for a row's column, used for filter matching against the DISTINCT
+// underlying values -- the two array-valued columns (Lease, Units in Dispute) have their own
+// entries checked individually, not the ", "-joined display string col.get() builds for the cell.
+function getInvoiceTrackingRawValues(row, col){
+  if(col.key === 'lease') return Array.isArray(row.lease) ? row.lease : (row.lease ? [row.lease] : []);
+  if(col.key === 'unitsInDispute') return Array.isArray(row.unitsInDispute) ? row.unitsInDispute : [];
+  const v = row[col.key];
+  return [v == null ? '' : v];
+}
+
+function getInvoiceTrackingDistinctValues(col){
+  const set = new Set();
+  (state.invoiceTracking || []).forEach(r => {
+    getInvoiceTrackingRawValues(r, col).forEach(v => {
+      const s = (v || '').toString().trim();
+      if(s) set.add(s);
+    });
+  });
+  return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+function invoiceTrackingRowPassesFilters(row){
+  return INVOICE_TRACKING_COLUMNS.every(col => {
+    const f = _invoiceTrackingFilters[col.key];
+    if(!f) return true;
+    if(f.type === 'multi'){
+      const raw = getInvoiceTrackingRawValues(row, col).map(v => (v || '').toString().trim());
+      return raw.some(v => f.values.has(v));
+    }
+    if(f.type === 'range'){
+      const val = parseCurrency(col.get ? col.get(row) : (row[col.key] || '')) || 0;
+      if(f.min !== '' && val < parseFloat(f.min)) return false;
+      if(f.max !== '' && val > parseFloat(f.max)) return false;
+      return true;
+    }
+    if(f.type === 'daterange'){
+      const val = (col.get ? col.get(row) : (row[col.key] || '')).toString();
+      if(!val) return false;
+      if(f.min && val < f.min) return false;
+      if(f.max && val > f.max) return false;
+      return true;
+    }
+    if(f.type === 'text'){
+      const val = (col.get ? col.get(row) : (row[col.key] || '')).toString().toLowerCase();
+      return val.indexOf(f.value.toLowerCase()) !== -1;
+    }
+    return true;
+  });
+}
+
+function closeInvoiceTrackingFilterPopover(){
+  const pop = qs('#itFilterPopover');
+  if(pop) pop.remove();
+  _invoiceTrackingOpenFilterCol = null;
+}
+
+function repositionInvoiceTrackingFilterPopover(anchorTh){
+  const pop = qs('#itFilterPopover');
+  if(!pop || !anchorTh) return;
+  const rect = anchorTh.getBoundingClientRect();
+  pop.style.top = (rect.bottom + 4) + 'px';
+  let left = rect.left;
+  const maxLeft = window.innerWidth - 280;
+  if(left > maxLeft) left = Math.max(8, maxLeft);
+  pop.style.left = left + 'px';
+}
+
+// Setting a filter re-renders the WHOLE table (header + rows), but the popover itself lives in
+// document.body (not inside a <th>), so it survives that rebuild untouched -- only its position
+// is refreshed afterward (see the reposition call at the end of renderInvoiceTrackingTable), so
+// an open popover's search box / focus / scroll position is never disturbed by the operator's own
+// selections.
+function setInvoiceTrackingFilter(colKey, filterOrNull){
+  if(filterOrNull) _invoiceTrackingFilters[colKey] = filterOrNull;
+  else delete _invoiceTrackingFilters[colKey];
+  renderInvoiceTrackingTable();
+}
+
+function openInvoiceTrackingFilterPopover(col, anchorTh){
+  const wasOpenForSameCol = _invoiceTrackingOpenFilterCol === col.key;
+  closeInvoiceTrackingFilterPopover();
+  if(wasOpenForSameCol) return;
+  _invoiceTrackingOpenFilterCol = col.key;
+
+  const pop = document.createElement('div');
+  pop.id = 'itFilterPopover';
+  pop.style.cssText = 'position:fixed;z-index:200;width:240px;max-height:320px;overflow:auto;background:#fff;border:1px solid #e6e9ee;border-radius:8px;box-shadow:0 8px 24px rgba(2,6,23,0.15);padding:10px;font-size:13px;';
+  pop.addEventListener('click', e => e.stopPropagation());
+  pop.addEventListener('mousedown', e => e.stopPropagation());
+
+  const title = document.createElement('div');
+  title.textContent = 'Filter: ' + col.label;
+  title.style.cssText = 'font-weight:700;margin-bottom:8px;color:#111827;';
+  pop.appendChild(title);
+
+  const existing = _invoiceTrackingFilters[col.key];
+
+  if(col.filterType === 'multi'){
+    const search = document.createElement('input');
+    search.type = 'text';
+    search.placeholder = 'Search values…';
+    search.style.cssText = 'width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #e6e9ee;border-radius:6px;margin-bottom:8px;font-size:12px;';
+    pop.appendChild(search);
+
+    const linksRow = document.createElement('div');
+    linksRow.style.cssText = 'display:flex;gap:10px;margin-bottom:6px;';
+    const selectAllLink = document.createElement('a');
+    selectAllLink.href = '#'; selectAllLink.textContent = 'Select all';
+    selectAllLink.style.cssText = 'font-size:12px;color:#0b74de;cursor:pointer;text-decoration:none;';
+    const clearLink = document.createElement('a');
+    clearLink.href = '#'; clearLink.textContent = 'Clear';
+    clearLink.style.cssText = 'font-size:12px;color:#0b74de;cursor:pointer;text-decoration:none;';
+    linksRow.appendChild(selectAllLink); linksRow.appendChild(clearLink);
+    pop.appendChild(linksRow);
+
+    const list = document.createElement('div');
+    list.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    pop.appendChild(list);
+
+    const values = getInvoiceTrackingDistinctValues(col);
+    const selected = new Set(existing ? existing.values : []);
+
+    const commit = () => {
+      setInvoiceTrackingFilter(col.key, selected.size ? { type: 'multi', values: selected } : null);
+    };
+
+    const renderList = (filterText) => {
+      list.innerHTML = '';
+      const ft = (filterText || '').toLowerCase();
+      const filteredValues = ft ? values.filter(v => v.toLowerCase().indexOf(ft) !== -1) : values;
+      if(filteredValues.length === 0){
+        const none = document.createElement('div');
+        none.textContent = 'No values';
+        none.style.cssText = 'color:#9ca3af;padding:4px 2px;';
+        list.appendChild(none);
+        return;
+      }
+      filteredValues.forEach(v => {
+        const optRow = document.createElement('label');
+        optRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 2px;cursor:pointer;border-radius:4px;';
+        optRow.addEventListener('mouseenter', () => optRow.style.background = '#f3f6fb');
+        optRow.addEventListener('mouseleave', () => optRow.style.background = '');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(v);
+        cb.addEventListener('change', () => {
+          if(cb.checked) selected.add(v); else selected.delete(v);
+          commit();
+        });
+        const span = document.createElement('span');
+        span.textContent = v;
+        span.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        optRow.appendChild(cb); optRow.appendChild(span);
+        list.appendChild(optRow);
+      });
+    };
+    renderList('');
+    search.addEventListener('input', () => renderList(search.value));
+    selectAllLink.addEventListener('click', e => {
+      e.preventDefault();
+      const ft = (search.value || '').toLowerCase();
+      (ft ? values.filter(v => v.toLowerCase().indexOf(ft) !== -1) : values).forEach(v => selected.add(v));
+      commit(); renderList(search.value);
+    });
+    clearLink.addEventListener('click', e => {
+      e.preventDefault();
+      selected.clear();
+      commit(); renderList(search.value);
+    });
+  } else if(col.filterType === 'range' || col.filterType === 'daterange'){
+    const isDate = col.filterType === 'daterange';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+    const mkField = (labelText, initial) => {
+      const l = document.createElement('label');
+      l.style.cssText = 'display:flex;flex-direction:column;gap:3px;font-size:11px;color:#374151;font-weight:600;';
+      l.textContent = labelText;
+      const inp = document.createElement('input');
+      inp.type = isDate ? 'date' : 'number';
+      if(!isDate) inp.step = '0.01';
+      inp.value = initial || '';
+      inp.style.cssText = 'padding:6px 8px;border:1px solid #e6e9ee;border-radius:6px;font-size:12px;';
+      l.appendChild(inp);
+      return { l, inp };
+    };
+    const minField = mkField(isDate ? 'From' : 'Min', existing ? existing.min : '');
+    const maxField = mkField(isDate ? 'To' : 'Max', existing ? existing.max : '');
+    wrap.appendChild(minField.l); wrap.appendChild(maxField.l);
+    pop.appendChild(wrap);
+
+    const commit = () => {
+      const min = minField.inp.value, max = maxField.inp.value;
+      setInvoiceTrackingFilter(col.key, (min || max) ? { type: col.filterType, min, max } : null);
+    };
+    minField.inp.addEventListener('change', commit);
+    maxField.inp.addEventListener('change', commit);
+
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button'; clearBtn.textContent = 'Clear';
+    clearBtn.style.cssText = 'margin-top:8px;padding:5px 10px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:12px;cursor:pointer;';
+    clearBtn.addEventListener('click', () => setInvoiceTrackingFilter(col.key, null));
+    pop.appendChild(clearBtn);
+  } else if(col.filterType === 'text'){
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = 'Contains…';
+    inp.value = existing ? existing.value : '';
+    inp.style.cssText = 'width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #e6e9ee;border-radius:6px;font-size:12px;';
+    pop.appendChild(inp);
+    inp.addEventListener('input', () => {
+      setInvoiceTrackingFilter(col.key, inp.value ? { type: 'text', value: inp.value } : null);
+    });
+  }
+
+  document.body.appendChild(pop);
+  repositionInvoiceTrackingFilterPopover(anchorTh);
+}
+
+if(!window.__itFilterOutsideClickWired){
+  window.__itFilterOutsideClickWired = true;
+  document.addEventListener('mousedown', (e) => {
+    const pop = qs('#itFilterPopover');
+    if(!pop) return;
+    if(pop.contains(e.target)) return;
+    if(e.target.closest && e.target.closest('.it-filter-btn')) return;
+    closeInvoiceTrackingFilterPopover();
+  });
+}
+
 function renderInvoiceTrackingTable(){
   const headerRow = qs('#invoiceTrackingHeaderRow');
   const tbody = qs('#invoiceTrackingTableBody');
@@ -15582,9 +15823,30 @@ function renderInvoiceTrackingTable(){
 
   INVOICE_TRACKING_COLUMNS.forEach(col => {
     const th = document.createElement('th');
-    th.textContent = col.label + (_invoiceTrackingSort.column === col.key ? (_invoiceTrackingSort.ascending ? ' ▲' : ' ▼') : '');
     th.style.cssText = thStyle + 'cursor:pointer;user-select:none;';
     th.title = 'Click to sort';
+    th.dataset.colKey = col.key;
+
+    const inner = document.createElement('div');
+    inner.style.cssText = 'display:flex;align-items:center;gap:3px;';
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = col.label + (_invoiceTrackingSort.column === col.key ? (_invoiceTrackingSort.ascending ? ' ▲' : ' ▼') : '');
+    inner.appendChild(labelSpan);
+
+    const isActive = !!_invoiceTrackingFilters[col.key];
+    const filterBtn = document.createElement('button');
+    filterBtn.type = 'button';
+    filterBtn.className = 'it-filter-btn';
+    filterBtn.textContent = '▾';
+    filterBtn.title = 'Filter ' + col.label;
+    filterBtn.style.cssText = 'border:none;border-radius:4px;padding:0 4px;font-size:11px;line-height:16px;cursor:pointer;background:' + (isActive ? '#0b74de' : 'transparent') + ';color:' + (isActive ? '#fff' : '#6b7280') + ';';
+    filterBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openInvoiceTrackingFilterPopover(col, th);
+    });
+    inner.appendChild(filterBtn);
+    th.appendChild(inner);
+
     th.addEventListener('click', () => {
       if(_invoiceTrackingSort.column === col.key) _invoiceTrackingSort.ascending = !_invoiceTrackingSort.ascending;
       else _invoiceTrackingSort = { column: col.key, ascending: true };
@@ -15596,7 +15858,8 @@ function renderInvoiceTrackingTable(){
   thActions.style.cssText = thStyle;
   headerRow.appendChild(thActions);
 
-  const rows = (state.invoiceTracking || []).slice();
+  const totalCount = (state.invoiceTracking || []).length;
+  const rows = (state.invoiceTracking || []).filter(invoiceTrackingRowPassesFilters);
   const sortCol = INVOICE_TRACKING_COLUMNS.find(c => c.key === _invoiceTrackingSort.column) || INVOICE_TRACKING_COLUMNS[0];
   const ascending = _invoiceTrackingSort.ascending;
   rows.sort((a, b) => {
@@ -15608,6 +15871,16 @@ function renderInvoiceTrackingTable(){
     return ascending ? cmp : -cmp;
   });
 
+  const hasActiveFilters = Object.keys(_invoiceTrackingFilters).length > 0;
+  const summaryEl = qs('#itFilterSummary');
+  const clearFiltersBtn = qs('#itClearFiltersBtn');
+  if(summaryEl) summaryEl.textContent = hasActiveFilters ? `Showing ${rows.length} of ${totalCount}` : '';
+  if(clearFiltersBtn) clearFiltersBtn.style.display = hasActiveFilters ? 'inline-block' : 'none';
+  if(_invoiceTrackingOpenFilterCol){
+    const anchorTh = headerRow.querySelector(`th[data-col-key="${_invoiceTrackingOpenFilterCol}"]`);
+    repositionInvoiceTrackingFilterPopover(anchorTh);
+  }
+
   tbody.innerHTML = '';
   if(rows.length === 0){
     const tr = document.createElement('tr');
@@ -15615,7 +15888,7 @@ function renderInvoiceTrackingTable(){
     td.colSpan = INVOICE_TRACKING_COLUMNS.length + 2;
     td.className = 'small-muted';
     td.style.padding = '12px';
-    td.textContent = 'No tracked invoices yet.';
+    td.textContent = hasActiveFilters ? 'No tracked invoices match the selected filters.' : 'No tracked invoices yet.';
     tr.appendChild(td);
     tbody.appendChild(tr);
     return;
@@ -15800,6 +16073,12 @@ function downloadInvoiceTrackingReport(){
 }
 const itDownloadReportBtnEl = qs('#itDownloadReportBtn');
 if(itDownloadReportBtnEl) itDownloadReportBtnEl.addEventListener('click', downloadInvoiceTrackingReport);
+const itClearFiltersBtnEl = qs('#itClearFiltersBtn');
+if(itClearFiltersBtnEl) itClearFiltersBtnEl.addEventListener('click', () => {
+  _invoiceTrackingFilters = {};
+  closeInvoiceTrackingFilterPopover();
+  renderInvoiceTrackingTable();
+});
 
 const invoiceTrackingForm = qs('#invoiceTrackingForm');
 if(invoiceTrackingForm){
