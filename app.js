@@ -5082,6 +5082,14 @@ function loadState(){
 async function loadStateFromDB(){
   try {
     const loaded = await DB.loadAll();
+    // See DB.loadAll's own comment on this field — a failure fetching "Manual Coverage" (even
+    // after its built-in retry) gets silently defaulted to "no manually-covered days" for every
+    // unit rather than blocking the whole app load, which is right for resilience but means the
+    // operator needs an explicit heads-up here, or the Accruals missing-periods checklist could
+    // silently show manually-covered units as missing without anything actually having changed
+    // about their real coverage.
+    const manualCoverageLoadFailed = !!loaded.manualCoverageLoadFailed;
+    delete loaded.manualCoverageLoadFailed;
     state = loaded;
 
     // Correct registrySeq if meta value is behind the highest seq actually in Sheets
@@ -5101,6 +5109,10 @@ async function loadStateFromDB(){
 
     // Record what Sheets actually returned — this becomes the reference for the save guard.
     _updateSheetConfigSnapshot();
+
+    if(manualCoverageLoadFailed){
+      alert('Manual coverage data could not be loaded (Google Sheets may be busy — this can happen right after a new deployment, or when several people are using the app at once).\n\nUntil you reload, the Accruals "missing periods" checklist may incorrectly show some manually-covered units as missing, even though their actual coverage hasn\'t changed. Please wait a moment and reload the page before acting on anything it shows.');
+    }
 
     renderAll();
     syncTabLabels();
@@ -5224,7 +5236,7 @@ function startAutoRefresh(){
           // Skipped on most cycles (see MANUAL_COVERAGE_FETCH_EVERY_N_CYCLES above) — resolves
           // to null exactly like a genuine fetch failure would, so the existing fallback below
           // (carry forward whatever's already in state.units) applies unchanged either way.
-          shouldFetchManualCoverage ? DB.get({ action: 'getAll', sheet: 'Manual Coverage' }).catch(() => null) : Promise.resolve(null),
+          shouldFetchManualCoverage ? DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }).catch(() => null) : Promise.resolve(null),
           DB.get({ action: 'getMeta' })
         ])
       );

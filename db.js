@@ -115,7 +115,37 @@ const DB = {
     return DB._parseResponse(res);
   },
 
+  // Retries a GET once before giving up. Every request this Apps Script backend handles
+  // serializes through one global lock (see AppsScript_fixed.gs's handleRequest) — a request
+  // that arrives while another is mid-flight either waits up to 30s for that lock or comes back
+  // "Server is busy", and either way DB.get() above throws. That's transient, ordinary
+  // contention (most likely right after a redeploy sends many open tabs reloading within the
+  // same few seconds, or simply several operators active at once) — not a sign the requested
+  // sheet is actually empty. Used for "Manual Coverage" specifically: that sheet stores one row
+  // per manually-covered day per unit (the fastest-growing sheet in this app), so its getAll
+  // keeps getting slower and a lock-busy/timeout hit on it keeps getting more likely over time —
+  // and loadAll() below has no prior in-memory data to fall back on for the very first load, so a
+  // single failed attempt there was being silently treated as "this unit has no manually-covered
+  // days at all", reverting it back into the Accruals missing-periods checklist even though nothing
+  // about its actual coverage had changed.
+  async _getWithRetries(params, attempts = 2, delayMs = 2000) {
+    let lastErr;
+    for(let i = 0; i < attempts; i++){
+      try { return await DB.get(params); }
+      catch(e){
+        lastErr = e;
+        if(i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
+  },
+
   async loadAll() {
+    // Set inside the Manual Coverage catch below when even the retried fetch fails — surfaced
+    // on the returned state (see the `manualCoverageLoadFailed` field at the bottom of this
+    // function) so app.js's loadStateFromDB can warn the operator instead of silently letting
+    // them trust an Accruals missing-periods checklist that may be wrong for this load.
+    let manualCoverageLoadFailed = false;
     try {
       showLoadingOverlay('Loading your data...');
       const [registries, units, leases, users, ccCentersRaw, invoiceTrackingRaw, accrualsRaw, manualCoverageRaw, meta] = await Promise.all([
@@ -141,8 +171,13 @@ const DB = {
         // before the manual-coverage edit, which is what was making marks disappear after a
         // refresh. Each date is now its own row here, saved/deleted independently of anything
         // else touching the unit.
-        DB.get({ action: 'getAll', sheet: 'Manual Coverage' }).catch(e => {
-          console.warn('Manual Coverage sheet failed to load (falling back to empty) — verify the tab is named exactly "Manual Coverage":', e.message);
+        // Retried once (see DB._getWithRetries above) before this catch gives up — a failure
+        // here doesn't necessarily mean the sheet is empty, just that this particular request
+        // hit Apps Script's single-lock contention, so it's worth one more try before treating
+        // every unit's manual coverage as gone.
+        DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }).catch(e => {
+          console.warn('Manual Coverage sheet failed to load after retry (falling back to empty) — verify the tab is named exactly "Manual Coverage":', e.message);
+          manualCoverageLoadFailed = true;
           return [];
         }),
         DB.get({ action: 'getMeta' })
@@ -313,7 +348,8 @@ const DB = {
         invoiceTracking: parsedInvoiceTracking,
         accruals: parsedAccruals,
         comments: {},
-        meta: sanitizedMeta
+        meta: sanitizedMeta,
+        manualCoverageLoadFailed
       };
     } catch (e) {
       hideLoadingOverlay();
