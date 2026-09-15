@@ -109,9 +109,14 @@ const DB = {
     return DB._parseResponse(res);
   },
 
-  async get(params) {
+  // timeoutMs mirrors DB.post's own override param (same reasoning: as a sheet grows, a plain
+  // full-sheet read genuinely takes longer even though nothing is wrong) — added specifically
+  // because "Manual Coverage" 's getAll measured at ~46s / ~21MB / ~160,000 rows against the live
+  // backend (one row per manually-covered DAY per unit), which sits right at — and under any
+  // real contention, past — the 60s default below.
+  async get(params, timeoutMs) {
     const url = DB_URL + '?' + new URLSearchParams({...params, secret: DB_SECRET}).toString();
-    const res = await DB._fetchWithTimeout(fetch(url));
+    const res = await DB._fetchWithTimeout(fetch(url), timeoutMs);
     return DB._parseResponse(res);
   },
 
@@ -127,11 +132,12 @@ const DB = {
   // and loadAll() below has no prior in-memory data to fall back on for the very first load, so a
   // single failed attempt there was being silently treated as "this unit has no manually-covered
   // days at all", reverting it back into the Accruals missing-periods checklist even though nothing
-  // about its actual coverage had changed.
-  async _getWithRetries(params, attempts = 2, delayMs = 2000) {
+  // about its actual coverage had changed. timeoutMs is forwarded to DB.get on every attempt —
+  // callers with a known-heavy request (Manual Coverage) pass a longer one than the 60s default.
+  async _getWithRetries(params, attempts = 2, delayMs = 2000, timeoutMs) {
     let lastErr;
     for(let i = 0; i < attempts; i++){
-      try { return await DB.get(params); }
+      try { return await DB.get(params, timeoutMs); }
       catch(e){
         lastErr = e;
         if(i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
@@ -174,8 +180,13 @@ const DB = {
         // Retried once (see DB._getWithRetries above) before this catch gives up — a failure
         // here doesn't necessarily mean the sheet is empty, just that this particular request
         // hit Apps Script's single-lock contention, so it's worth one more try before treating
-        // every unit's manual coverage as gone.
-        DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }).catch(e => {
+        // every unit's manual coverage as gone. 120s timeout (not the 60s default): measured
+        // directly against the live backend at ~46s / ~21MB / ~160,000 rows for this one sheet
+        // alone, so the 60s default was already being cut close even with nothing else wrong —
+        // add any real lock contention on top and it reliably exceeds 60s, which is what was
+        // making this fail (and manual coverage revert to "missing") consistently, not just
+        // occasionally, once the sheet grew this large.
+        DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }, 2, 2000, 120000).catch(e => {
           console.warn('Manual Coverage sheet failed to load after retry (falling back to empty) — verify the tab is named exactly "Manual Coverage":', e.message);
           manualCoverageLoadFailed = true;
           return [];

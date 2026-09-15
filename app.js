@@ -5224,6 +5224,13 @@ function startAutoRefresh(){
     _autoRefreshCycleCount++;
     const shouldFetchManualCoverage = (_autoRefreshCycleCount % MANUAL_COVERAGE_FETCH_EVERY_N_CYCLES) === 1;
     try{
+      // On a cycle that includes Manual Coverage, the outer race itself needs enough room for
+      // that one request alone (~46s / ~21MB / ~200,000+ rows measured against the live
+      // backend) on top of everything else queued behind it through Apps Script's single lock —
+      // the ordinary 45s default was tuned for cycles WITHOUT it and would otherwise abandon the
+      // whole batch (registries/units/leases/accruals too, not just manual coverage) before that
+      // one request even had a chance to finish.
+      const cycleTimeoutMs = shouldFetchManualCoverage ? 150000 : 45000;
       const [registries, units, leases, users, accrualsRaw, manualCoverageRaw, meta] = await fetchWithTimeout(
         Promise.all([
           DB.get({ action: 'getAll', sheet: 'invoices' }),
@@ -5235,10 +5242,15 @@ function startAutoRefresh(){
           DB.get({ action: 'getAll', sheet: 'Accruals' }).catch(() => null),
           // Skipped on most cycles (see MANUAL_COVERAGE_FETCH_EVERY_N_CYCLES above) — resolves
           // to null exactly like a genuine fetch failure would, so the existing fallback below
-          // (carry forward whatever's already in state.units) applies unchanged either way.
-          shouldFetchManualCoverage ? DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }).catch(() => null) : Promise.resolve(null),
+          // (carry forward whatever's already in state.units) applies unchanged either way. Only
+          // one attempt (not loadAll()'s two) — the fallback here is already safe either way, so
+          // a retry's main benefit (avoiding a false "nothing manually covered" with no prior
+          // state to fall back on) doesn't apply, and doubling a ~120s allowance would hold
+          // _refreshRunning far longer than this background cycle needs to.
+          shouldFetchManualCoverage ? DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }, 1, 0, 120000).catch(() => null) : Promise.resolve(null),
           DB.get({ action: 'getMeta' })
-        ])
+        ]),
+        cycleTimeoutMs
       );
 
       if(!registries || !units || !leases){ _refreshRunning = false; return; }
