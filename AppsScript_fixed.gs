@@ -9,39 +9,53 @@ function doPost(e) {
   return handleRequest(e);
 }
 
+// Only these mutate a sheet — everything else (getAll/getMeta) is a plain read. loadAll()
+// on the client fires up to 9 of these getAll/getMeta calls in parallel per page load, and
+// putting every one of them behind the same global lock as writes serialized them all onto
+// one queue: on a spreadsheet this size (Manual Coverage alone runs ~160,000 rows) a request
+// could sit queued long enough that by the time it finally ran and Apps Script generated the
+// redirect to the response content, that content link had already expired — the browser then
+// followed a stale link and got Google's own 404 HTML page instead of our JSON, which is what
+// _parseResponse's "devolvió una página HTML" error was actually seeing. Reads don't need the
+// lock for the race this was originally added to prevent (see below) since they never write.
+const WRITE_ACTIONS = ['save', 'update', 'delete', 'saveMeta', 'bulkSave', 'bulkDelete', 'repairMissingIds'];
+
 function handleRequest(e) {
-  // Serialize every request this script handles. Without this, two requests that arrive at
-  // nearly the same moment (two open tabs, a background auto-refresh overlapping a save, or
-  // the brief overlap while a new deployment is rolling out) can interleave their sheet reads
-  // and writes — e.g. one request's getMeta() reads the "meta" sheet half-way through another
-  // request's saveMeta() writing it, or two saveMeta() calls race and the one that finishes
-  // last silently wins with whatever (possibly stale/incomplete) data it started with. That
-  // race is what was erasing Developer tab config lists. Waiting for the lock makes requests
-  // queue instead of interleave.
-  const lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(30000);
-  } catch (lockErr) {
+  const params = e.parameter || {};
+  const postData = e.postData ? JSON.parse(e.postData.contents) : {};
+
+  // ── Security check ────────────────────────────── (checked before the lock so an
+  // unauthorized/malformed request never sits in the write queue for no reason)
+  const key = params.secret || postData.secret;
+  if(key !== SECRET_KEY){
     return ContentService
-      .createTextOutput(JSON.stringify({ success: false, error: 'Server is busy handling another request — please try again in a moment.' }))
+      .createTextOutput(JSON.stringify({ success: false, error: 'Unauthorized' }))
       .setMimeType(ContentService.MimeType.JSON);
   }
-  try {
-    const params = e.parameter || {};
-    const postData = e.postData ? JSON.parse(e.postData.contents) : {};
+  // ────────────────────────────────────────────────
 
-    // ── Security check ──────────────────────────────
-    const key = params.secret || postData.secret;
-    if(key !== SECRET_KEY){
+  const action = params.action || postData.action;
+  const sheet = params.sheet || postData.sheet;
+
+  // Serialize writes only. Without this, two writes that arrive at nearly the same moment
+  // (two open tabs, a background auto-refresh overlapping a save, or the brief overlap while
+  // a new deployment is rolling out) can interleave their sheet reads and writes — e.g. one
+  // request's getMeta() reads the "meta" sheet half-way through another request's saveMeta()
+  // writing it, or two saveMeta() calls race and the one that finishes last silently wins with
+  // whatever (possibly stale/incomplete) data it started with. That race is what was erasing
+  // Developer tab config lists. Waiting for the lock makes writes queue instead of interleave.
+  let lock = null;
+  if (WRITE_ACTIONS.indexOf(action) !== -1) {
+    lock = LockService.getScriptLock();
+    try {
+      lock.waitLock(30000);
+    } catch (lockErr) {
       return ContentService
-        .createTextOutput(JSON.stringify({ success: false, error: 'Unauthorized' }))
+        .createTextOutput(JSON.stringify({ success: false, error: 'Server is busy handling another request — please try again in a moment.' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
-    // ────────────────────────────────────────────────
-
-    const action = params.action || postData.action;
-    const sheet = params.sheet || postData.sheet;
-
+  }
+  try {
     let result;
 
     switch(action) {
@@ -91,7 +105,7 @@ function handleRequest(e) {
       .createTextOutput(JSON.stringify({ success: false, error: err.message }))
       .setMimeType(ContentService.MimeType.JSON);
   } finally {
-    lock.releaseLock();
+    if (lock) lock.releaseLock();
   }
 }
 
