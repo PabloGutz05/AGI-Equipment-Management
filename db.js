@@ -1,5 +1,5 @@
 // db.js — Google Sheets Database Layer for AGI Vehicle Lease Management
-const DB_URL = 'https://script.google.com/macros/s/AKfycbwDucOuepk0hudhuFKvHmgguaf9-zhHxqXIUpB9xNOUco9JXaLxz0-TRvWSNpcR6WVFuw/exec';
+const DB_URL = 'https://script.google.com/macros/s/AKfycbzA6ZjiyL83Yt6pWJFQRfGm7QCwNsWFczQPyATIbvdXR2bMf2IyhHZ3viXhuVMnj1D5Ag/exec';
 const DB_SECRET = 'AGI_EQP_2026_s3cur3key';
 
 // The Invoice Tracking sheet's header row uses the exact human-readable labels shown in the
