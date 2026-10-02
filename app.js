@@ -5741,13 +5741,13 @@ function isManuallyCovered(unit, year, month, day){
   const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
   return dates.indexOf(dateStr) !== -1;
 }
-// Every period this unit already has an accrual OR not-accruable record for — OPEN or CLOSED,
-// doesn't matter — is a decision the operator already made and is frozen: it must never be
-// recomputed as "missing" again (see computeUnitMissingPeriods). A brand new gap that opens up
-// later (an edit uncovers something, or time simply keeps passing with no invoice) is always its
-// own separate period to judge, never folded back into an old frozen one. See
-// [[accruals_cumulative_history]] for why this replaced the earlier "same gap regrows forever"
-// model.
+// Days this unit already has a decision on that must not be recomputed as "missing" (see
+// computeUnitMissingPeriods): every not-accruable record, and every accrual that's still OPEN
+// (it's already sitting in this month's batch). An accrual from a CLOSED month deliberately does
+// NOT freeze anything — it's kept only as a reference of what was sent that month. If its days
+// are still uncovered they show up as missing again, joined with whatever's been added since
+// into one continuous period, so the next month accrues the whole range in a single record
+// (see buildAccrualBalanceRows for how its already-declared days are priced).
 // excludeAccrualId: leaves one specific record's own range out of the freeze set — needed by
 // reconcileOpenAccrualsCoverage, which re-runs this same day-by-day check restricted to an open
 // record's OWN range to ask "absent this record's own reservation, is there still a genuine gap
@@ -5757,7 +5757,7 @@ function getAccrualFrozenRanges(unit, excludeAccrualId){
   const unitIdNorm = String(unit.unitId || unit.id || '').trim().toLowerCase();
   if(!unitIdNorm) return [];
   return (state.accruals || [])
-    .filter(a => String(a.unitId || '').trim().toLowerCase() === unitIdNorm && a.periodStart && a.periodEnd && a.id !== excludeAccrualId)
+    .filter(a => String(a.unitId || '').trim().toLowerCase() === unitIdNorm && a.periodStart && a.periodEnd && a.id !== excludeAccrualId && (a.notAccruable || (!a.accrualMonth && !a.accrualYear)))
     .map(a => ({ start: a.periodStart, end: a.periodEnd }));
 }
 function isFrozenByAccrualDecision(dateStr, frozenRanges){
@@ -12201,7 +12201,7 @@ function computeUnitMissingPeriods(unit, rangeStart, rangeEnd, excludeAccrualId)
       covered = unitRentalPeriods.some(p => dateStr >= p.start && dateStr <= p.end);
       // Manual coverage (Accruals coverage panel) counts as ordinary rental coverage everywhere.
       if(!covered) covered = isManuallyCovered(unit, y, m, d);
-      // Already accrued or marked not-accruable (open or closed) -- frozen, never re-missing.
+      // Marked not-accruable, or already in the open accrual batch -- not missing again.
       if(!covered) covered = isFrozenByAccrualDecision(dateStr, frozenRanges);
     }
     const missing = !disabled && !covered;
@@ -13292,8 +13292,6 @@ function downloadAccrualsDeliverable(){
   const openRecords = (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear && !a.notAccruable);
   const fmtMDY = (iso) => { const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
 
-  // Plus earlier closed months' still-uninvoiced periods, so the Accumulated tab is the same true
-  // running balance the on-screen table shows (see getCarriedForwardAccrualRows).
   const rows = buildAccrualBalanceRows(openRecords, month, year).map(e => {
     const r = e.record, estimate = e.estimate, split = e.split;
     return {
@@ -13319,7 +13317,7 @@ function downloadAccrualsDeliverable(){
       currentMonth: split.currentMonthAmount, currentMonthDays: split.currentMonthDays,
       currentMonthPeriodText: split.currentMonthStart ? `${fmtMDY(split.currentMonthStart)} - ${fmtMDY(split.currentMonthEnd)}` : '',
       total: split.totalAmount,
-      comment: (() => { const c = getAccrualComment(r.carriedFrom || r); return c ? c.text : ''; })()
+      comment: (() => { const c = getAccrualComment(r); return c ? c.text : ''; })()
     };
   });
 
@@ -14251,38 +14249,6 @@ function splitAccrualAmountByViewMonth(record, chargePerDay, viewMonth, viewYear
   };
 }
 
-// The running-balance half of "Accumulated": every period accrued in a month that was CLOSED
-// before viewMonth/viewYear and still isn't covered by a real invoice (or manual coverage) today.
-// Without these, closing a month made its amounts vanish from the next month's table — the next
-// gap for the same unit starts fresh on the 1st (see getAccrualFrozenRanges), so its own
-// Accumulated was always $0 even though the prior months were still owed.
-// Returns display-only copies, never the stored records themselves (those stay frozen exactly as
-// they were sent): each copy is narrowed to one still-uncovered stretch of its closed record's
-// range, so days that have since been invoiced drop out of the balance. carriedFrom points back
-// at the real record — its charge/day is the one to use, and anything that WRITES (comments) must
-// go through it, never through the copy.
-function getCarriedForwardAccrualRows(viewMonth, viewYear){
-  const out = [];
-  (state.accruals || []).forEach(a => {
-    if(a.notAccruable || !a.accrualMonth || !a.accrualYear) return;
-    const am = Number(a.accrualMonth), ay = Number(a.accrualYear);
-    if(!(ay < viewYear || (ay === viewYear && am < viewMonth))) return;
-    const unit = (state.units || []).find(u => String(u.unitId || '').trim().toLowerCase() === String(a.unitId || '').trim().toLowerCase());
-    if(!unit) return;
-    const start = isoStrToDate(a.periodStart), end = isoStrToDate(a.periodEnd);
-    if(isNaN(start) || isNaN(end)) return;
-    computeUnitMissingPeriods(unit, start, end, a.id).forEach(seg => {
-      const segStart = dateToIsoStr(seg.start);
-      out.push(Object.assign({}, a, {
-        id: `${a.id}|carried|${segStart}`,
-        periodStart: segStart, periodEnd: dateToIsoStr(seg.end),
-        days: Math.round((seg.end - seg.start) / 86400000) + 1,
-        isCarried: true, carriedFrom: a
-      }));
-    });
-  });
-  return out;
-}
 // The charge/day a record was actually closed (declared) with — stamped onto it by
 // closeAccrualsMonth, never recomputed afterward. null while the record is still open, or for a
 // record closed before this snapshot existed that backfillClosedAccrualRates hasn't reached yet.
@@ -14317,93 +14283,66 @@ function backfillClosedAccrualRates(){
     }
   })().finally(() => { _accrualsSyncInFlight = false; });
 }
-// Charge estimate for one table/deliverable row. A closed record — shown in its own month, or
-// carried into a later one — is always priced at its DECLARED charge/day, never today's: a newer
-// invoice changing the live rate must not reprice an amount that was already sent. A carried
-// row's days are its own narrowed, still-uncovered stretch (see getCarriedForwardAccrualRows),
-// so what's left owed = declared rate x days still not invoiced.
-function computeAccrualRowChargeEstimate(row){
-  const record = row.carriedFrom || row;
+// Charge estimate for one table/deliverable row. A closed record is always priced at its DECLARED
+// charge/day, never today's: a newer invoice changing the live rate must not reprice an amount
+// that was already sent.
+function computeAccrualRowChargeEstimate(record){
   const est = computeAccrualChargeEstimate(record);
   const declared = getDeclaredChargePerDay(record);
-  if(declared === null && !row.isCarried) return est;
-  const chargePerDay = declared !== null ? declared : est.chargePerDay;
-  return Object.assign({}, est, { chargePerDay, toBeAccrued: chargePerDay * (Number(row.days) || 0) });
+  if(declared === null) return est;
+  return Object.assign({}, est, { chargePerDay: declared, toBeAccrued: declared * (Number(record.days) || 0) });
 }
 
-// One row per record of the month being looked at, with the unit's carried balance (see
-// getCarriedForwardAccrualRows) folded into that row's Accumulated — so a single line reads
-// Accumulated (days still pending before this month x each closed month's declared rate) +
-// This Month (this month's days x this month's rate) = Total. A unit with more than one record
-// this month gets its carried balance on the earliest one only, never repeated. A unit that still
-// owes from earlier months but has no record this month gets one row of its own (record.isCarried)
-// with This Month at $0.
-// Each entry: { record, estimate, split, periodStart, periodEnd, days } — record is the real
-// stored accrual for a month's own row (safe to hand to anything that edits it); the period/days
-// fields are the whole span the row's Total covers, which is wider than record's own whenever a
-// carried balance was folded in.
+// One { record, estimate, split } per record of the month being looked at. A closed month's
+// records are a frozen reference only — they no longer hold their days out of Missing Periods
+// (see getAccrualFrozenRanges), so a gap that's still uncovered gets accrued again next month as
+// ONE record spanning its whole range (e.g. May 1 - Sep 30), not a fresh September-only one.
+// That record's Accumulated (its days before the view month) is priced day by day at the rate
+// that day was first declared with — the earliest closed record covering it — so what was already
+// reported for a past month never gets repriced at this month's rate; a day no closed record
+// covers falls back to the record's own current rate. This Month is always this month's days x
+// the record's own rate.
 function buildAccrualBalanceRows(ownRecords, viewMonth, viewYear){
   const unitKey = (r) => String(r.unitId || '').trim().toLowerCase();
-  const carriedByUnit = new Map();
-  getCarriedForwardAccrualRows(viewMonth, viewYear).forEach(seg => {
-    const k = unitKey(seg);
-    if(!carriedByUnit.has(k)) carriedByUnit.set(k, []);
-    carriedByUnit.get(k).push(seg);
+  const viewYm = viewYear * 12 + viewMonth;
+  const declaredByUnit = new Map();
+  (state.accruals || []).forEach(a => {
+    const rate = a.notAccruable ? null : getDeclaredChargePerDay(a);
+    if(rate === null || !a.periodStart || !a.periodEnd) return;
+    const ym = Number(a.accrualYear) * 12 + Number(a.accrualMonth);
+    if(ym >= viewYm) return;
+    const k = unitKey(a);
+    if(!declaredByUnit.has(k)) declaredByUnit.set(k, []);
+    declaredByUnit.get(k).push({ start: a.periodStart, end: a.periodEnd, rate, ym, label: `${accrualMonthName(Number(a.accrualMonth))} ${a.accrualYear}` });
   });
-  const sumCarried = (segs) => {
-    const acc = { days: 0, amount: 0, start: null, end: null, breakdown: [] };
-    segs.forEach(seg => {
-      const rate = computeAccrualRowChargeEstimate(seg).chargePerDay;
-      acc.days += seg.days;
-      acc.amount += rate * seg.days;
-      if(!acc.start || seg.periodStart < acc.start) acc.start = seg.periodStart;
-      if(!acc.end || seg.periodEnd > acc.end) acc.end = seg.periodEnd;
-      acc.breakdown.push(`${seg.days}d from ${accrualMonthName(Number(seg.accrualMonth))} ${seg.accrualYear} @ ${formatCurrency(rate)}/day`);
-    });
-    return acc;
-  };
+  declaredByUnit.forEach(list => list.sort((a, b) => a.ym - b.ym));
 
-  const out = [];
-  ownRecords.slice().sort((a, b) => (a.periodStart || '') < (b.periodStart || '') ? -1 : 1).forEach(r => {
+  return ownRecords.map(r => {
     const estimate = computeAccrualRowChargeEstimate(r);
     const split = splitAccrualAmountByViewMonth(r, estimate.chargePerDay, viewMonth, viewYear);
-    split.accumulatedBreakdown = split.accumulatedDays > 0 ? [`${split.accumulatedDays}d @ ${formatCurrency(estimate.chargePerDay)}/day`] : [];
-    const entry = { record: r, estimate, split, periodStart: r.periodStart, periodEnd: r.periodEnd, days: Number(r.days) || 0 };
-    const segs = carriedByUnit.get(unitKey(r));
-    if(segs){
-      carriedByUnit.delete(unitKey(r));
-      const c = sumCarried(segs);
-      if(!split.accumulatedStart || c.start < split.accumulatedStart) split.accumulatedStart = c.start;
-      if(!split.accumulatedEnd || c.end > split.accumulatedEnd) split.accumulatedEnd = c.end;
-      split.accumulatedDays += c.days;
-      split.accumulatedAmount += c.amount;
-      split.totalAmount = split.accumulatedAmount + split.currentMonthAmount;
-      split.accumulatedBreakdown = c.breakdown.concat(split.accumulatedBreakdown);
-      if(c.start < entry.periodStart) entry.periodStart = c.start;
-      if(c.end > entry.periodEnd) entry.periodEnd = c.end;
-      entry.days += c.days;
-    }
-    out.push(entry);
-  });
-
-  carriedByUnit.forEach(segs => {
-    const c = sumCarried(segs);
-    // Represented by the unit's most recently closed record — its rate/source invoice are the
-    // ones shown in the row's Last Invoice Amount and Charge/Day columns.
-    const latest = segs.reduce((best, s) => (Number(s.accrualYear) * 12 + Number(s.accrualMonth) >= Number(best.accrualYear) * 12 + Number(best.accrualMonth)) ? s : best).carriedFrom;
-    const record = Object.assign({}, latest, { id: `${latest.id}|carried`, periodStart: c.start, periodEnd: c.end, days: c.days, isCarried: true, carriedFrom: latest });
-    const estimate = computeAccrualRowChargeEstimate(record);
-    estimate.toBeAccrued = c.amount;
-    out.push({
-      record, estimate, periodStart: c.start, periodEnd: c.end, days: c.days,
-      split: {
-        accumulatedDays: c.days, accumulatedAmount: c.amount, accumulatedStart: c.start, accumulatedEnd: c.end, accumulatedBreakdown: c.breakdown,
-        currentMonthDays: 0, currentMonthAmount: 0, currentMonthStart: null, currentMonthEnd: null,
-        totalAmount: c.amount
+    split.accumulatedBreakdown = [];
+    if(split.accumulatedDays > 0){
+      const declared = declaredByUnit.get(unitKey(r)) || [];
+      const groups = new Map(); // "label|rate" -> days, in first-seen (chronological) order
+      let amount = 0;
+      const last = isoStrToDate(split.accumulatedEnd);
+      for(let d = isoStrToDate(split.accumulatedStart); d <= last; d.setDate(d.getDate() + 1)){
+        const ds = dateToIsoStr(d);
+        const src = declared.find(c => ds >= c.start && ds <= c.end);
+        const rate = src ? src.rate : estimate.chargePerDay;
+        amount += rate;
+        const key = `${src ? 'declared ' + src.label : 'current rate'}|${rate}`;
+        groups.set(key, (groups.get(key) || 0) + 1);
       }
-    });
+      split.accumulatedAmount = amount;
+      split.totalAmount = split.accumulatedAmount + split.currentMonthAmount;
+      groups.forEach((days, key) => {
+        const parts = key.split('|');
+        split.accumulatedBreakdown.push(`${days}d @ ${formatCurrency(Number(parts[1]))}/day (${parts[0]})`);
+      });
+    }
+    return { record: r, estimate, split };
   });
-  return out;
 }
 
 // Popup showing exactly what a "Last Invoice Amount" cell's total is built from — the source
@@ -14441,8 +14380,8 @@ function openAccrualChargeDetail(record, estimate, recordList, rowSplit){
       html += `<div style="border-top:1px solid #e6e9ee;margin:6px 0;"></div>`;
       html += row('To be accrued', formatCurrency(estimate.toBeAccrued));
 
-      // rowSplit: the table row's own figures, which also carry the unit's still-uninvoiced
-      // balance from earlier closed months (see buildAccrualBalanceRows).
+      // rowSplit: the table row's own figures — its Accumulated prices already-declared days at
+      // their declared rate (see buildAccrualBalanceRows), which a plain split here wouldn't.
       const split = rowSplit || splitAccrualAmountByViewMonth(record, estimate.chargePerDay, _accrualsViewMonth, _accrualsViewYear);
       html += `<div style="margin-top:8px;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;">Accounting/Payables split — ${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}</div>`;
       html += row(`Accumulated (thru ${accrualMonthName(_accrualsViewMonth === 1 ? 12 : _accrualsViewMonth - 1)})`, `${formatCurrency(split.accumulatedAmount)} (${split.accumulatedDays}d)`);
@@ -14539,19 +14478,13 @@ function renderAccrualsAccruedList(){
   });
   const fmtMDY = (iso) => { const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
 
-  // This month's own records with each unit's still-uninvoiced balance from earlier closed
-  // months folded into Accumulated, plus one row per unit that only has such a balance — see
-  // buildAccrualBalanceRows.
-  const balanceRows = buildAccrualBalanceRows(ownRecords, _accrualsViewMonth, _accrualsViewYear);
-  const rows = balanceRows.map(e => e.record);
-  const carriedOnlyCount = rows.length - ownRecords.length;
+  const rows = ownRecords;
 
   if(summaryEl){
     const label = `${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}`;
-    const carriedText = carriedOnlyCount > 0 ? ` Plus ${carriedOnlyCount} unit(s) with only a still-uninvoiced balance from earlier months.` : '';
-    summaryEl.textContent = (isViewingOpenMonth
+    summaryEl.textContent = isViewingOpenMonth
       ? (ownRecords.length === 0 ? `${label} (open) — no periods accrued yet.` : `${label} (open) — ${ownRecords.length} period(s) accrued so far, not yet closed.`)
-      : (ownRecords.length === 0 ? `${label} — no accrual record found.` : `${label} — closed, ${ownRecords.length} period(s).`)) + carriedText;
+      : (ownRecords.length === 0 ? `${label} — no accrual record found.` : `${label} — closed, ${ownRecords.length} period(s).`);
   }
 
   tableEl.innerHTML = '';
@@ -14567,13 +14500,9 @@ function renderAccrualsAccruedList(){
   // was actually being reported that month.
   const chargeEstimates = new Map();
   const monthSplits = new Map();
-  // The whole span each row's Total covers — wider than the record's own period whenever a
-  // carried balance was folded in.
-  const rowSpans = new Map();
-  balanceRows.forEach(e => {
+  buildAccrualBalanceRows(rows, _accrualsViewMonth, _accrualsViewYear).forEach(e => {
     chargeEstimates.set(e.record.id, e.estimate);
     monthSplits.set(e.record.id, e.split);
-    rowSpans.set(e.record.id, e);
   });
 
   const COLUMNS = [
@@ -14583,8 +14512,8 @@ function renderAccrualsAccruedList(){
     { key: 'costCenter', label: 'Cost Center', get: r => r.costCenter },
     { key: 'status', label: 'Status', get: r => r.status },
     { key: 'disabledDate', label: 'Disabled Date', get: r => getUnitDisabledDateText(r.unitId) },
-    { key: 'period', label: 'Missing Period', get: r => rowSpans.get(r.id).periodStart || '' },
-    { key: 'days', label: 'Days', get: r => rowSpans.get(r.id).days, numeric: true, alignRight: true },
+    { key: 'period', label: 'Missing Period', get: r => r.periodStart || '' },
+    { key: 'days', label: 'Days', get: r => Number(r.days) || 0, numeric: true, alignRight: true },
     { key: 'lastInvoiceAmount', label: 'Last Invoice Amount', get: r => chargeEstimates.get(r.id).totalAmount, numeric: true, alignRight: true },
     { key: 'chargePerDay', label: 'Charge/Day', get: r => chargeEstimates.get(r.id).chargePerDay, numeric: true, alignRight: true },
     { key: 'accumulated', label: 'Accumulated', get: r => monthSplits.get(r.id).accumulatedAmount, numeric: true, alignRight: true },
@@ -14668,8 +14597,7 @@ function renderAccrualsAccruedList(){
       removeBtn.title = 'Remove — sends this period back to the missing-periods review list';
       removeBtn.style.cssText = 'width:18px;height:18px;line-height:14px;padding:0;border-radius:4px;border:1px solid #dc2626;background:transparent;color:#dc2626;font-weight:700;font-size:13px;cursor:pointer;';
       removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeAccrualRecord(r.id); });
-      // A carried row belongs to an already-closed month — locked, nothing to remove.
-      if(!r.isCarried) tdRemove.appendChild(removeBtn);
+      tdRemove.appendChild(removeBtn);
       tr.appendChild(tdRemove);
     }
     const tdCounter = document.createElement('td');
@@ -14677,17 +14605,10 @@ function renderAccrualsAccruedList(){
     tdCounter.style.cssText = 'padding:4px 6px;color:#6b7280;';
     tr.appendChild(tdCounter);
 
-    [r.unitId, r.lease, r.supplier, r.costCenter, r.status, getUnitDisabledDateText(r.unitId), `${fmtMDY(rowSpans.get(r.id).periodStart)} - ${fmtMDY(rowSpans.get(r.id).periodEnd)}`, String(rowSpans.get(r.id).days)].forEach((val, ci) => {
+    [r.unitId, r.lease, r.supplier, r.costCenter, r.status, getUnitDisabledDateText(r.unitId), `${fmtMDY(r.periodStart)} - ${fmtMDY(r.periodEnd)}`, String(r.days)].forEach((val, ci) => {
       const td = document.createElement('td');
       td.textContent = val;
       td.style.cssText = `padding:4px 6px;${ci === 7 ? 'text-align:right;' : ''}`;
-      if(ci === 6 && r.isCarried){
-        const tag = document.createElement('span');
-        tag.textContent = ` · from ${accrualMonthName(Number(r.accrualMonth))} ${r.accrualYear}`;
-        tag.style.cssText = 'color:#6b7280;font-style:italic;';
-        td.appendChild(tag);
-        td.title = `Still not invoiced since ${accrualMonthName(Number(r.accrualMonth))} ${r.accrualYear} — this unit has no period accrued in ${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}, so This Month is $0`;
-      }
       if(ci === 0){
         // Same coverage-history popup used everywhere else a UnitId is clickable — lets the
         // operator make a last visual check of this unit's calendar before sending the report.
@@ -14749,7 +14670,7 @@ function renderAccrualsAccruedList(){
     const split = monthSplits.get(r.id);
     const tdAccumulated = document.createElement('td');
     tdAccumulated.textContent = formatCurrency(split.accumulatedAmount);
-    tdAccumulated.title = `${split.accumulatedDays} day(s) still pending through the end of the prior month` + (split.accumulatedBreakdown.length ? ` — ${split.accumulatedBreakdown.join(' + ')}` : '');
+    tdAccumulated.title = `${split.accumulatedDays} day(s) through the end of the prior month` + (split.accumulatedBreakdown.length ? ` — ${split.accumulatedBreakdown.join(' + ')}` : '');
     tdAccumulated.style.cssText = 'padding:4px 6px;text-align:right;';
     tr.appendChild(tdAccumulated);
 
@@ -14766,11 +14687,9 @@ function renderAccrualsAccruedList(){
 
     // Comment icon — one slot per (record, current month); see getAccrualComment. Editable
     // regardless of open/closed, since a note isn't part of the frozen dollar figures.
-    // A carried row's comment lives on (and saves to) the real closed record, not the copy.
-    const commentRecord = r.carriedFrom || r;
     const tdComment = document.createElement('td');
     tdComment.style.cssText = 'padding:4px 6px;text-align:center;cursor:pointer;';
-    const existingComment = getAccrualComment(commentRecord);
+    const existingComment = getAccrualComment(r);
     const commentIcon = document.createElement('span');
     commentIcon.textContent = '💬';
     commentIcon.style.cssText = existingComment ? 'color:#0b74de;font-weight:700;' : 'color:#c0c5cc;';
@@ -14778,7 +14697,7 @@ function renderAccrualsAccruedList(){
     tdComment.appendChild(commentIcon);
     tdComment.addEventListener('click', (e) => {
       e.stopPropagation();
-      openAccrualCommentModal(commentRecord, () => renderAccrualsAccruedList());
+      openAccrualCommentModal(r, () => renderAccrualsAccruedList());
     });
     tr.appendChild(tdComment);
 
