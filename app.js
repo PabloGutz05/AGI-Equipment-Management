@@ -5009,6 +5009,7 @@ function startAutoRefresh(){
     _refreshRunning = true;
     _autoRefreshCycleCount++;
     const shouldFetchManualCoverage = (_autoRefreshCycleCount % MANUAL_COVERAGE_FETCH_EVERY_N_CYCLES) === 1;
+    const accrualsSeqAtFetch = (typeof _accrualsSyncSeq !== 'undefined') ? _accrualsSyncSeq : 0;
     try{
       // On a cycle that includes Manual Coverage, the outer race itself needs enough room for
       // that one request alone (~46s / ~21MB / ~200,000+ rows measured against the live
@@ -5041,6 +5042,14 @@ function startAutoRefresh(){
 
       if(!registries || !units || !leases){ _refreshRunning = false; return; }
 
+      // The guards above only look at the Accruals flags BEFORE the fetch, which can itself take
+      // most of a minute — an Accrue Period / manual-coverage action made while it was on its
+      // way isn't in what came back. Applying that stale "Accruals"/"Manual Coverage"/open-month
+      // data would silently undo the action on screen, so for this cycle those three are left
+      // exactly as they are in memory; everything else still refreshes normally.
+      const accrualsChangedMidFetch = (typeof _accrualsSyncSeq !== 'undefined') &&
+        (_accrualsSyncInFlight || _accrualsHasPendingChanges || _accrualsSyncSeq !== accrualsSeqAtFetch);
+
       state.registries = registries.map(r => ({
         ...r,
         id: String(r[' '] || r.id || ''),
@@ -5067,7 +5076,7 @@ function startAutoRefresh(){
       // object it rebuilds here would silently lose its manualCoverageDates/manualCoverageRowIds
       // every 60 seconds, making any manual coverage marked in the meantime look like it
       // "un-splits" itself back out of the missing-periods table the next time it recomputes.
-      if(Array.isArray(manualCoverageRaw)){
+      if(Array.isArray(manualCoverageRaw) && !accrualsChangedMidFetch){
         const parsedManualCoverage = manualCoverageRaw.map(mc => ({
           id: String(mc.id || ''), unitId: String(mc.unitId || ''), date: String(mc.date || '')
         }));
@@ -5089,7 +5098,7 @@ function startAutoRefresh(){
           };
         });
       } else {
-        // The Manual Coverage fetch itself failed this cycle — rebuild everything else as
+        // The Manual Coverage fetch itself failed (or is stale, see accrualsChangedMidFetch) this cycle — rebuild everything else as
         // usual, but carry each unit's existing in-memory manual coverage forward by unitId
         // rather than silently dropping it.
         const existingByUnitId = new Map((state.units || []).map(u => [String(u.unitId || '').trim().toLowerCase(), u]));
@@ -5111,7 +5120,7 @@ function startAutoRefresh(){
         });
       }
 
-      if(Array.isArray(accrualsRaw)){
+      if(Array.isArray(accrualsRaw) && !accrualsChangedMidFetch){
         state.accruals = accrualsRaw.map(a => ({
           id: String(a.id || ''),
           unitId: String(a.unitId || ''),
@@ -5127,11 +5136,12 @@ function startAutoRefresh(){
           notAccruable: String(a.notAccruable || ''),
           overrideSourceFrom: String(a.overrideSourceFrom || ''),
           overrideSourceTo: String(a.overrideSourceTo || ''),
+          closedChargePerDay: Number(a.closedChargePerDay) > 0 ? Number(a.closedChargePerDay) : '',
           accrualComments: (() => { const v = DB.parseField(a.accrualComments); return Array.isArray(v) ? v : []; })(),
           createdAt: String(a.createdAt || '')
         }));
       }
-      // else: Accruals fetch failed this cycle — leave state.accruals exactly as it was.
+      // else: Accruals fetch failed or is stale this cycle — leave state.accruals exactly as it was.
 
       state.leases = leases.map(l => ({
         ...l,
@@ -5172,6 +5182,10 @@ function startAutoRefresh(){
           sanitizedMeta[f] = _sheetConfigSnapshot[f].slice();
         }
       });
+      if(accrualsChangedMidFetch && state.meta){
+        sanitizedMeta.accrualsOpenMonth = state.meta.accrualsOpenMonth;
+        sanitizedMeta.accrualsOpenYear = state.meta.accrualsOpenYear;
+      }
       state.meta = sanitizedMeta;
       // Keep snapshot in sync — safe because config fields are already protected above
       _updateSheetConfigSnapshot();
@@ -5794,6 +5808,17 @@ let _accrualsSessionOriginalDates = new Set();
 // cycle while it's true, so a re-fetch of "Manual Coverage"/"Accruals"/meta can never land
 // mid-save and silently revert whichever of those actions is still in flight.
 let _accrualsSyncInFlight = false;
+// Several of those actions can overlap (accruing a few periods in a row, each with its own save
+// still on its way) — a plain true/false would be switched back off by whichever save happened
+// to finish FIRST, letting the auto-refresh through while the others were still in flight, and
+// its re-fetched "Accruals" (missing them) would send those periods straight back to Missing
+// Periods. Counted instead: the flag only drops once every one of them has finished.
+// _accrualsSyncSeq never goes back down — it lets a refresh that was already mid-fetch when an
+// action started tell that what it fetched is now stale (see startAutoRefresh).
+let _accrualsSyncCount = 0;
+let _accrualsSyncSeq = 0;
+function beginAccrualsSync(){ _accrualsSyncCount++; _accrualsSyncSeq++; _accrualsSyncInFlight = true; }
+function endAccrualsSync(){ _accrualsSyncCount = Math.max(0, _accrualsSyncCount - 1); _accrualsSyncInFlight = _accrualsSyncCount > 0; }
 
 // Saves/deletes exactly the dates that actually changed since the panel was opened for this
 // unit — each manually-covered date is its own row in the "Manual Coverage" sheet (see
@@ -5842,8 +5867,8 @@ function persistManualCoverage(unit){
     pending.push(DB.bulkDeleteManualCoverage(toDeleteIds).catch(e => console.error('Manual coverage bulk delete error:', e)));
   }
   if(pending.length > 0){
-    _accrualsSyncInFlight = true;
-    Promise.allSettled(pending).finally(() => { _accrualsSyncInFlight = false; });
+    beginAccrualsSync();
+    Promise.allSettled(pending).finally(() => { endAccrualsSync(); });
   }
 
   _accrualsSessionOriginalDates = new Set(current);
@@ -12351,8 +12376,8 @@ function closeAccrualCommentModal(){
 function saveAccrualCommentFromModal(text){
   if(!_accrualCommentRecord) return;
   setAccrualComment(_accrualCommentRecord, text);
-  _accrualsSyncInFlight = true;
-  DB.updateAccrual(_accrualCommentRecord).catch(e => console.error('Accrual comment save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  beginAccrualsSync();
+  DB.updateAccrual(_accrualCommentRecord).catch(e => console.error('Accrual comment save error:', e)).finally(() => { endAccrualsSync(); });
   try{ saveState(); }catch(e){}
   const cb = _accrualCommentOnSaved;
   closeAccrualCommentModal();
@@ -13151,8 +13176,8 @@ function accrueCurrentUnit(){
     adjacent.periodEnd = mergedEnd;
     adjacent.days = Math.round((isoStrToDate(mergedEnd) - isoStrToDate(mergedStart)) / 86400000) + 1;
     targetRecord = adjacent;
-    _accrualsSyncInFlight = true;
-    DB.updateAccrual(adjacent).catch(e => console.error('Accrual merge error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+    beginAccrualsSync();
+    DB.updateAccrual(adjacent).catch(e => console.error('Accrual merge error:', e)).finally(() => { endAccrualsSync(); });
   } else {
     targetRecord = {
       id: id(),
@@ -13165,8 +13190,8 @@ function accrueCurrentUnit(){
     // the 60s background auto-refresh checks this flag and skips its cycle entirely while it's
     // true, so a re-fetch of "Accruals" can never land mid-save and silently revert this record
     // back out of state.accruals before it's actually landed on the sheet.
-    _accrualsSyncInFlight = true;
-    DB.bulkSaveAccruals([targetRecord]).catch(e => console.error('Accrual save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+    beginAccrualsSync();
+    DB.bulkSaveAccruals([targetRecord]).catch(e => console.error('Accrual save error:', e)).finally(() => { endAccrualsSync(); });
   }
   try{ saveState(); }catch(e){}
 
@@ -13216,8 +13241,8 @@ function markCurrentPeriodNotAccruable(){
     adjacent.periodStart = mergedStart;
     adjacent.periodEnd = mergedEnd;
     adjacent.days = Math.round((isoStrToDate(mergedEnd) - isoStrToDate(mergedStart)) / 86400000) + 1;
-    _accrualsSyncInFlight = true;
-    DB.updateAccrual(adjacent).catch(e => console.error('Not Accruable merge error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+    beginAccrualsSync();
+    DB.updateAccrual(adjacent).catch(e => console.error('Not Accruable merge error:', e)).finally(() => { endAccrualsSync(); });
   } else {
     const newRecord = {
       id: id(),
@@ -13226,8 +13251,8 @@ function markCurrentPeriodNotAccruable(){
       accrualMonth: '', accrualYear: '', notAccruable: 'true', createdAt: new Date().toISOString()
     };
     state.accruals = (state.accruals || []).concat([newRecord]);
-    _accrualsSyncInFlight = true;
-    DB.bulkSaveAccruals([newRecord]).catch(e => console.error('Not Accruable save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+    beginAccrualsSync();
+    DB.bulkSaveAccruals([newRecord]).catch(e => console.error('Not Accruable save error:', e)).finally(() => { endAccrualsSync(); });
   }
   try{ saveState(); }catch(e){}
 
@@ -13250,13 +13275,13 @@ function undoAccrueUnit(){
     const rec = (state.accruals || []).find(a => a.id === recordId);
     if(rec){
       rec.periodStart = priorStart; rec.periodEnd = priorEnd; rec.days = priorDays;
-      _accrualsSyncInFlight = true;
-      DB.updateAccrual(rec).catch(e => console.error('Accrual undo/merge-revert error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+      beginAccrualsSync();
+      DB.updateAccrual(rec).catch(e => console.error('Accrual undo/merge-revert error:', e)).finally(() => { endAccrualsSync(); });
     }
   } else {
     const idsToRemove = new Set(_accrualsLastAccruedIds);
-    _accrualsSyncInFlight = true;
-    DB.bulkDeleteAccruals(_accrualsLastAccruedIds).catch(e => console.error('Accrual undo/delete error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+    beginAccrualsSync();
+    DB.bulkDeleteAccruals(_accrualsLastAccruedIds).catch(e => console.error('Accrual undo/delete error:', e)).finally(() => { endAccrualsSync(); });
     state.accruals = (state.accruals || []).filter(a => !idsToRemove.has(a.id));
   }
   try{ saveState(); }catch(e){}
@@ -13531,8 +13556,8 @@ function closeAccrualsMonth(){
   // confusing since "Close Month Accruals" would then look like it never happened. Kept in the
   // SAME in-flight window as the record updates above, not a separate one.
   updateCalls.push(DB.saveAll(state).catch(e => console.error('Accrual close meta save error:', e)));
-  _accrualsSyncInFlight = true;
-  Promise.allSettled(updateCalls).finally(() => { _accrualsSyncInFlight = false; });
+  beginAccrualsSync();
+  Promise.allSettled(updateCalls).finally(() => { endAccrualsSync(); });
   try{ saveState(); }catch(e){}
 
   // The Undo label only ever makes sense for still-open records — anything it pointed to just
@@ -13664,8 +13689,8 @@ function reconcileOpenAccrualsCoverage(){
   if(toCreate.length > 0) pending.push(DB.bulkSaveAccruals(toCreate).catch(e => console.error('Accrual reconcile create error:', e)));
 
   if(pending.length > 0){
-    _accrualsSyncInFlight = true;
-    Promise.allSettled(pending).finally(() => { _accrualsSyncInFlight = false; });
+    beginAccrualsSync();
+    Promise.allSettled(pending).finally(() => { endAccrualsSync(); });
   }
 }
 
@@ -13763,8 +13788,8 @@ function applyAccrualOverride(record, point){
   if(!existingComment || existingComment.auto){
     setAccrualComment(record, `Invoice used to accrue "${point.sourceWd || '(unknown WD)'}"`, { auto: true });
   }
-  _accrualsSyncInFlight = true;
-  DB.updateAccrual(record).catch(e => console.error('Accrual override save error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  beginAccrualsSync();
+  DB.updateAccrual(record).catch(e => console.error('Accrual override save error:', e)).finally(() => { endAccrualsSync(); });
   try{ saveState(); }catch(e){}
   if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList();
 }
@@ -13779,8 +13804,8 @@ function clearAccrualOverride(record){
   if(existingComment && existingComment.auto){
     setAccrualComment(record, '');
   }
-  _accrualsSyncInFlight = true;
-  DB.updateAccrual(record).catch(e => console.error('Accrual override clear error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  beginAccrualsSync();
+  DB.updateAccrual(record).catch(e => console.error('Accrual override clear error:', e)).finally(() => { endAccrualsSync(); });
   try{ saveState(); }catch(e){}
   if(typeof renderAccrualsAccruedList === 'function') renderAccrualsAccruedList();
 }
@@ -14276,12 +14301,12 @@ function backfillClosedAccrualRates(){
   const pending = (state.accruals || []).filter(a => a.accrualMonth && a.accrualYear && !a.notAccruable && !(Number(a.closedChargePerDay) > 0) && stampDeclaredChargePerDay(a));
   if(pending.length === 0) return;
   try{ saveState(); }catch(e){}
-  _accrualsSyncInFlight = true;
+  beginAccrualsSync();
   (async () => {
     for(const rec of pending){
       try{ await DB.updateAccrual(rec); }catch(e){ console.error('Accrual declared-rate backfill error:', e); }
     }
-  })().finally(() => { _accrualsSyncInFlight = false; });
+  })().finally(() => { endAccrualsSync(); });
 }
 // Charge estimate for one table/deliverable row. A closed record is always priced at its DECLARED
 // charge/day, never today's: a newer invoice changing the live rate must not reprice an amount
@@ -14760,8 +14785,8 @@ function removeAccrualRecord(recordId){
   if(idx === -1) return;
   const record = state.accruals[idx];
   state.accruals = state.accruals.filter(a => a.id !== recordId);
-  _accrualsSyncInFlight = true;
-  DB.deleteAccrual(recordId).catch(e => console.error('Accrual remove error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  beginAccrualsSync();
+  DB.deleteAccrual(recordId).catch(e => console.error('Accrual remove error:', e)).finally(() => { endAccrualsSync(); });
   try{ saveState(); }catch(e){}
 
   if(_accrualsLastAccruedIds && _accrualsLastAccruedIds.indexOf(recordId) !== -1){
@@ -14942,8 +14967,8 @@ function removeNotAccruableRecord(recordId){
   if(idx === -1) return;
   const record = state.accruals[idx];
   state.accruals = state.accruals.filter(a => a.id !== recordId);
-  _accrualsSyncInFlight = true;
-  DB.deleteAccrual(recordId).catch(e => console.error('Not Accruable remove error:', e)).finally(() => { _accrualsSyncInFlight = false; });
+  beginAccrualsSync();
+  DB.deleteAccrual(recordId).catch(e => console.error('Not Accruable remove error:', e)).finally(() => { endAccrualsSync(); });
   try{ saveState(); }catch(e){}
 
   const unit = (state.units || []).find(u => String(u.unitId || '').trim().toLowerCase() === String(record.unitId || '').trim().toLowerCase());
