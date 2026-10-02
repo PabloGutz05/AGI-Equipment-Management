@@ -78,10 +78,17 @@ const DB = {
   async _parseResponse(res) {
     const text = await res.text();
     if(text.trim().startsWith('<')){
+      // Almost always transient: measured against the live backend, the first requests after the
+      // spreadsheet has sat idle (typically the first load of the day) take 55-78s and come back
+      // as Google's own 404 HTML page, then the very same requests succeed in 2-3s minutes
+      // later with nothing redeployed. The old wording here sent operators off to recreate a
+      // deployment that was never actually broken.
       throw new Error(
-        'Google Apps Script devolvió una página HTML en lugar de datos.\n\n' +
-        'Solución: abre el Apps Script en Google Drive → Deploy → Manage deployments → ' +
-        'verifica que esté activo y con acceso "Anyone". Si expiró, crea un nuevo deployment.'
+        'Google Sheets devolvió una página de error en lugar de datos.\n\n' +
+        'Normalmente es temporal (Google está ocupado o todavía abriendo la hoja de cálculo) — ' +
+        'espera un momento y vuelve a intentar.\n\n' +
+        'Solo si sigue fallando durante varios minutos: abre el Apps Script → Deploy → Manage ' +
+        'deployments y verifica que el deployment esté activo y con acceso "Anyone".'
       );
     }
     let data;
@@ -134,16 +141,38 @@ const DB = {
   // days at all", reverting it back into the Accruals missing-periods checklist even though nothing
   // about its actual coverage had changed. timeoutMs is forwarded to DB.get on every attempt —
   // callers with a known-heavy request (Manual Coverage) pass a longer one than the 60s default.
-  async _getWithRetries(params, attempts = 2, delayMs = 2000, timeoutMs) {
+  // onRetry(nextAttempt, attempts), if given, is called right before each re-attempt so the
+  // caller can tell the operator what's happening instead of leaving a silent spinner.
+  async _getWithRetries(params, attempts = 2, delayMs = 2000, timeoutMs, onRetry) {
     let lastErr;
     for(let i = 0; i < attempts; i++){
       try { return await DB.get(params, timeoutMs); }
       catch(e){
         lastErr = e;
-        if(i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+        // These come from our own backend's JSON and will fail identically every time —
+        // retrying just delays the real error.
+        if(/Sheet not found|Unauthorized|Unknown action/.test(e.message || '')) break;
+        if(i < attempts - 1){
+          if(onRetry) onRetry(i + 2, attempts);
+          await new Promise(r => setTimeout(r, delayMs));
+        }
       }
     }
     throw lastErr;
+  },
+
+  // Groups parsed Manual Coverage rows by normalized unitId (trimmed, lowercased — the same
+  // match the rest of the app uses) in one pass. Filtering the full row list once per unit
+  // instead meant ~750 units x ~207,000 rows = ~155 million string comparisons on every load
+  // and every auto-refresh cycle that includes this sheet.
+  _groupManualCoverageByUnit(rows) {
+    const byUnit = new Map();
+    rows.forEach(mc => {
+      const key = mc.unitId.trim().toLowerCase();
+      const list = byUnit.get(key);
+      if(list) list.push(mc); else byUnit.set(key, [mc]);
+    });
+    return byUnit;
   },
 
   async loadAll() {
@@ -154,20 +183,35 @@ const DB = {
     let manualCoverageLoadFailed = false;
     try {
       showLoadingOverlay('Loading your data...');
+      // Every request below retries on its own instead of one failure sinking the whole
+      // Promise.all. The first load of the day is the case this exists for: measured against
+      // the live backend, requests made while the spreadsheet is still "cold" took 55-78s and
+      // came back as Google's 404 page even for the 9-row users sheet, then succeeded in 2-3s
+      // a few minutes later. Before this, any one of those failing meant an error alert and a
+      // manual page refresh that restarted all 9 requests (the ~21MB Manual Coverage one
+      // included) from scratch. 90s per attempt (not the 60s default) so a slow-but-working
+      // cold request gets to finish rather than being abandoned and re-queued behind itself.
+      let highestAttempt = 1;
+      const onRetry = (attempt, attempts) => {
+        if(attempt <= highestAttempt) return;
+        highestAttempt = attempt;
+        showLoadingOverlay('Google Sheets is taking longer than usual to respond — retrying automatically (attempt ' + attempt + ' of ' + attempts + '). Please don\'t refresh.');
+      };
+      const load = params => DB._getWithRetries(params, 4, 3000, 90000, onRetry);
       const [registries, units, leases, users, ccCentersRaw, invoiceTrackingRaw, accrualsRaw, manualCoverageRaw, meta] = await Promise.all([
-        DB.get({ action: 'getAll', sheet: 'invoices' }),
-        DB.get({ action: 'getAll', sheet: 'units' }),
-        DB.get({ action: 'getAll', sheet: 'leases' }),
-        DB.get({ action: 'getAll', sheet: 'users' }),
-        DB.get({ action: 'getAll', sheet: 'ccControl' }),
+        load({ action: 'getAll', sheet: 'invoices' }),
+        load({ action: 'getAll', sheet: 'units' }),
+        load({ action: 'getAll', sheet: 'leases' }),
+        load({ action: 'getAll', sheet: 'users' }),
+        load({ action: 'getAll', sheet: 'ccControl' }),
         // Guarded separately: this sheet is new, and if its tab name doesn't match exactly
         // (case/spacing) the Apps Script throws "Sheet not found" — that used to fail the
         // whole Promise.all and block the entire app from loading over one optional sheet.
-        DB.get({ action: 'getAll', sheet: 'Invoice Tracking' }).catch(e => {
+        load({ action: 'getAll', sheet: 'Invoice Tracking' }).catch(e => {
           console.warn('Invoice Tracking sheet failed to load (falling back to empty) — verify the tab is named exactly "Invoice Tracking":', e.message);
           return [];
         }),
-        DB.get({ action: 'getAll', sheet: 'Accruals' }).catch(e => {
+        load({ action: 'getAll', sheet: 'Accruals' }).catch(e => {
           console.warn('Accruals sheet failed to load (falling back to empty) — verify the tab is named exactly "Accruals":', e.message);
           return [];
         }),
@@ -186,12 +230,12 @@ const DB = {
         // add any real lock contention on top and it reliably exceeds 60s, which is what was
         // making this fail (and manual coverage revert to "missing") consistently, not just
         // occasionally, once the sheet grew this large.
-        DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }, 2, 2000, 120000).catch(e => {
+        DB._getWithRetries({ action: 'getAll', sheet: 'Manual Coverage' }, 2, 2000, 120000, onRetry).catch(e => {
           console.warn('Manual Coverage sheet failed to load after retry (falling back to empty) — verify the tab is named exactly "Manual Coverage":', e.message);
           manualCoverageLoadFailed = true;
           return [];
         }),
-        DB.get({ action: 'getMeta' })
+        load({ action: 'getMeta' })
       ]);
 
       const parsedRegistries = registries.map(r => ({
@@ -233,9 +277,10 @@ const DB = {
         createdAt: String(mc.createdAt || '')
       }));
 
+      const coverageByUnit = DB._groupManualCoverageByUnit(parsedManualCoverage);
       const parsedUnits = units.map(u => {
         const uidNorm = String(u.unitId || '').trim().toLowerCase();
-        const ownCoverage = parsedManualCoverage.filter(mc => mc.unitId.trim().toLowerCase() === uidNorm);
+        const ownCoverage = coverageByUnit.get(uidNorm) || [];
         return {
           ...u,
           id: String(u.id || ''),
@@ -330,6 +375,10 @@ const DB = {
         // see computeAccrualChargeEstimate in app.js.
         overrideSourceFrom: String(a.overrideSourceFrom || ''),
         overrideSourceTo: String(a.overrideSourceTo || ''),
+        // Charge/day this record was closed (declared) with — stamped by closeAccrualsMonth and
+        // never recomputed, so a closed month's amounts can't drift when newer invoices arrive.
+        // Blank while the record is still open.
+        closedChargePerDay: Number(a.closedChargePerDay) > 0 ? Number(a.closedChargePerDay) : '',
         // One entry per month a comment was left for this record — { month, year, text,
         // timestamp }. Which entry counts as "this record's current comment" is resolved by
         // getAccrualCommentMonthYear (app.js): a closed record's own stamped accrualMonth/Year,
@@ -418,7 +467,7 @@ const DB = {
       overviewComments: Array.isArray(record.overviewComments) ? JSON.stringify(record.overviewComments) : (record.overviewComments || '[]')
     };
     // Manual coverage now lives entirely in its own "Manual Coverage" sheet (see
-    // saveManualCoverage/deleteManualCoverage) — never write it back onto the units row here,
+    // bulkSaveManualCoverage/bulkDeleteManualCoverage) — never write it back onto the units row here,
     // both to avoid an array value going straight into a Sheets cell and to keep this the one
     // source of truth (see loadAll's comment on why the old blob-column approach lost data).
     delete data.manualCoverageDates;
@@ -442,12 +491,6 @@ const DB = {
     return DB.post({ action: 'delete', sheet: 'units', id });
   },
 
-  async saveManualCoverage(record) {
-    return DB.post({ action: 'save', sheet: 'Manual Coverage', data: record });
-  },
-  async deleteManualCoverage(id) {
-    return DB.post({ action: 'delete', sheet: 'Manual Coverage', id });
-  },
   // A single drag can mark/unmark hundreds of dates at once — one network request per date
   // (the old approach) means a wide drag fires that many near-simultaneous requests against
   // Apps Script's single LockService queue and 30s client timeout, and a random subset would
@@ -498,11 +541,6 @@ const DB = {
 
   async deleteInvoiceTracking(id) {
     return DB.post({ action: 'delete', sheet: 'Invoice Tracking', id });
-  },
-
-  async saveAccrual(record) {
-    const data = { ...record, accrualComments: Array.isArray(record.accrualComments) ? JSON.stringify(record.accrualComments) : (record.accrualComments || '[]') };
-    return DB.post({ action: 'save', sheet: 'Accruals', data });
   },
 
   async updateAccrual(record) {

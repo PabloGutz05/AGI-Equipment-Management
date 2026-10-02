@@ -312,29 +312,12 @@ footer{padding:12px;text-align:center;color:var(--muted)}
 .month-square:focus{outline:0;box-shadow:0 0 0 3px rgba(22,163,74,0.08)}
 
 /* Unit overview grid and day squares */
-.unit-grid{overflow:auto;margin-top:8px}
-.unit-grid .grid-row{display:grid;align-items:center;gap:6px;margin-top:6px}
-.unit-label{font-size:13px;padding:6px 8px;background:#fff;border:1px solid #eef2f7;border-radius:6px}
 .day-square{width:36px;height:36px;border-radius:6px;border:1px solid #eef2f7;background:#fff;display:flex;align-items:center;justify-content:center;font-size:12px}
 .day-square.header{font-weight:700;background:#f8fafc;border-color:#e6eef9}
-.day-invoiced{background:#dcfce7;border-color:#16a34a}
-.day-disabled{background:#fef3c7;border-color:#f59e0b}
-.day-invoiced.start{ border-top-left-radius:8px; border-bottom-left-radius:8px; }
-.day-invoiced.end{ border-top-right-radius:8px; border-bottom-right-radius:8px; }
-.day-invoiced.start.end{ border-radius:8px; }
-
-/* Submitted registries marker: additive small blue dot so it doesn't override invoiced color */
-.day-submitted{position:relative}
-.day-submitted::after{content:'';position:absolute;right:6px;bottom:6px;width:8px;height:8px;border-radius:50%;background:#0b74de;box-shadow:0 0 0 2px rgba(11,116,222,0.12)}
-
-/* Unit dropdown panel: position absolute so it doesn't push form layout when opened */
-.unit-dropdown{position:relative;display:inline-block}
-.unit-dropdown .dropdown-toggle{min-width:120px}
-.unit-dropdown .dropdown-panel{position:absolute;left:0;top:calc(100% + 6px);z-index:60;width:320px;max-height:220px;overflow:auto;padding:8px;border:1px solid #e6eef6;border-radius:8px;background:#fff;box-shadow:0 8px 20px rgba(2,6,23,0.08)}
 
 /* Keep the comment textarea and invoice action buttons stable to avoid layout shift */
 .inline-form textarea{width:320px;min-width:260px;max-width:480px;resize:vertical;padding:8px;border:1px solid #e6e9ee;border-radius:6px}
-.unit-dropdown .dropdown-toggle, .inline-form button[type="submit"]{
+.inline-form button[type="submit"]{
   min-width:140px;
   height:36px;
   padding:8px 12px;
@@ -345,7 +328,6 @@ footer{padding:12px;text-align:center;color:var(--muted)}
 .inline-form button[type="submit"], .inline-form button[type="button"]{min-width:120px}
 
 @media(max-width:700px){
-  .unit-dropdown .dropdown-panel{position:static;width:100%;box-shadow:none;margin-top:6px}
   .inline-form textarea{width:100%;min-width:0}
   .inline-form button[type="submit"], .inline-form button[type="button"]{min-width:80px}
 }
@@ -380,7 +362,6 @@ html.modal-open-lock,body.modal-open-lock{overflow:hidden !important;height:100%
 .modal-resize-handle.rh-se{bottom:0;right:0;width:14px;height:14px;cursor:nwse-resize}
 .modal-resize-handle.rh-sw{bottom:0;left:0;width:14px;height:14px;cursor:nesw-resize}
 .modal-dialog.resizing{transition:none !important}
-.info-button{background:#eef6ff;color:#0b74de;border:1px solid #dbeefe;padding:8px 12px;border-radius:6px;cursor:pointer}
 
 /* Utility button styles to match invoice submit and saved states */
 .btn-primary{background:var(--accent);color:#fff;border:0}
@@ -411,12 +392,10 @@ html.modal-open-lock,body.modal-open-lock{overflow:hidden !important;height:100%
 .invoice-doc-primary { font-weight: 600; color: #111; }
 
 /* Lease overview list */
-.lease-list{margin-top:8px;border-collapse:separate;border-spacing:0 8px;width:100%}
 .lease-row{display:grid;grid-template-columns:220px 1fr 160px 140px;gap:8px;align-items:center;padding:8px;border-radius:8px;background:#fff;border:1px solid #eef2f7}
 .lease-row.highlighted{background:#dcfce7;border-color:#16a34a}
 .lease-row.header div{cursor:pointer}
 .lease-row.header div:hover{opacity:0.95}
-.sort-indicator{margin-left:6px;font-size:11px;color:var(--muted)}
 .lease-row .small-muted{font-size:12px;color:var(--muted)}
 
 /* Compact lease 'more' button: match background (transparent) so it blends inline

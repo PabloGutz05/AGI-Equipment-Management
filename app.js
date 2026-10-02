@@ -1,6 +1,3 @@
-// Simple SPA with localStorage persistence and import/export JSON
-const STORAGE_KEY = 'agi_vehicle_lease_v1';
-
 const defaultData = {
   invoices: [],
   units: [],
@@ -267,7 +264,6 @@ function showApp(yes){
   else {
     // show login gate
     if(root) root.style.display='none'; if(gate) gate.style.display='flex'; if(menu) menu.style.display = 'none'; if(logoutBtn) logoutBtn.style.display='none'; if(reloadBtn) reloadBtn.style.display='none';
-    updateExportImportVisibility();
     // ensure header title is default when showing login
     updateHeaderTitleForMenu(false);
     // disable brand link while on login page so it cannot open the process menu
@@ -278,13 +274,11 @@ function showApp(yes){
   // update header title according to menu visibility
   const menuVisible = !!menu && menu.style.display !== 'none';
   updateHeaderTitleForMenu(menuVisible);
-  updateExportImportVisibility();
   if(!menuVisible) applyRoleRestrictions();
   // ensure brandLink is enabled when leaving login
   try{ const bl = qs('#brandLink'); if(bl){ bl.classList.remove('disabled-brand'); bl.removeAttribute('aria-disabled'); bl.tabIndex = 0; } }catch(e){}
 }
 
-function updateExportImportVisibility(){ /* buttons now live in Developer tab — no header toggling needed */ }
 
 // --- Update user info display below header title ---
 function updateUserInfoDisplay(){
@@ -369,7 +363,6 @@ if(loginForm){
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({user:'Master'}));
       showApp(true);
       updateHeaderTitleForMenu(true);
-      updateExportImportVisibility(true);
       updateUserInfoDisplay();
       loadStateFromDB();
       return;
@@ -395,7 +388,6 @@ if(loginForm){
           }
           sessionStorage.setItem(SESSION_KEY, JSON.stringify({user: u.username}));
           showApp(true);
-          updateExportImportVisibility(true);
           updateUserInfoDisplay();
           loadStateFromDB();
           return;
@@ -427,7 +419,7 @@ const brandLink = qs('#brandLink');
 
 if(procVehicleBtn){ procVehicleBtn.addEventListener('click', ()=>{ // open Vehicle Leasing Management (existing appRoot)
   const root = qs('#appRoot'); if(root) root.style.display = 'block'; if(procMenu) procMenu.style.display = 'none';
-  updateHeaderTitleForMenu(false); updateExportImportVisibility(false); updateUserInfoDisplay();
+  updateHeaderTitleForMenu(false); updateUserInfoDisplay();
   // Switch to Overview tab (Unit Overview)
   const overviewTab = Array.from(document.querySelectorAll('.tab')).find(t=>t.dataset.tab==='overview'); 
   if(overviewTab) overviewTab.click();
@@ -445,8 +437,6 @@ if(brandLink){ brandLink.addEventListener('click', e=>{ e.preventDefault(); // d
   const root = qs('#appRoot'); if(root) root.style.display = 'none'; if(procMenu) procMenu.style.display = 'flex';
   // ensure logout is visible if session exists
   applyRoleRestrictions();
-  // hide export/import
-  updateExportImportVisibility(true);
   // hide user info on main menu
   updateUserInfoDisplay();
   // keep focus on the menu for keyboard users
@@ -2592,159 +2582,6 @@ function renderOverview(){
 }
 
 
-function oldRenderOverview(){
-  const el = qs('#overviewSummary');
-  if(!el) return;
-  // Clear previous content
-  el.innerHTML = '';
-  // helper to render a month dashboard given a Date object representing any day in that month
-  function renderMonthDashboard(dateObj){
-    const year = dateObj.getFullYear();
-    const monthIndex = dateObj.getMonth();
-    const monthName = dateObj.toLocaleString(undefined, { month: 'long' });
-    const monthStart = new Date(year, monthIndex, 1).toISOString().slice(0,10);
-    const monthEnd = new Date(year, monthIndex + 1, 0).toISOString().slice(0,10);
-
-    const operationalUnits = (state.units || []).filter(u => ((u.status || 'Operational') === 'Operational'));
-    const totalOperational = operationalUnits.length;
-
-    const invoicedUnitSet = new Set();
-    (state.invoices || []).forEach(inv => {
-      try{
-        const unit = (inv.unit || '').toString().trim();
-        if(!unit) return;
-        const category = (inv.category || '').toString().toLowerCase();
-        if(!category.includes('rental')) return;
-        const s = (inv.periodStart || '').toString();
-        const e = (inv.periodEnd || '').toString();
-        if(!s || !e) return;
-        if(!(e < monthStart || s > monthEnd)){
-          invoicedUnitSet.add(unit.toLowerCase());
-        }
-      }catch(err){}
-    });
-
-    const invoicedUniqueCount = invoicedUnitSet.size;
-    const percent = totalOperational ? Math.round((invoicedUniqueCount / totalOperational) * 100) : 0;
-
-    const block = document.createElement('div');
-    block.style.border = '1px solid #eef2f7';
-    block.style.borderRadius = '8px';
-    block.style.padding = '12px';
-    block.style.marginBottom = '12px';
-
-    const header = document.createElement('div');
-    header.style.display = 'flex';
-    header.style.justifyContent = 'space-between';
-    header.style.alignItems = 'center';
-
-    const title = document.createElement('h3'); title.style.margin = '0'; title.textContent = `${monthName} ${year}`;
-
-    const statsInline = document.createElement('div');
-    statsInline.style.display = 'flex'; statsInline.style.alignItems = 'baseline'; statsInline.style.gap = '12px';
-    const pct = document.createElement('div'); pct.style.fontSize = '28px'; pct.style.fontWeight = '700'; pct.textContent = percent + '%';
-    const vsInline = document.createElement('div'); vsInline.style.fontSize = '12px'; vsInline.style.color = '#6b7280'; vsInline.textContent = `${invoicedUniqueCount} / ${totalOperational} units — invoiced this month (unique) / operational units`;
-    statsInline.appendChild(pct); statsInline.appendChild(vsInline);
-
-    header.appendChild(title); header.appendChild(statsInline);
-    block.appendChild(header);
-
-    const barWrap = document.createElement('div'); barWrap.style.width = '100%'; barWrap.style.height = '14px'; barWrap.style.background = '#ffecec'; barWrap.style.borderRadius = '8px'; barWrap.style.overflow = 'hidden'; barWrap.style.marginTop = '8px';
-    const progress = document.createElement('div'); progress.setAttribute('role','progressbar'); progress.setAttribute('aria-valuemin','0'); progress.setAttribute('aria-valuemax','100'); progress.setAttribute('aria-valuenow', String(percent)); progress.style.height = '100%'; progress.style.width = percent + '%'; progress.style.background = '#16a34a'; progress.style.transition = 'width 300ms ease';
-    barWrap.appendChild(progress); block.appendChild(barWrap);
-
-    return block;
-  }
-
-  // render current and previous month as a list
-  const list = document.createElement('ul');
-  list.style.listStyle = 'none';
-  list.style.padding = '0';
-  list.style.margin = '0';
-
-  const now = new Date();
-  const currentLi = document.createElement('li');
-  currentLi.appendChild(renderMonthDashboard(now));
-  list.appendChild(currentLi);
-
-  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const prevLi = document.createElement('li');
-  prevLi.appendChild(renderMonthDashboard(prev));
-  list.appendChild(prevLi);
-
-  el.appendChild(list);
-
-  // --- month squares row ---
-  const monthsWrap = qs('#overviewMonths');
-  if(monthsWrap){
-    monthsWrap.innerHTML = '';
-    // ensure meta store for selected year
-    state.meta = state.meta || {};
-    const curYear = state.meta.overviewYear || (new Date()).getFullYear();
-    // populate year selector (from curYear-3 .. curYear+1)
-    const yearSel = qs('#overviewYear');
-    if(yearSel){
-      yearSel.innerHTML = '';
-      for(let y = curYear - 3; y <= curYear + 1; y++){
-        const opt = document.createElement('option'); opt.value = String(y); opt.textContent = String(y);
-        yearSel.appendChild(opt);
-      }
-      yearSel.value = String(state.meta.overviewYear || curYear);
-      yearSel.addEventListener('change', ()=>{ state.meta.overviewYear = parseInt(yearSel.value,10); saveState(); renderOverview(); });
-    }
-
-    const monthsRow = document.createElement('div'); monthsRow.className = 'months-row';
-    const selectedYear = parseInt(state.meta.overviewYear || curYear,10);
-
-    // helper: compute invoiced/operational counts for a given month index
-    const computeMonthCounts = (year, monthIdx) =>{
-      const monthStart = new Date(year, monthIdx, 1).toISOString().slice(0,10);
-      const monthEnd = new Date(year, monthIdx + 1, 0).toISOString().slice(0,10);
-      const operationalUnits = (state.units || []).filter(u => ((u.status || 'Operational') === 'Operational'));
-      const totalOperational = operationalUnits.length;
-      const invoicedUnitSet = new Set();
-      (state.invoices || []).forEach(inv => {
-        try{
-          const unit = (inv.unit || '').toString().trim();
-          if(!unit) return;
-          const category = (inv.category || '').toString().toLowerCase();
-          if(!category.includes('rental')) return;
-          const s = (inv.periodStart || '').toString();
-          const e = (inv.periodEnd || '').toString();
-          if(!s || !e) return;
-          if(!(e < monthStart || s > monthEnd)){
-            invoicedUnitSet.add(unit.toLowerCase());
-          }
-        }catch(err){}
-      });
-      const invoicedUniqueCount = invoicedUnitSet.size;
-      const percent = totalOperational ? Math.round((invoicedUniqueCount / totalOperational) * 100) : 0;
-      return { totalOperational, invoicedUniqueCount, percent };
-    };
-
-    // create 12 squares
-    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    for(let m = 0; m < 12; m++){
-      const counts = computeMonthCounts(selectedYear, m);
-      const sq = document.createElement('div'); sq.className = 'month-square';
-      sq.setAttribute('role','group'); sq.setAttribute('aria-label', `${monthNames[m]} ${selectedYear}: ${counts.invoicedUniqueCount} of ${counts.totalOperational} invoiced (${counts.percent}%)`);
-      // fill element (green) width based on percent
-      const fill = document.createElement('div'); fill.className = 'month-fill'; fill.style.width = counts.percent + '%';
-      // remaining background slightly red is handled by CSS month-remaining (covering full area)
-      const rem = document.createElement('div'); rem.className = 'month-remaining';
-      const label = document.createElement('div'); label.className = 'month-label'; label.textContent = monthNames[m];
-      sq.appendChild(rem);
-      sq.appendChild(fill);
-      sq.appendChild(label);
-      monthsRow.appendChild(sq);
-    }
-
-    monthsWrap.appendChild(monthsRow);
-  }
-  // populate simple units table in overview if present
-  if(typeof renderOverviewUnits === 'function') renderOverviewUnits();
-}
-
 function card(title, value, note){
   const d = document.createElement('div');
   d.className = 'summaryCard';
@@ -4655,7 +4492,6 @@ function renderLeases(){
       saveState(); 
       renderLeases(); 
       renderOverview();
-      syncLeaseOptions();
     });
 
     const delBtn = document.createElement('button'); 
@@ -4764,43 +4600,6 @@ function renderLeases(){
   if(typeof syncUnitLeaseOptions === 'function') syncUnitLeaseOptions();
   // ensure invoice lease select is updated when leases change
   if(typeof syncInvoiceLeaseOptions === 'function') syncInvoiceLeaseOptions();
-}
-
-// Open a new small window showing full invoice details for a row
-function openInvoiceWindow(inv){
-  try{
-    // close any previously opened popup from this app to avoid multiple lingering windows
-    if(window.__agi_open_popup && !window.__agi_open_popup.closed){ try{ window.__agi_open_popup.close(); }catch(e){} }
-    const w = window.open('', '_blank', 'width=520,height=560,noopener');
-    // remember the popup so we can close it later from the main window
-    window.__agi_open_popup = w;
-    if(!w) { alert('Popup blocked. Please allow popups for this app to view details.'); return; }
-    const doc = w.document;
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Invoice ${escapeHtml(inv.lease||inv.id)}</title><style>body{font-family:Segoe UI, Roboto, Arial, sans-serif;padding:14px;color:#111}h1{font-size:16px;margin:0 0 8px}dl{display:grid;grid-template-columns:120px 1fr;gap:6px 12px}dt{color:#6b7280;font-weight:600}dd{margin:0 0 6px 0}pre{background:#f8fafc;padding:8px;border-radius:6px;border:1px solid #eef2f7;white-space:pre-wrap}</style></head><body>
-      <h1>Invoice details</h1>
-      <dl>
-        <dt>Lease</dt><dd>${escapeHtml(inv.lease||'')}</dd>
-        <dt>Supplier</dt><dd>${escapeHtml(inv.supplier||'')}</dd>
-        <dt>Company</dt><dd>${escapeHtml(inv.company||'')}</dd>
-        <dt>Arrangement</dt><dd>${escapeHtml(inv.arrangement||'')}</dd>
-        <dt>Category</dt><dd>${escapeHtml(inv.category||'')}</dd>
-        <dt>Unit</dt><dd>${escapeHtml(inv.unit||'')}</dd>
-        <dt>WD</dt><dd>${escapeHtml(inv.wdNumber||'')}</dd>
-        <dt>Doc</dt><dd>${escapeHtml(inv.docNumber||'')}</dd>
-        <dt>Amount</dt><dd>${formatCurrency(inv.amount||'')}</dd>
-        <dt>Period</dt><dd>${escapeHtml(inv.periodStart||'')} — ${escapeHtml(inv.periodEnd||'')}</dd>
-        <dt>Submitted</dt><dd>${escapeHtml(inv.submittedDate||'')}</dd>
-        <dt>Comment</dt><dd><pre>${escapeHtml(inv.comment||'')}</pre></dd>
-      </dl>
-      <div style="margin-top:12px"><button id="closeBtn">Close</button></div>
-    </body></html>`;
-    doc.open(); doc.write(html); doc.close();
-    const closeBtn = w.document.getElementById('closeBtn'); if(closeBtn) closeBtn.addEventListener('click', ()=>{ w.close(); });
-    // when the popup closes (manually or via close button), clear our reference
-    const cleanupInterval = setInterval(()=>{
-      try{ if(!window.__agi_open_popup || window.__agi_open_popup.closed){ clearInterval(cleanupInterval); window.__agi_open_popup = null; } }catch(e){ clearInterval(cleanupInterval); window.__agi_open_popup = null; }
-    }, 500);
-  }catch(e){ console.error('Failed to open invoice window', e); alert('Cannot open detail window: '+e.message); }
 }
 
 // The built-in "Master" account is a hardcoded credential, not a real managed user — it must
@@ -5075,10 +4874,6 @@ function saveState(){
   }catch(e){ console.error('Error saving state:', e); }
 }
 
-function loadState(){
-  return JSON.parse(JSON.stringify(defaultData));
-}
-
 async function loadStateFromDB(){
   try {
     const loaded = await DB.loadAll();
@@ -5118,7 +4913,6 @@ async function loadStateFromDB(){
     syncTabLabels();
     applyRoleRestrictions();
     updateHeaderTitleForMenu(false);
-    updateExportImportVisibility(false);
     updateUserInfoDisplay();
     // Sync all configuration dropdowns after data loads
     try{ syncLeaseCompanyOptions(); }catch(e){}
@@ -5163,14 +4957,6 @@ function startAutoRefresh(){
     const el = qs('#lastUpdatedIndicator');
     if(!el) return;
     el.textContent = '🟢 Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-  }
-
-  function isUserActive(){
-    // Check if user is focused on any input, textarea or select
-    const active = document.activeElement;
-    if(!active) return false;
-    const tag = active.tagName.toLowerCase();
-    return tag === 'input' || tag === 'textarea' || tag === 'select';
   }
 
   let _refreshRunning = false;
@@ -5285,9 +5071,10 @@ function startAutoRefresh(){
         const parsedManualCoverage = manualCoverageRaw.map(mc => ({
           id: String(mc.id || ''), unitId: String(mc.unitId || ''), date: String(mc.date || '')
         }));
+        const coverageByUnit = DB._groupManualCoverageByUnit(parsedManualCoverage);
         state.units = units.map(u => {
           const uidNorm = String(u.unitId || '').trim().toLowerCase();
-          const ownCoverage = parsedManualCoverage.filter(mc => mc.unitId.trim().toLowerCase() === uidNorm);
+          const ownCoverage = coverageByUnit.get(uidNorm) || [];
           return {
             ...u,
             id: String(u.id || ''),
@@ -5415,9 +5202,6 @@ function startAutoRefresh(){
 
 function clearAllData(){
   if(confirm('Clear all data? This will remove all invoices, units, leases, registries, and users (except Master). This action cannot be undone.')){
-    // Clear localStorage completely
-    localStorage.removeItem(STORAGE_KEY);
-    
     // Reset state to default (empty arrays)
     state = {
       invoices: [],
@@ -7072,17 +6856,6 @@ function renderLeaseOverview(){
     emptyRow.appendChild(emptyCell);
     tbody.appendChild(emptyRow);
   } else {
-    // Helper function to format month-day dates
-    const formatMD = (md) => {
-      if(!md) return '';
-      const parts = String(md).split('-');
-      if(parts.length !== 2) return md;
-      const m = parts[0];
-      const d = parts[1].replace(/^0/, '');
-      const months = { '01':'Jan','02':'Feb','03':'Mar','04':'Apr','05':'May','06':'Jun','07':'Jul','08':'Aug','09':'Sep','10':'Oct','11':'Nov','12':'Dec' };
-      return (months[m] || m) + ' ' + d;
-    };
-
     leases.forEach(lease => {
       const row = document.createElement('tr');
       row.style.borderBottom = '1px solid #eef2f7';
@@ -13519,8 +13292,10 @@ function downloadAccrualsDeliverable(){
   const openRecords = (state.accruals || []).filter(a => !a.accrualMonth && !a.accrualYear && !a.notAccruable);
   const fmtMDY = (iso) => { const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
 
-  const rows = openRecords.map(r => {
-    const estimate = computeAccrualChargeEstimate(r);
+  // Plus earlier closed months' still-uninvoiced periods, so the Accumulated tab is the same true
+  // running balance the on-screen table shows (see getCarriedForwardAccrualRows).
+  const rows = openRecords.concat(getCarriedForwardAccrualRows(month, year)).map(r => {
+    const estimate = computeAccrualRowChargeEstimate(r);
     const split = splitAccrualAmountByViewMonth(r, estimate.chargePerDay, month, year);
     return {
       unitId: r.unitId, lease: r.lease, supplier: r.supplier, company: getUnitCompanyText(r.unitId), costCenter: r.costCenter, status: r.status,
@@ -13545,7 +13320,7 @@ function downloadAccrualsDeliverable(){
       currentMonth: split.currentMonthAmount, currentMonthDays: split.currentMonthDays,
       currentMonthPeriodText: split.currentMonthStart ? `${fmtMDY(split.currentMonthStart)} - ${fmtMDY(split.currentMonthEnd)}` : '',
       total: split.totalAmount,
-      comment: (() => { const c = getAccrualComment(r); return c ? c.text : ''; })()
+      comment: (() => { const c = getAccrualComment(r.carriedFrom || r); return c ? c.text : ''; })()
     };
   });
 
@@ -13742,6 +13517,8 @@ function closeAccrualsMonth(){
   if(!confirm(confirmMsg)) return;
 
   const updateCalls = openRecords.map(rec => {
+    // Declared rate for this month, frozen with the record — see getDeclaredChargePerDay.
+    stampDeclaredChargePerDay(rec);
     rec.accrualMonth = String(month);
     rec.accrualYear = String(year);
     return DB.updateAccrual(rec).catch(e => console.error('Accrual close error:', e));
@@ -14475,6 +14252,86 @@ function splitAccrualAmountByViewMonth(record, chargePerDay, viewMonth, viewYear
   };
 }
 
+// The running-balance half of "Accumulated": every period accrued in a month that was CLOSED
+// before viewMonth/viewYear and still isn't covered by a real invoice (or manual coverage) today.
+// Without these, closing a month made its amounts vanish from the next month's table — the next
+// gap for the same unit starts fresh on the 1st (see getAccrualFrozenRanges), so its own
+// Accumulated was always $0 even though the prior months were still owed.
+// Returns display-only copies, never the stored records themselves (those stay frozen exactly as
+// they were sent): each copy is narrowed to one still-uncovered stretch of its closed record's
+// range, so days that have since been invoiced drop out of the balance. carriedFrom points back
+// at the real record — its charge/day is the one to use, and anything that WRITES (comments) must
+// go through it, never through the copy.
+function getCarriedForwardAccrualRows(viewMonth, viewYear){
+  const out = [];
+  (state.accruals || []).forEach(a => {
+    if(a.notAccruable || !a.accrualMonth || !a.accrualYear) return;
+    const am = Number(a.accrualMonth), ay = Number(a.accrualYear);
+    if(!(ay < viewYear || (ay === viewYear && am < viewMonth))) return;
+    const unit = (state.units || []).find(u => String(u.unitId || '').trim().toLowerCase() === String(a.unitId || '').trim().toLowerCase());
+    if(!unit) return;
+    const start = isoStrToDate(a.periodStart), end = isoStrToDate(a.periodEnd);
+    if(isNaN(start) || isNaN(end)) return;
+    computeUnitMissingPeriods(unit, start, end, a.id).forEach(seg => {
+      const segStart = dateToIsoStr(seg.start);
+      out.push(Object.assign({}, a, {
+        id: `${a.id}|carried|${segStart}`,
+        periodStart: segStart, periodEnd: dateToIsoStr(seg.end),
+        days: Math.round((seg.end - seg.start) / 86400000) + 1,
+        isCarried: true, carriedFrom: a
+      }));
+    });
+  });
+  return out;
+}
+// The charge/day a record was actually closed (declared) with — stamped onto it by
+// closeAccrualsMonth, never recomputed afterward. null while the record is still open, or for a
+// record closed before this snapshot existed that backfillClosedAccrualRates hasn't reached yet.
+function getDeclaredChargePerDay(record){
+  const v = Number(record.closedChargePerDay);
+  return (record.accrualMonth && record.accrualYear && v > 0) ? v : null;
+}
+// The live estimate's charge/day to snapshot at close — only a real (> 0) rate is ever frozen. A
+// $0 one means the source invoice is missing or still lacks per-unit detail, and freezing that
+// would keep the row at $0 forever even after the invoice gets fixed.
+function stampDeclaredChargePerDay(record){
+  const rate = computeAccrualChargeEstimate(record).chargePerDay;
+  if(!(rate > 0)) return false;
+  record.closedChargePerDay = rate;
+  return true;
+}
+// One-time catch-up for records closed before closedChargePerDay existed: declares each at the
+// rate it computes to right now, so from here on it can never drift again. Saved one record at a
+// time, in sequence — firing them all at once is exactly the Apps Script lock-queue flood
+// described at persistManualCoverage.
+let _accrualsRateBackfillStarted = false;
+function backfillClosedAccrualRates(){
+  if(_accrualsRateBackfillStarted) return;
+  _accrualsRateBackfillStarted = true;
+  const pending = (state.accruals || []).filter(a => a.accrualMonth && a.accrualYear && !a.notAccruable && !(Number(a.closedChargePerDay) > 0) && stampDeclaredChargePerDay(a));
+  if(pending.length === 0) return;
+  try{ saveState(); }catch(e){}
+  _accrualsSyncInFlight = true;
+  (async () => {
+    for(const rec of pending){
+      try{ await DB.updateAccrual(rec); }catch(e){ console.error('Accrual declared-rate backfill error:', e); }
+    }
+  })().finally(() => { _accrualsSyncInFlight = false; });
+}
+// Charge estimate for one table/deliverable row. A closed record — shown in its own month, or
+// carried into a later one — is always priced at its DECLARED charge/day, never today's: a newer
+// invoice changing the live rate must not reprice an amount that was already sent. A carried
+// row's days are its own narrowed, still-uncovered stretch (see getCarriedForwardAccrualRows),
+// so what's left owed = declared rate x days still not invoiced.
+function computeAccrualRowChargeEstimate(row){
+  const record = row.carriedFrom || row;
+  const est = computeAccrualChargeEstimate(record);
+  const declared = getDeclaredChargePerDay(record);
+  if(declared === null && !row.isCarried) return est;
+  const chargePerDay = declared !== null ? declared : est.chargePerDay;
+  return Object.assign({}, est, { chargePerDay, toBeAccrued: chargePerDay * (Number(row.days) || 0) });
+}
+
 // Popup showing exactly what a "Last Invoice Amount" cell's total is built from — the source
 // invoice's period/WD number, its Charge/Other Charges (with named breakdown) or an explicit
 // "needs updating" notice, and the day-count math that turns it into a per-day rate.
@@ -14542,6 +14399,7 @@ let _accrualsAccruedSort = { column: 'unitId', ascending: true };
 // already-closed month shows that batch read-only, exactly as it was sent.
 function renderAccrualsAccruedList(){
   reconcileOpenAccrualsCoverage();
+  backfillClosedAccrualRates();
   const tableEl = qs('#accrualsAccruedTable');
   const summaryEl = qs('#accrualsAccruedSummary');
   const monthSelectEl = qs('#accrualsAccrueMonthSelect');
@@ -14605,12 +14463,18 @@ function renderAccrualsAccruedList(){
   });
   const fmtMDY = (iso) => { const d = isoStrToDate(iso); return isNaN(d) ? iso : `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
 
+  // Earlier closed months' still-uninvoiced periods, listed alongside this month's own so
+  // Accumulated is a true running balance (see getCarriedForwardAccrualRows).
+  const carriedRows = getCarriedForwardAccrualRows(_accrualsViewMonth, _accrualsViewYear);
+
   if(summaryEl){
     const label = `${accrualMonthName(_accrualsViewMonth)} ${_accrualsViewYear}`;
-    summaryEl.textContent = isViewingOpenMonth
+    const carriedText = carriedRows.length > 0 ? ` ${carriedRows.length} still-uninvoiced period(s) carried from earlier months.` : '';
+    summaryEl.textContent = (isViewingOpenMonth
       ? (rows.length === 0 ? `${label} (open) — no periods accrued yet.` : `${label} (open) — ${rows.length} period(s) accrued so far, not yet closed.`)
-      : (rows.length === 0 ? `${label} — no accrual record found.` : `${label} — closed, ${rows.length} period(s).`);
+      : (rows.length === 0 ? `${label} — no accrual record found.` : `${label} — closed, ${rows.length} period(s).`)) + carriedText;
   }
+  carriedRows.forEach(r => rows.push(r));
 
   tableEl.innerHTML = '';
   if(rows.length === 0) return;
@@ -14626,7 +14490,7 @@ function renderAccrualsAccruedList(){
   const chargeEstimates = new Map();
   const monthSplits = new Map();
   rows.forEach(r => {
-    const est = computeAccrualChargeEstimate(r);
+    const est = computeAccrualRowChargeEstimate(r);
     chargeEstimates.set(r.id, est);
     monthSplits.set(r.id, splitAccrualAmountByViewMonth(r, est.chargePerDay, _accrualsViewMonth, _accrualsViewYear));
   });
@@ -14723,7 +14587,8 @@ function renderAccrualsAccruedList(){
       removeBtn.title = 'Remove — sends this period back to the missing-periods review list';
       removeBtn.style.cssText = 'width:18px;height:18px;line-height:14px;padding:0;border-radius:4px;border:1px solid #dc2626;background:transparent;color:#dc2626;font-weight:700;font-size:13px;cursor:pointer;';
       removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeAccrualRecord(r.id); });
-      tdRemove.appendChild(removeBtn);
+      // A carried row belongs to an already-closed month — locked, nothing to remove.
+      if(!r.isCarried) tdRemove.appendChild(removeBtn);
       tr.appendChild(tdRemove);
     }
     const tdCounter = document.createElement('td');
@@ -14735,6 +14600,13 @@ function renderAccrualsAccruedList(){
       const td = document.createElement('td');
       td.textContent = val;
       td.style.cssText = `padding:4px 6px;${ci === 7 ? 'text-align:right;' : ''}`;
+      if(ci === 6 && r.isCarried){
+        const tag = document.createElement('span');
+        tag.textContent = ` · from ${accrualMonthName(Number(r.accrualMonth))} ${r.accrualYear}`;
+        tag.style.cssText = 'color:#6b7280;font-style:italic;';
+        td.appendChild(tag);
+        td.title = `Accrued in ${accrualMonthName(Number(r.accrualMonth))} ${r.accrualYear} and still not invoiced — carried into Accumulated`;
+      }
       if(ci === 0){
         // Same coverage-history popup used everywhere else a UnitId is clickable — lets the
         // operator make a last visual check of this unit's calendar before sending the report.
@@ -14813,9 +14685,11 @@ function renderAccrualsAccruedList(){
 
     // Comment icon — one slot per (record, current month); see getAccrualComment. Editable
     // regardless of open/closed, since a note isn't part of the frozen dollar figures.
+    // A carried row's comment lives on (and saves to) the real closed record, not the copy.
+    const commentRecord = r.carriedFrom || r;
     const tdComment = document.createElement('td');
     tdComment.style.cssText = 'padding:4px 6px;text-align:center;cursor:pointer;';
-    const existingComment = getAccrualComment(r);
+    const existingComment = getAccrualComment(commentRecord);
     const commentIcon = document.createElement('span');
     commentIcon.textContent = '💬';
     commentIcon.style.cssText = existingComment ? 'color:#0b74de;font-weight:700;' : 'color:#c0c5cc;';
@@ -14823,7 +14697,7 @@ function renderAccrualsAccruedList(){
     tdComment.appendChild(commentIcon);
     tdComment.addEventListener('click', (e) => {
       e.stopPropagation();
-      openAccrualCommentModal(r, () => renderAccrualsAccruedList());
+      openAccrualCommentModal(commentRecord, () => renderAccrualsAccruedList());
     });
     tr.appendChild(tdComment);
 
@@ -17130,7 +17004,6 @@ if(closeVisualLabelsBtn){
 }
 
 // ==================== UNIT COMMENTS ====================
-let currentCommentUnitId = null;
 let currentCommentUnit = null;
 let currentCommentMonthYear = null;
 // Track comments source context: 'overview' for Unit Overview tab, 'unit' for Unit Control
