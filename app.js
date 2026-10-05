@@ -12454,6 +12454,12 @@ function getUnitCompanyText(unitId){
   return unit ? (unit.company || '') : '';
 }
 
+// Same live lookup as getUnitCompanyText above — Spend Category lives only on the unit record.
+function getUnitSpendCategoryText(unitId){
+  const unit = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim().toLowerCase() === (unitId || '').toString().trim().toLowerCase());
+  return unit ? (unit.spendCategory || '') : '';
+}
+
 // Module state for the small "Comment" modal shared by both accrual tables (Periods Ready to
 // Accrue and Not Accruable) — one comment slot per (record, current month), see
 // getAccrualCommentMonthYear/getAccrualComment/setAccrualComment above.
@@ -13426,7 +13432,7 @@ function downloadAccrualsDeliverable(){
   const rows = buildAccrualBalanceRows(openRecords, month, year).map(e => {
     const r = e.record, estimate = e.estimate, split = e.split;
     return {
-      unitId: r.unitId, lease: r.lease, supplier: r.supplier, company: getUnitCompanyText(r.unitId), costCenter: r.costCenter, status: r.status,
+      unitId: r.unitId, lease: r.lease, supplier: r.supplier, company: getUnitCompanyText(r.unitId), costCenter: r.costCenter, spendCategory: getUnitSpendCategoryText(r.unitId), status: r.status,
       disabledDate: getUnitDisabledDateText(r.unitId),
       // "Last WD/Period/Amount" are always the NATURAL closest-prior invoice, regardless of any
       // override — "Actual Cost Per Unit" (accrualAmountUsed) is the amount actually driving
@@ -13507,7 +13513,7 @@ function downloadAccrualsDeliverable(){
   // recalculate formulas; Excel itself recalculates .f on open and overwrites the cached .v.
   function formulaCellFn(formula, fallbackValue, s){ return { f: formula, v: fallbackValue, t: 's', s }; }
 
-  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'AGI Company', 'Cost Center', 'Status', 'Disabled Date', 'Last WD Invoice Number', 'Last Invoice Period', 'Last Invoice Amount', 'Charge/Day', 'Actual Cost Per Unit'];
+  const HEADERS = ['UnitId', 'Lease', 'Supplier', 'AGI Company', 'Cost Center', 'Spend Category', 'Status', 'Disabled Date', 'Last WD Invoice Number', 'Last Invoice Period', 'Last Invoice Amount', 'Charge/Day', 'Actual Cost Per Unit'];
 
   // Rounds UP to the next whole dollar — 7650.58 becomes 7651, and a value already whole (e.g.
   // 100.00) stays put, never bumps to the next dollar. Snaps to the cent first so day-based
@@ -13545,7 +13551,7 @@ function downloadAccrualsDeliverable(){
     // removed ahead of it.
     const colLetter = (idx) => XLSX.utils.encode_col(idx);
     const colUnitId = colLetter(0), colLease = colLetter(1), colSupplier = colLetter(2);
-    const colLastWd = colLetter(7), colLastInvoicePeriod = colLetter(8);
+    const colLastWd = colLetter(HEADERS.indexOf('Last WD Invoice Number')), colLastInvoicePeriod = colLetter(HEADERS.indexOf('Last Invoice Period'));
     const colTabPeriod = colLetter(HEADERS.length); // first column appended after HEADERS
     tabRows.forEach((r, idx) => {
       const zebra = (idx % 2 === 1) ? styles.zebra : null;
@@ -13561,6 +13567,7 @@ function downloadAccrualsDeliverable(){
         cell(r.supplier, mergeStyles(styles.info, zebra)),
         cell(r.company, mergeStyles(styles.info, zebra)),
         cell(r.costCenter, mergeStyles(styles.info, zebra)),
+        cell(r.spendCategory, mergeStyles(styles.info, zebra)),
         cell(r.status, mergeStyles(styles.info, zebra)),
         cell(r.disabledDate, mergeStyles(styles.info, zebra)),
         cell(r.lastWdInvoiceNumber, mergeStyles(styles.info, zebra)),
@@ -13607,7 +13614,7 @@ function downloadAccrualsDeliverable(){
     const range = XLSX.utils.encode_range({ s: { r: 1, c: 0 }, e: { r: 1 + tabRows.length, c: totalCols - 1 } });
     ws['!autofilter'] = { ref: range };
     ws['!freeze'] = { xSplit: 0, ySplit: 2, topLeftCell: 'A3', activePane: 'bottomLeft' };
-    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:18}, {wch:14}, {wch:10}, {wch:14}, {wch:16}, {wch:22}, {wch:16}, {wch:12}, {wch:16}, {wch:22}, {wch:10}, {wch:16}, {wch:16}, {wch:30}, {wch:70} ];
+    ws['!cols'] = [ {wch:14}, {wch:12}, {wch:14}, {wch:18}, {wch:14}, {wch:18}, {wch:10}, {wch:14}, {wch:16}, {wch:22}, {wch:16}, {wch:12}, {wch:16}, {wch:22}, {wch:10}, {wch:16}, {wch:16}, {wch:30}, {wch:70} ];
     ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } }];
     return ws;
   }
