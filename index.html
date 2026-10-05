@@ -562,6 +562,7 @@
               <th>Unit</th>
               <th>Lease</th>
               <th>Cost Center</th>
+              <th>Spend Category</th>
               <th>Company</th>
               <th>Supplier</th>
               <th>Arrangement</th>
@@ -939,6 +940,14 @@
           </div>
           <ol id="devOtherChargeList" class="list" style="margin-top:8px"></ol>
 
+          <div class="dev-controls" style="margin-top:12px">
+            <label class="dev-label">Spend Category
+              <input id="devSpendCategoryInput" placeholder="Spend Category" type="text">
+            </label>
+            <button id="saveDevSpendCategory">new</button>
+          </div>
+          <ol id="devSpendCategoryList" class="list" style="margin-top:8px"></ol>
+
           <pre id="devOutput" style="background:#f8fafc;border:1px solid #eef2f7;padding:10px;border-radius:6px;min-height:120px;margin-top:8px"></pre>
         </div>
         
@@ -1257,6 +1266,13 @@
           <span style="font-weight:600;font-size:13px;">Cost Center</span>
           <select id="editUnitCostCenter" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
             <option value="">(select cost center)</option>
+          </select>
+        </label>
+
+        <label style="display:flex;flex-direction:column;gap:4px;">
+          <span style="font-weight:600;font-size:13px;">Spend Category</span>
+          <select id="editUnitSpendCategory" style="padding:8px;border:1px solid #e6e6e6;border-radius:6px;">
+            <option value="">(select spend category)</option>
           </select>
         </label>
 

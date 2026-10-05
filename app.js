@@ -3811,14 +3811,15 @@ function renderUnits(){
       { index: 1,  key: 'unitId',      text: 'Unit' },
       { index: 2,  key: 'lease',       text: 'Lease' },
       { index: 3,  key: 'costCenter',  text: 'Cost Center' },
-      { index: 4,  key: 'company',     text: 'Company' },
-      { index: 5,  key: 'supplier',    text: 'Supplier' },
-      { index: 6,  key: 'arrangement', text: 'Arrangement' },
-      { index: 7,  key: 'invoicing',   text: 'Invoicing' },
-      { index: 8,  key: 'monthly',     text: 'Monthly' },
-      { index: 9,  key: 'description', text: 'Description' },
-      { index: 10, key: 'notes',       text: 'Notes' },
-      { index: 11, key: 'status',      text: 'Status' }
+      { index: 4,  key: 'spendCategory', text: 'Spend Category' },
+      { index: 5,  key: 'company',     text: 'Company' },
+      { index: 6,  key: 'supplier',    text: 'Supplier' },
+      { index: 7,  key: 'arrangement', text: 'Arrangement' },
+      { index: 8,  key: 'invoicing',   text: 'Invoicing' },
+      { index: 9,  key: 'monthly',     text: 'Monthly' },
+      { index: 10, key: 'description', text: 'Description' },
+      { index: 11, key: 'notes',       text: 'Notes' },
+      { index: 12, key: 'status',      text: 'Status' }
     ];
     
     sortableColumns.forEach(col => {
@@ -3859,6 +3860,7 @@ function renderUnits(){
       const unitId = (u.unitId || '').toString().toLowerCase();
       const lease = (u.lease || '').toString().toLowerCase();
       const company = (u.company || '').toString().toLowerCase();
+      const spendCategory = (u.spendCategory || '').toString().toLowerCase();
       const supplier = (u.supplier || '').toString().toLowerCase();
       const arrangement = (u.arrangement || '').toString().toLowerCase();
       const invoicing = (u.invoicing || '').toString().toLowerCase();
@@ -3867,7 +3869,7 @@ function renderUnits(){
       const status = (u.status || '').toString().toLowerCase();
       const comments = (u.comments || []).map(c => (c.text || '').toString().toLowerCase()).join(' ');
 
-      return matchesSearchGroups(searchGroups, [unitId, lease, company, supplier, arrangement, invoicing, description, notes, status, comments]);
+      return matchesSearchGroups(searchGroups, [unitId, lease, company, spendCategory, supplier, arrangement, invoicing, description, notes, status, comments]);
     });
   }
   
@@ -3897,6 +3899,7 @@ function renderUnits(){
     const tdLease = document.createElement('td'); tdLease.textContent = u.lease || '';
     const tdCompany = document.createElement('td'); tdCompany.textContent = u.company || '';
     const tdCostCenter = document.createElement('td'); tdCostCenter.textContent = u.costCenter || '';
+    const tdSpendCategory = document.createElement('td'); tdSpendCategory.textContent = u.spendCategory || '';
     const tdSupplier = document.createElement('td'); tdSupplier.textContent = u.supplier || '';
     const tdArrangement = document.createElement('td'); tdArrangement.textContent = u.arrangement || '';
     const tdInvoicing = document.createElement('td'); tdInvoicing.textContent = u.invoicing || '';
@@ -3999,6 +4002,7 @@ function renderUnits(){
     tr.appendChild(tdUnit);
     tr.appendChild(tdLease);
     tr.appendChild(tdCostCenter);
+    tr.appendChild(tdSpendCategory);
     tr.appendChild(tdCompany);
     tr.appendChild(tdSupplier);
     tr.appendChild(tdArrangement);
@@ -4783,7 +4787,7 @@ function escapeHtml(str){
 
 // --- Config list protection (Sheets is the only source of truth) ---
 // Snapshot of what Sheets returned on last load. Never stored in localStorage.
-const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges'];
+const _CFG_FIELDS = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges','devSpendCategories'];
 let _sheetConfigSnapshot = {};
 // Set to true only by Developer-tab handlers before calling saveState() for a config change.
 let _configChangeIntentional = false;
@@ -4838,6 +4842,7 @@ async function refreshConfigSnapshotFromServer(){
     try{ renderSupplierList(); }catch(e){}
     try{ renderPaymentList(); }catch(e){}
     try{ renderArrangementList(); }catch(e){}
+    try{ renderSpendCategoryList(); }catch(e){}
   }catch(e){
     console.warn('[Visibility refresh] Could not refresh config snapshot:', e.message);
   }
@@ -4928,6 +4933,7 @@ async function loadStateFromDB(){
     try{ renderRentalList(); }catch(e){}
     try{ renderArrangementList(); }catch(e){}
     try{ renderPaymentList(); }catch(e){}
+    try{ renderSpendCategoryList(); }catch(e){}
     try{ populateInvoiceTrackingDropdowns(); }catch(e){}
     // Start auto-refresh if not already running
     startAutoRefresh();
@@ -5160,7 +5166,7 @@ function startAutoRefresh(){
 
       const sanitizedMeta = Object.assign({ createdAt: new Date().toISOString(), registrySeq: 0 }, meta);
       ['unitSearch','unitOverviewSearch','leaseSearch','leaseOverviewSearch','registrySearch'].forEach(f => { sanitizedMeta[f] = String(sanitizedMeta[f] || ''); });
-      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges'].forEach(f => {
+      ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges','devSpendCategories'].forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ /* already parsed */ }
         else if(typeof v === 'string' && v.trim().startsWith('[')){
@@ -5250,6 +5256,7 @@ qs('#exportBtn').addEventListener('click', ()=>{
   state.meta.devArrangements = state.meta.devArrangements || [];
   state.meta.devPayments = state.meta.devPayments || [];
   state.meta.devOtherCharges = state.meta.devOtherCharges || [];
+  state.meta.devSpendCategories = state.meta.devSpendCategories || [];
 
   const dataStr = JSON.stringify(state, null, 2);
   const blob = new Blob([dataStr], {type:'application/json'});
@@ -9955,6 +9962,101 @@ if(saveOtherChargeBtn){
 
 renderOtherChargeList();
 
+// --- Developer "Spend Categories" list — feeds the Spend Category dropdown in the Edit Unit modal.
+state.meta.devSpendCategories = state.meta.devSpendCategories || [];
+const devSpendCategoryInput = qs('#devSpendCategoryInput');
+const devSpendCategoryListEl = qs('#devSpendCategoryList');
+
+function renderSpendCategoryList(){
+  if(!devSpendCategoryListEl) return;
+  devSpendCategoryListEl.innerHTML = '';
+  (state.meta.devSpendCategories || []).forEach((c, i)=>{
+    const li = document.createElement('li');
+    const text = document.createElement('span'); text.textContent = c;
+    const actions = document.createElement('div'); actions.className = 'dev-actions';
+    const editBtn = document.createElement('button'); editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', ()=>{
+      if(!devSpendCategoryInput) return;
+      devSpendCategoryInput.value = c;
+      const saveBtn = qs('#saveDevSpendCategory');
+      if(saveBtn){ saveBtn.dataset.editIndex = i; saveBtn.dataset.editOriginalValue = c; saveBtn.textContent = 'Save'; }
+      devSpendCategoryInput.focus();
+    });
+    const delBtn = document.createElement('button'); delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this spend category?')) return;
+      delBtn.disabled = true;
+      try{
+        const fresh = await fetchFreshConfigArray('devSpendCategories');
+        const idx = fresh.findIndex(x => x === c);
+        if(idx !== -1) fresh.splice(idx,1);
+        commitConfigListChange('devSpendCategories', fresh);
+        renderSpendCategoryList();
+      }catch(e){
+        alert('Could not delete — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+        delBtn.disabled = false;
+      }
+    });
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    li.appendChild(text);
+    li.appendChild(actions);
+    devSpendCategoryListEl.appendChild(li);
+  });
+}
+
+const saveSpendCategoryBtn = qs('#saveDevSpendCategory');
+if(saveSpendCategoryBtn){
+  saveSpendCategoryBtn.addEventListener('click', async ()=>{
+    const v = devSpendCategoryInput && devSpendCategoryInput.value ? devSpendCategoryInput.value.trim() : '';
+    if(v === ''){ alert('Please enter a spend category'); return; }
+    const isEditing = typeof saveSpendCategoryBtn.dataset.editIndex !== 'undefined';
+    const originalValue = saveSpendCategoryBtn.dataset.editOriginalValue;
+    saveSpendCategoryBtn.disabled = true;
+    try{
+      const fresh = await fetchFreshConfigArray('devSpendCategories');
+      const dupIdx = fresh.findIndex(x => x.toLowerCase() === v.toLowerCase());
+      if(isEditing){
+        const idx = fresh.findIndex(x => x === originalValue);
+        if(dupIdx !== -1 && fresh[dupIdx] !== originalValue){ alert('"' + v + '" already exists.'); return; }
+        if(idx !== -1) fresh[idx] = v; else fresh.push(v);
+      } else {
+        if(dupIdx !== -1){ alert('"' + v + '" already exists.'); return; }
+        fresh.push(v);
+      }
+      commitConfigListChange('devSpendCategories', fresh);
+      delete saveSpendCategoryBtn.dataset.editIndex;
+      delete saveSpendCategoryBtn.dataset.editOriginalValue;
+      saveSpendCategoryBtn.textContent = 'new';
+      renderSpendCategoryList();
+      if(devSpendCategoryInput) devSpendCategoryInput.value = '';
+    }catch(e){
+      alert('Could not save changes — could not reach Google Sheets. Please try again.\n' + (e && e.message || ''));
+    }finally{
+      saveSpendCategoryBtn.disabled = false;
+    }
+  });
+}
+
+renderSpendCategoryList();
+
+// Populates the Edit Unit modal's Spend Category <select> from the Developer tab's list. A
+// unit's current value that's since been renamed/removed there is kept as an option so
+// saving the modal for an unrelated change doesn't blank it.
+function syncUnitSpendCategoryOptions(currentValue){
+  const sel = qs('#editUnitSpendCategory');
+  if(!sel) return;
+  sel.innerHTML = '<option value="">(select spend category)</option>';
+  const list = state.meta.devSpendCategories || [];
+  list.forEach(c=>{
+    const opt = document.createElement('option'); opt.value = c; opt.textContent = c; sel.appendChild(opt);
+  });
+  if(currentValue && list.indexOf(currentValue) === -1){
+    const opt = document.createElement('option'); opt.value = currentValue; opt.textContent = currentValue; sel.appendChild(opt);
+  }
+  sel.value = currentValue || '';
+}
+
 // populate lease arrangement select from developer arrangements
 function syncLeaseArrangementOptions(){
   const sel = qs('#leaseArrangement');
@@ -10741,6 +10843,9 @@ function openUnitEditModal(unit){
   const ccSel = qs('#editUnitCostCenter');
   if(ccSel) ccSel.value = unit.costCenter || '';
 
+  // Populate Spend Category dropdown
+  syncUnitSpendCategoryOptions(unit.spendCategory || '');
+
   // Update readonly fields based on selected lease
   updateUnitEditLeaseInfo(unit.lease || '');
 
@@ -10829,6 +10934,7 @@ if(unitEditSaveBtn){
       return n === null ? '' : n.toFixed(2);
     })();
     unit.costCenter = qs('#editUnitCostCenter') ? qs('#editUnitCostCenter').value : '';
+    unit.spendCategory = qs('#editUnitSpendCategory') ? qs('#editUnitSpendCategory').value : '';
     unit.description = qs('#editUnitDesc').value.trim();
     unit.notes = qs('#editUnitNotes').value.trim();
     // NOTE: status is intentionally NOT updated here — use the Disable/Enable button instead

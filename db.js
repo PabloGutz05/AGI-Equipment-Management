@@ -287,6 +287,7 @@ const DB = {
           lease: String(u.lease || ''),
           company: String(u.company || ''),
           costCenter: String(u.costCenter || ''),
+          spendCategory: String(u.spendCategory || ''),
           supplier: String(u.supplier || ''),
           arrangement: String(u.arrangement || ''),
           invoicing: String(u.invoicing || ''),
@@ -387,7 +388,7 @@ const DB = {
         createdAt: String(a.createdAt || '')
       }));
 
-      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges'];
+      const arrayFields = ['devCompanies','devRentals','devSuppliers','devPayments','devArrangements','devOtherCharges','devSpendCategories'];
       arrayFields.forEach(f => {
         const v = sanitizedMeta[f];
         if(Array.isArray(v)){ return; } // already parsed
