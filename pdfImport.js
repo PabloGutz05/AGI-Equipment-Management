@@ -1588,13 +1588,16 @@
     }));
     const addedUnits = units.filter(x => !(reg.units || []).some(y => normKey(y) === normKey(x)));
     const oldTotal = moneyNum(reg.totalAmount);
+    // A credit memo switches the invoice to Credit (see tcrUpdateBuild); otherwise unchanged.
+    const category = u.category !== undefined ? u.category : (reg.category || '');
+    const categoryChanged = category !== (reg.category || '');
 
     const record = {
       id: reg.id,
       seq: reg.seq,
       wdNumber: reg.wdNumber || '',
       docNumber: reg.docNumber || '',
-      category: u.category !== undefined ? u.category : (reg.category || ''),
+      category,
       totalAmount: u.newTotal.toFixed(2),
       unitCount: units.length,
       units,
@@ -1604,7 +1607,7 @@
       submittedDate: reg.submittedDate || '',
       createdAt: reg.createdAt || '',
       comments: (Array.isArray(reg.comments) ? reg.comments.slice() : []).concat([{
-        text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.` + (record.category !== (reg.category || '') ? ` Category ${reg.category || '(none)'} → ${record.category} (Credit Memo).` : '') + (addedUnits.length ? ` Units added: ${addedUnits.join(', ')}.` : ''),
+        text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.` + (categoryChanged ? ` Category ${reg.category || '(none)'} → ${category} (Credit Memo).` : '') + (addedUnits.length ? ` Units added: ${addedUnits.join(', ')}.` : ''),
         user: tcrUpdateUserName(),
         timestamp: new Date().toISOString()
       }]),
