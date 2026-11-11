@@ -1366,26 +1366,23 @@
     const oldByUnit = {};
     slices.forEach(s => s.unitDetails.forEach(d => { const k = normKey(d.unit); if(!oldByUnit[k]) oldByUnit[k] = d; }));
 
-    // Per-unit lease details (no amounts). A unit registered without its lease selected — or
-    // not on the invoice at all yet — gets its lease details from its own unit record; only
-    // blanks are filled, anything already set is kept.
+    // Per-unit lease details (no amounts), resolved exactly like the registration form does —
+    // from the unit's own record and that record's lease. The invoice's old row only fills in
+    // for a unit that no longer exists in the system.
     const existingLeases = new Set(regLeases);
     const addedUnits = [], addedLeases = new Set(), noLeaseUnits = [];
     const baseByUnit = {};
     unitOrder.forEach(uid => {
       const k = normKey(uid);
       const old = oldByUnit[k];
+      const unitRec = (state.units || []).find(u => normKey(u.unitId || u.id) === k);
       const base = { unit: uid };
-      ['lease','company','supplier','arrangement','invoicing','costCenter'].forEach(f => { if(old && old[f]) base[f] = old[f]; });
-      if(!base.lease){
-        const resolved = resolveInvoiceUnitLeaseInfo(uid, regLeases);
-        Object.keys(resolved).forEach(f => { if(!base[f] && resolved[f]) base[f] = resolved[f]; });
-        if(!base.lease) noLeaseUnits.push(uid);
+      if(unitRec){
+        Object.assign(base, resolveInvoiceUnitLeaseInfo(uid, []), { costCenter: unitRec.costCenter || '' });
+      } else if(old){
+        ['lease','company','supplier','arrangement','invoicing','costCenter'].forEach(f => { base[f] = old[f] || ''; });
       }
-      if(!base.costCenter){
-        const unitRec = (state.units || []).find(u => normKey(u.unitId || u.id) === k);
-        if(unitRec && unitRec.costCenter) base.costCenter = unitRec.costCenter;
-      }
+      if(!base.lease) noLeaseUnits.push(uid);
       if(!old && !(registry.units || []).some(x => normKey(x) === k)){ base.__added = true; addedUnits.push(uid); }
       if(base.lease && !existingLeases.has(normKey(base.lease))) addedLeases.add(base.lease);
       baseByUnit[k] = base;
@@ -1519,6 +1516,20 @@
     return ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.username || 'Unknown User';
   }
 
+  // Google Sheets rejects any single cell over 50,000 characters. unitDetails/periods are split
+  // across cells by db.js; the other JSON columns are checked before sending so an oversized
+  // invoice fails with a clear message instead of a half-understood error from the backend.
+  const SHEETS_CELL_LIMIT = 50000;
+
+  // Writes the rebuilt invoice as a complete, fresh registry record rather than merging the
+  // changes into the loaded one: the invoice's identifying info (id/seq/WD/Doc/category/invoice
+  // and submitted dates/created/comments) is carried over from the looked-up record, and every
+  // unit/lease/period/amount field is rewritten from the PDF exactly as a new registration would
+  // save it (see the invoiceForm submit handler). Only these known columns are sent, so stray
+  // keys picked up while loading (raw sheet headers etc.) never get written back, and the
+  // backend's updateRow leaves every other column of the row untouched. The write is one
+  // whole-row overwrite by id, so retrying it can't duplicate or partially apply anything —
+  // and nothing in memory changes until Google Sheets confirms it.
   async function tcrUpdateSave(){
     const u = _tcrUpdate;
     if(!u || !u.newSlices || u.blockers.length) return;
@@ -1528,75 +1539,126 @@
       return;
     }
 
-    const oldTotal = moneyNum(reg.totalAmount);
-    const clean = details => details.map(d => { const c = Object.assign({}, d); delete c.__added; return c; });
-    const newSlices = u.newSlices.map(s => Object.assign({}, s, { unitDetails: clean(s.unitDetails) }));
+    // Same per-unit field set (and order) the registration form saves.
+    const toDetail = d => ({
+      unit: d.unit, lease: d.lease || '', company: d.company || '', supplier: d.supplier || '',
+      arrangement: d.arrangement || '', invoicing: d.invoicing || '', costCenter: d.costCenter || '',
+      tax: d.tax || '', other: d.other || '', otherChargeDetails: d.otherChargeDetails || [], charge: d.charge || ''
+    });
+    const newSlices = u.newSlices.map(s => ({ from: s.from, to: s.to, unitDetails: s.unitDetails.map(toDetail) }));
 
-    // Units/leases now on the invoice: everything it already had, plus any unit (and that
-    // unit's lease) the PDF bills that wasn't on it yet.
-    const units = Array.isArray(reg.units) ? reg.units.slice() : [];
-    const leases = (Array.isArray(reg.leases) && reg.leases.length ? reg.leases : (reg.lease || '').toString().split(',').map(s => s.trim()).filter(Boolean)).slice();
+    const units = [], leases = [];
     newSlices.forEach(s => s.unitDetails.forEach(d => {
       if(d.unit && !units.some(x => normKey(x) === normKey(d.unit))) units.push(d.unit);
       if(d.lease && !leases.some(x => normKey(x) === normKey(d.lease))) leases.push(d.lease);
     }));
     const addedUnits = units.filter(x => !(reg.units || []).some(y => normKey(y) === normKey(x)));
+    const oldTotal = moneyNum(reg.totalAmount);
 
-    // Period layout mirrors what the registration form saves: Period 1 lives on unitDetails
-    // (+ period1From/To when quarterly), every later period in periods[]; a non-quarterly
-    // invoice clears both so it reads as one period over periodStart/periodEnd.
-    const updated = Object.assign({}, reg, {
-      periodStart: u.overallFrom,
-      periodEnd: u.overallTo,
-      unitDetails: newSlices[0].unitDetails,
-      period1From: u.usePeriods ? newSlices[0].from : '',
-      period1To: u.usePeriods ? newSlices[0].to : '',
-      periods: u.usePeriods ? newSlices.slice(1).map(s => ({ fromDate: s.from, toDate: s.to, unitDetails: s.unitDetails })) : [],
-      units,
-      unitCount: units.length,
-      leases,
-      lease: leases.join(', '),
+    const record = {
+      id: reg.id,
+      seq: reg.seq,
+      wdNumber: reg.wdNumber || '',
+      docNumber: reg.docNumber || '',
+      category: reg.category || '',
       totalAmount: u.newTotal.toFixed(2),
+      unitCount: units.length,
+      units,
+      invoiceDate: reg.invoiceDate || '',
+      periodStart: u.overallFrom || '',
+      periodEnd: u.overallTo || '',
+      submittedDate: reg.submittedDate || '',
+      createdAt: reg.createdAt || '',
       comments: (Array.isArray(reg.comments) ? reg.comments.slice() : []).concat([{
         text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.` + (addedUnits.length ? ` Units added: ${addedUnits.join(', ')}.` : ''),
         user: tcrUpdateUserName(),
         timestamp: new Date().toISOString()
-      }])
-    });
+      }]),
+      leases,
+      lease: leases.join(', '),
+      // Period 1 lives on unitDetails (+ period1From/To when quarterly), every later period in
+      // periods[] — the same layout the registration form saves.
+      unitDetails: newSlices[0].unitDetails,
+      periods: u.usePeriods ? newSlices.slice(1).map(s => ({ fromDate: s.from, toDate: s.to, unitDetails: s.unitDetails })) : []
+    };
+    // Only touch the period-1 columns when this invoice uses them now or used them before (to
+    // clear stale values) — otherwise a plain invoice would add empty columns to the sheet.
+    if(u.usePeriods || reg.period1From || reg.period1To){
+      record.period1From = u.usePeriods ? newSlices[0].from : '';
+      record.period1To = u.usePeriods ? newSlices[0].to : '';
+    }
+    // Carry over which continuation columns this row already has (see db.js's
+    // REGISTRY_SPLIT_FIELDS) so any the rewritten data no longer needs get blanked.
+    Object.keys(reg).forEach(k => { if(/^(unitDetails|periods)__\d+$/.test(k)) record[k] = ''; });
 
-    const saveBtn = qs('#tcrUpdateSaveBtn');
-    if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
-    try{
-      await DB.updateRegistry(updated);
-    }catch(e){
-      console.error('TCR invoice update save error:', e);
-      alert('Failed to save to Google Sheets: ' + e.message);
-      if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = 'Save Changes'; }
+    // unitDetails/periods are split across cells by db.js when needed; these aren't.
+    const oversized = ['units','leases','comments']
+      .filter(k => JSON.stringify(record[k]).length > SHEETS_CELL_LIMIT);
+    if(oversized.length){
+      alert(`This invoice is too large to store: the ${oversized.join(', ')} data would exceed Google Sheets' 50,000-character limit for a single cell. Nothing was saved.`);
       return;
     }
-    if(saveBtn) saveBtn.textContent = 'Save Changes';
 
-    Object.assign(reg, updated);
-    // In-session invoice records only ever mirror Period 1 (see the registration submit handler):
-    // update each unit's record, or create one for a unit that was just added.
+    const saveBtn = qs('#tcrUpdateSaveBtn');
+    const cancelBtn = qs('#tcrUpdateCancelBtn');
+    if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
+    if(cancelBtn) cancelBtn.disabled = true;
+    const restoreButtons = () => {
+      if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = 'Save Changes'; }
+      if(cancelBtn) cancelBtn.disabled = false;
+    };
+
+    // A network-level failure ("Failed to fetch") leaves it unknown whether the request reached
+    // Google at all; since this is a whole-row overwrite by id, re-sending the same record is
+    // safe either way, so retry those once before reporting.
+    const isNetworkError = e => /Failed to fetch|NetworkError|Load failed|network/i.test((e && e.message) || '');
+    let lastErr = null;
+    for(let attempt = 1; attempt <= 2; attempt++){
+      try{
+        await DB.updateRegistry(record);
+        lastErr = null;
+        break;
+      }catch(e){
+        lastErr = e;
+        console.error(`TCR invoice update save error (attempt ${attempt}):`, e);
+        if(attempt === 1 && isNetworkError(e)){
+          tcrUpdateSetStatus('#tcrUpdateStatus', 'Connection to Google Sheets dropped — retrying…');
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        break;
+      }
+    }
+    if(lastErr){
+      restoreButtons();
+      tcrUpdateSetStatus('#tcrUpdateStatus', 'Not saved — see the message.');
+      alert('Failed to save to Google Sheets: ' + lastErr.message + '\n\nNothing was changed in the app. It\'s safe to press Save Changes again — the invoice is rewritten as a whole, so a repeated save can\'t duplicate anything.');
+      return;
+    }
+    restoreButtons();
+
+    // Confirmed saved — now mirror it in memory. The registry object keeps its identity (other
+    // views hold references to it); every rewritten field is replaced outright.
+    Object.assign(reg, record);
+    if(!record.period1From && !record.period1To){ delete reg.period1From; delete reg.period1To; }
+
+    // In-session invoice records mirror Period 1 (see the registration submit handler): rebuild
+    // this invoice's set from scratch, keeping each surviving unit's existing record id.
     const wd = normKey(reg.wdNumber), doc = normKey(reg.docNumber);
-    state.invoices = state.invoices || [];
-    updated.unitDetails.forEach(d => {
-      const fields = {
-        lease: d.lease || '', company: d.company || '', supplier: d.supplier || '',
-        arrangement: d.arrangement || '', invoicing: d.invoicing || '',
-        periodStart: updated.periodStart || '', periodEnd: updated.periodEnd || '',
+    const isThisInvoice = i => normKey(i.wdNumber) === wd && normKey(i.docNumber) === doc;
+    const oldInvoices = (state.invoices || []).filter(isThisInvoice);
+    const fresh = record.unitDetails.map(d => {
+      const prev = oldInvoices.find(i => normKey(i.unit) === normKey(d.unit));
+      return {
+        id: prev ? prev.id : id(), unit: d.unit, comment: prev ? (prev.comment || '') : '',
+        wdNumber: record.wdNumber, docNumber: record.docNumber, category: record.category,
+        invoiceDate: record.invoiceDate, periodStart: record.periodStart, periodEnd: record.periodEnd,
+        submittedDate: record.submittedDate,
+        lease: d.lease, company: d.company, supplier: d.supplier, arrangement: d.arrangement, invoicing: d.invoicing,
         amount: d.charge, taxAmount: d.tax, otherCharges: d.other, otherChargeDetails: d.otherChargeDetails
       };
-      const inv = state.invoices.find(i => normKey(i.wdNumber) === wd && normKey(i.docNumber) === doc && normKey(i.unit) === normKey(d.unit));
-      if(inv){ Object.assign(inv, fields); return; }
-      state.invoices.push(Object.assign({
-        id: id(), unit: d.unit, comment: '',
-        wdNumber: reg.wdNumber || '', docNumber: reg.docNumber || '', category: reg.category || '',
-        invoiceDate: reg.invoiceDate || '', periodStart: reg.periodStart || '', periodEnd: reg.periodEnd || '',
-        submittedDate: reg.submittedDate || ''
-      }, fields));
     });
+    state.invoices = (state.invoices || []).filter(i => !isThisInvoice(i)).concat(fresh);
 
     saveState();
     renderRegistries(reg.id);

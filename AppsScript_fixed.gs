@@ -96,6 +96,12 @@ function handleRequest(e) {
         throw new Error('Unknown action: ' + action);
     }
 
+    // Sheets buffers writes and may only apply them after this function returns — a write it
+    // then rejects would surface as Google's own error page (no CORS headers), which the browser
+    // reports as a bare "Failed to fetch". Flushing here makes any such failure throw inside
+    // this try, so the client gets the real error message as JSON instead.
+    if (WRITE_ACTIONS.indexOf(action) !== -1) SpreadsheetApp.flush();
+
     return ContentService
       .createTextOutput(JSON.stringify({ success: true, data: result }))
       .setMimeType(ContentService.MimeType.JSON);

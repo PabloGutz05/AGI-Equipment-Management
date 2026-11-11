@@ -35,6 +35,15 @@ const INVOICE_TRACKING_FIELD_MAP = {
 
 const INVOICE_TRACKING_JSON_FIELDS = ['unitsInDispute', 'lease', 'unitAmountDetails', 'log'];
 
+// Google Sheets rejects any single cell over 50,000 characters. A registry's per-unit JSON
+// columns grow with unit count — a 77-unit quarterly invoice's "periods" alone is ~60,000 — so
+// these columns are split across continuation columns ("periods__2", "periods__3", ...) when
+// they don't fit, and joined back on read. Anything that fits is written exactly as before
+// (one cell, no continuation columns), so smaller invoices are unaffected.
+const REGISTRY_SPLIT_FIELDS = ['unitDetails', 'periods'];
+const REGISTRY_CELL_CHUNK = 45000;
+const REGISTRY_MAX_CHUNKS = 6;
+
 function _invoiceTrackingToSheetRow(record){
   const out = { id: record.id || '' };
   Object.keys(INVOICE_TRACKING_FIELD_MAP).forEach(key => {
@@ -257,10 +266,10 @@ const DB = {
         submittedDate: String(r.submittedDate || ''),
         createdAt: String(r.createdAt || ''),
         units: DB.parseField(r.units),
-        unitDetails: (()=>{ const v = DB.parseField(r.unitDetails); return Array.isArray(v) ? v : []; })(),
+        unitDetails: (()=>{ const v = DB.parseField(DB.joinSplitField(r, 'unitDetails')); return Array.isArray(v) ? v : []; })(),
         // Quarterly leases: any additional periods beyond the registry's own (first) period
         // above, each carrying its own From/To dates and its own per-unit unitDetails.
-        periods: (()=>{ const v = DB.parseField(r.periods); return Array.isArray(v) ? v : []; })(),
+        periods: (()=>{ const v = DB.parseField(DB.joinSplitField(r, 'periods')); return Array.isArray(v) ? v : []; })(),
         comments: DB.parseField(r.comments) || []
       }));
 
@@ -426,6 +435,66 @@ const DB = {
     }
   },
 
+  // Splits one JSON string into cell-sized pieces. Every cut lands right before an object's
+  // opening "{" (after the separating comma), so no piece can start with a character Sheets
+  // would read as a formula or number ("=", "+", "-", digits).
+  _splitForCells(str) {
+    const chunks = [];
+    let rest = str;
+    while (rest.length > REGISTRY_CELL_CHUNK) {
+      const at = rest.lastIndexOf(',{', REGISTRY_CELL_CHUNK);
+      const cut = at > 0 ? at + 1 : REGISTRY_CELL_CHUNK;
+      chunks.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
+    }
+    chunks.push(rest);
+    return chunks;
+  },
+
+  // Applies the split to an outgoing registry row. A continuation column the row already has
+  // (known from the loaded record carrying that header) but no longer needs is blanked, so a
+  // shrunken invoice never leaves a stale piece behind. Each continuation column written is
+  // also marked on the in-memory record (empty value — only its presence matters) so a later,
+  // smaller save of that same record knows to blank it.
+  _applyRegistrySplit(data, record) {
+    REGISTRY_SPLIT_FIELDS.forEach(field => {
+      const chunks = DB._splitForCells(String(data[field] || '[]'));
+      if (chunks.length > REGISTRY_MAX_CHUNKS) {
+        throw new Error(`This invoice's ${field} data is too large to store in Google Sheets (${chunks.length} cells needed, max ${REGISTRY_MAX_CHUNKS}).`);
+      }
+      data[field] = chunks[0];
+      for (let i = 2; i <= REGISTRY_MAX_CHUNKS; i++) {
+        const key = field + '__' + i;
+        if (i <= chunks.length) {
+          data[key] = chunks[i - 1];
+          if (record && !Object.prototype.hasOwnProperty.call(record, key)) record[key] = '';
+        }
+        else if (record && Object.prototype.hasOwnProperty.call(record, key)) data[key] = '';
+        else delete data[key];
+      }
+    });
+    return data;
+  },
+
+  // Joins a split registry column back into its JSON string (see REGISTRY_SPLIT_FIELDS). If a
+  // stale continuation piece is still in the sheet, the full join won't parse — the longest
+  // prefix of pieces that does parse is the real value (a complete JSON array followed by any
+  // extra text is never valid, and a cut-short one never is either).
+  joinSplitField(row, field) {
+    const parts = [row[field]];
+    for (let i = 2; i <= REGISTRY_MAX_CHUNKS; i++) {
+      const v = row[field + '__' + i];
+      if (v === undefined || v === null || v === '') break;
+      parts.push(String(v));
+    }
+    if (parts.length === 1) return row[field];
+    for (let n = parts.length; n >= 1; n--) {
+      const joined = parts.slice(0, n).join('');
+      try { JSON.parse(joined); return joined; } catch (e) { /* try a shorter join */ }
+    }
+    return row[field];
+  },
+
   async saveRegistry(record) {
     const data = {
       ...record,
@@ -435,6 +504,7 @@ const DB = {
       periods: Array.isArray(record.periods) ? JSON.stringify(record.periods) : (record.periods || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
+    DB._applyRegistrySplit(data, record);
     // "Invoice Date" is the one column on this sheet with a spaced/title-case header instead
     // of camelCase — write to that exact header, not a new "invoiceDate" column.
     delete data.invoiceDate;
@@ -451,6 +521,7 @@ const DB = {
       periods: Array.isArray(record.periods) ? JSON.stringify(record.periods) : (record.periods || '[]'),
       comments: Array.isArray(record.comments) ? JSON.stringify(record.comments) : (record.comments || '[]')
     };
+    DB._applyRegistrySplit(data, record);
     delete data.invoiceDate;
     data['Invoice Date'] = record.invoiceDate || '';
     return DB.post({ action: 'update', sheet: 'invoices', id: record.id, data });
