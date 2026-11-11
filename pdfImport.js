@@ -121,7 +121,11 @@
   // as an "issue" for the operator to review/complete at the top of the screen instead. An
   // unidentified category still defaults into Usage (rent) so nothing is silently missing from
   // the totals while it's still flagged.
-  function parseDetailRows(rows){
+  // sign is -1 for a credit memo (its line amounts are printed unsigned but are credits), 1
+  // otherwise; every parsed amount — confident rows and issue rows alike — carries it.
+  function parseDetailRows(rows, sign){
+    sign = sign === -1 ? -1 : 1;
+    const signed = n => (n === null || n === undefined) ? n : sign * Math.abs(n);
     const unitMonthCat = {};
     const monthRanges = {};
     const issues = [];
@@ -168,14 +172,14 @@
       if(!validShape){
         const mk = looseMonthKey(tokens);
         issues.push({
-          id: 'iss' + (++issueSeq), unit: barcode, monthKey: mk ? mk.key : '', category: '', amount: looseAmount(tokens),
+          id: 'iss' + (++issueSeq), unit: barcode, monthKey: mk ? mk.key : '', category: '', amount: signed(looseAmount(tokens)),
           rawText: rows[i], reason: 'Row shape not recognized (missing/garbled date or amount) — fill in the missing fields.'
         });
         continue;
       }
 
       const mk = monthKeyFromMDY(tokens[dateIdx]);
-      const amt = parseFloat(lastToken.replace(/,/g,''));
+      const amt = signed(parseFloat(lastToken.replace(/,/g,'')));
       monthRanges[mk.key] = { from: mk.from, to: mk.to };
 
       const category = findCategoryAhead(rows, i);
@@ -204,10 +208,15 @@
   }
 
   function parseHeaderInfo(rows){
-    const info = { docNumber:'', leaseNumber:'', invoiceDateIso:'', subtotalAmount:null, tax:null, totalAmount:null };
+    const info = { docNumber:'', leaseNumber:'', invoiceDateIso:'', subtotalAmount:null, tax:null, totalAmount:null, isCredit:false };
     rows.forEach(text => {
       let m;
-      if(!info.docNumber && (m = text.match(/^Invoice:\s*(\S+)/))) info.docNumber = m[1];
+      // Regular invoices print "Invoice: 2631812345"; TCR credit memos use the same layout but
+      // label the number "Credit Memo: 2631900020" (and still print every amount unsigned).
+      if(!info.docNumber && (m = text.match(/^(Invoice|Credit Memo):\s*(\S+)/i))){
+        info.docNumber = m[2];
+        info.isCredit = /credit/i.test(m[1]);
+      }
       // The field label varies by invoice variant ("Reference Number FSRA123456" vs. this
       // format's plain "Reference ATS MCO - CO20220520 and CO20220729" — a customer label
       // followed by one or more lease codes). Pull out just the first lease-code-shaped token
@@ -242,6 +251,11 @@
       // real Total Amount row at all.
       if(info.totalAmount === null && (m = text.match(/^Total Amount\s+([\d,]+\.\d{2})/i))) info.totalAmount = parseFloat(m[1].replace(/,/g,''));
     });
+    // A credit memo's amounts are credits back to us — store them negative, the same sign the
+    // registration form requires for the Credit category.
+    if(info.isCredit){
+      ['subtotalAmount','tax','totalAmount'].forEach(k => { if(info[k] !== null) info[k] = -Math.abs(info[k]); });
+    }
     return info;
   }
 
@@ -381,14 +395,18 @@
     };
     const taxByUnitMonth = {};
     const taxedUnits = Object.keys(unitMonthCat).filter(uid => Object.keys(unitMonthCat[uid]).length > 0).sort();
-    const taxCents = Math.round((Number(invoiceTax) || 0) * 100);
+    // Split the tax's magnitude and re-apply its sign, so a credit memo's negative tax is
+    // allocated the same way (splitCents' floor-based math only works on positive cents).
+    const taxRaw = Math.round((Number(invoiceTax) || 0) * 100);
+    const taxSign = taxRaw < 0 ? -1 : 1;
+    const taxCents = Math.abs(taxRaw);
     if(taxCents > 0 && taxedUnits.length > 0){
       const unitShares = splitCents(taxCents, taxedUnits.length);
       taxedUnits.forEach((uid, i) => {
         const months = Object.keys(unitMonthCat[uid]).sort();
         const monthShares = splitCents(unitShares[i], months.length);
         taxByUnitMonth[uid] = {};
-        months.forEach((mk, j) => { taxByUnitMonth[uid][mk] = monthShares[j] / 100; });
+        months.forEach((mk, j) => { taxByUnitMonth[uid][mk] = taxSign * monthShares[j] / 100; });
       });
     }
 
@@ -651,7 +669,7 @@
 
     headerWrap.innerHTML = '';
     [
-      ['Doc Number', header.docNumber || '(not found)'],
+      ['Doc Number', (header.docNumber || '(not found)') + (header.isCredit ? ' — Credit Memo: amounts are negative and the Credit category is selected' : '')],
       ['Lease', header.leaseNumber ? (header.leaseNumber + (leaseRec ? '' : ' — not found in system')) : '(not found)'],
       ['Overall Period', (overallFrom && overallTo) ? (formatDate(overallFrom) + ' — ' + formatDate(overallTo)) : '(none)'],
       ['Invoice Date', header.invoiceDateIso ? formatDate(header.invoiceDateIso) : '(not found)'],
@@ -665,6 +683,9 @@
     warnWrap.innerHTML = '';
     const warnings = [];
     if(!leaseRec) warnings.push(`Lease "${header.leaseNumber || '(none found)'}" doesn't match any lease in the system — you'll need to select it manually before sending.`);
+    if(header.isCredit && !((state.meta && state.meta.devRentals) || []).some(r => (r || '').toString().trim().toLowerCase() === 'credit')){
+      warnings.push('This is a Credit Memo, but there\'s no "Credit" invoice category set up — add it so the negative amounts can be registered.');
+    }
     if(periods.length > 1 && leaseRec && !isQuarterlyLease) warnings.push(`This invoice spans ${periods.length} separate months, but Lease ${header.leaseNumber} isn't marked Quarterly — periods will be merged into one period unless you fix the lease's Arrangement first.`);
     if(unmatchedUnitIds.length > 0) warnings.push(`${unmatchedUnitIds.length} unit(s) in the PDF don't match any UnitId in the system and will be skipped: ${unmatchedUnitIds.join(', ')}`);
     const parsedSum = periods.reduce((s,p) => s + periodTotalFromUnitData(p.unitData), 0);
@@ -904,9 +925,11 @@
     const pEnd = qs('#invoicePeriodEnd'); if(pEnd) pEnd.value = _reviewData.overallTo || '';
     const invDate = qs('#invoiceSupplierInvoiceDate'); if(invDate && header.invoiceDateIso) invDate.value = header.invoiceDateIso;
 
+    // A credit memo's amounts are negative, which the form only accepts under Credit.
     const catSel = qs('#invoiceCategory');
     if(catSel){
-      const opt = Array.from(catSel.options).find(o => o.value.toLowerCase() === 'rental');
+      const want = header.isCredit ? 'credit' : 'rental';
+      const opt = Array.from(catSel.options).find(o => o.value.trim().toLowerCase() === want);
       if(opt) catSel.value = opt.value;
     }
 
@@ -1086,7 +1109,7 @@
       }
 
       const header = parseHeaderInfo(rows);
-      const { unitMonthCat, monthRanges, totalCandidates, issues } = parseDetailRows(rows);
+      const { unitMonthCat, monthRanges, totalCandidates, issues } = parseDetailRows(rows, header.isCredit ? -1 : 1);
       if(totalCandidates === 0){
         if(statusEl) statusEl.textContent = 'No recognizable line items found — this may not be a TCR quarterly usage-detail invoice.';
         return;
@@ -1350,6 +1373,17 @@
       blockers.push(`This PDF is invoice ${header.docNumber}, but ${registry.wdNumber} was registered with Doc Number ${registry.docNumber}. Drop the matching PDF.`);
     }
     if(!header.docNumber) warnings.push('The PDF\'s invoice (Doc) number couldn\'t be read — make sure it\'s the right invoice before saving.');
+    // A credit memo's amounts are negative, which is only valid under the Credit category (same
+    // rule as the registration form) — so a credit memo always saves as Credit.
+    let category = registry.category || '';
+    if(header.isCredit){
+      warnings.push('This PDF is a Credit Memo — every amount below is saved as negative.');
+      if(normKey(category) !== 'credit'){
+        const configured = ((state.meta && state.meta.devRentals) || []).find(r => normKey(r) === 'credit');
+        category = configured || 'Credit';
+        warnings.push(`Category changes from "${registry.category || '(none)'}" to "${category}".`);
+      }
+    }
     if(built.periods.length === 0) blockers.push('None of the units billed in the PDF exist in the system, so there\'s nothing to update.');
     if(parseIssues.length) warnings.push(`${parseIssues.length} line item(s) in the PDF couldn't be read confidently and aren't included below. Use the import processor above to see them.`);
     if(built.unmatchedUnitIds.length) warnings.push(`${built.unmatchedUnitIds.length} unit(s) in the PDF don't exist in the system and are skipped: ${built.unmatchedUnitIds.join(', ')}`);
@@ -1454,7 +1488,7 @@
     }
     if(header.tax === null) warnings.push('The PDF\'s Tax row couldn\'t be read — no tax was allocated.');
 
-    return { newSlices, newTotal, blockers, warnings, usePeriods, overallFrom, overallTo };
+    return { newSlices, newTotal, blockers, warnings, usePeriods, overallFrom, overallTo, category };
   }
 
   function tcrUpdateRenderPreview(result){
@@ -1493,12 +1527,12 @@
       const rows = await extractRows(pdf);
       if(detectInvoiceType(rows) !== 'tcr'){ tcrUpdateSetStatus('#tcrUpdateStatus', 'This isn\'t a TCR Americas invoice PDF.'); return; }
       const header = parseHeaderInfo(rows);
-      const { unitMonthCat, totalCandidates, issues } = parseDetailRows(rows);
+      const { unitMonthCat, totalCandidates, issues } = parseDetailRows(rows, header.isCredit ? -1 : 1);
       if(totalCandidates === 0){ tcrUpdateSetStatus('#tcrUpdateStatus', 'No recognizable line items found — this may not be a TCR quarterly usage-detail invoice.'); return; }
       const built = buildPeriods(unitMonthCat, header.tax);
       if(!_tcrUpdate) return; // cancelled while reading
       const result = tcrUpdateBuild(header, built, issues);
-      Object.assign(_tcrUpdate, { newSlices: result.newSlices, newTotal: result.newTotal, blockers: result.blockers, usePeriods: result.usePeriods, overallFrom: result.overallFrom, overallTo: result.overallTo });
+      Object.assign(_tcrUpdate, { newSlices: result.newSlices, newTotal: result.newTotal, blockers: result.blockers, usePeriods: result.usePeriods, overallFrom: result.overallFrom, overallTo: result.overallTo, category: result.category });
       tcrUpdateRenderPreview(result);
       tcrUpdateSetStatus('#tcrUpdateStatus', result.blockers.length ? 'Can\'t save — see the issues below.' : 'Review the updated amounts below, then Save Changes.');
       const saveBtn = qs('#tcrUpdateSaveBtn'); if(saveBtn) saveBtn.disabled = result.blockers.length > 0;
@@ -1560,7 +1594,7 @@
       seq: reg.seq,
       wdNumber: reg.wdNumber || '',
       docNumber: reg.docNumber || '',
-      category: reg.category || '',
+      category: u.category !== undefined ? u.category : (reg.category || ''),
       totalAmount: u.newTotal.toFixed(2),
       unitCount: units.length,
       units,
@@ -1570,7 +1604,7 @@
       submittedDate: reg.submittedDate || '',
       createdAt: reg.createdAt || '',
       comments: (Array.isArray(reg.comments) ? reg.comments.slice() : []).concat([{
-        text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.` + (addedUnits.length ? ` Units added: ${addedUnits.join(', ')}.` : ''),
+        text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.` + (record.category !== (reg.category || '') ? ` Category ${reg.category || '(none)'} → ${record.category} (Credit Memo).` : '') + (addedUnits.length ? ` Units added: ${addedUnits.join(', ')}.` : ''),
         user: tcrUpdateUserName(),
         timestamp: new Date().toISOString()
       }]),
