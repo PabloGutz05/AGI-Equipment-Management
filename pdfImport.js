@@ -231,7 +231,11 @@
         info.invoiceDateIso = `${m[3]}-${m[1]}-${m[2]}`;
       }
       if(info.subtotalAmount === null && (m = text.match(/Subtotal Amount\s+([\d,]+\.\d{2})/i))) info.subtotalAmount = parseFloat(m[1].replace(/,/g,''));
-      if(info.tax === null && (m = text.match(/^Tax\s+([\d,]+\.\d{2})/))) info.tax = parseFloat(m[1].replace(/,/g,''));
+      // Tax is printed either as one "Tax 1,234.56" row or split per jurisdiction ("Tax Jur Code
+      // Level 1 6.00 % 2,269.98", "Tax Jur Code Level 2 1.50 % 567.90") — sum every Tax row's
+      // trailing amount (never the rate before the "%"), but only up to the Total Amount row so
+      // nothing past the summary block can be picked up.
+      if(info.totalAmount === null && (m = text.match(/^Tax\b.*?([\d,]+\.\d{2})$/))) info.tax = Math.round(((info.tax || 0) + parseFloat(m[1].replace(/,/g,''))) * 100) / 100;
       // Anchored to the start of the row (like the Tax match below) — "Total Amount" is
       // otherwise also a literal substring of "Subtotal Amount" ("Sub" + "total Amount"), so an
       // unanchored match picks up the Subtotal row's own number first and never reaches the
