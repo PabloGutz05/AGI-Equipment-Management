@@ -1112,43 +1112,420 @@
     const el = qs('#pdfImportDropFileName'); if(el) el.textContent = name || '';
   }
 
-  const fileInput = qs('#pdfImportFile');
-  if(fileInput){
-    fileInput.addEventListener('change', () => {
-      const file = fileInput.files && fileInput.files[0];
-      if(file){ setDropFileName(file.name); handleFile(file); }
-    });
-  }
-
-  // Drop zone: dropping a PDF runs the exact same path as picking it in the (hidden) file
-  // input; clicking/Enter/Space on the zone just opens that input's picker.
-  const dropZone = qs('#pdfImportDropZone');
-  if(dropZone){
+  // Drop zone + its hidden file input: dropping a PDF runs the exact same path as picking it in
+  // the input; clicking/Enter/Space on the zone just opens that input's picker.
+  function wirePdfDropZone(zoneSel, inputSel, statusSel, onFile){
+    const input = qs(inputSel);
+    const zone = qs(zoneSel);
+    if(input){
+      input.addEventListener('change', () => {
+        const file = input.files && input.files[0];
+        if(file) onFile(file);
+      });
+    }
+    if(!zone) return;
     const setHover = (on) => {
-      dropZone.style.background = on ? '#e0f2fe' : '#f8fafc';
-      dropZone.style.borderColor = on ? '#0284c7' : '#cbd5e1';
+      zone.style.background = on ? '#e0f2fe' : '#f8fafc';
+      zone.style.borderColor = on ? '#0284c7' : '#cbd5e1';
     };
-    dropZone.addEventListener('click', () => { if(fileInput) fileInput.click(); });
-    dropZone.addEventListener('keydown', (e) => {
-      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); if(fileInput) fileInput.click(); }
+    zone.addEventListener('click', () => { if(input) input.click(); });
+    zone.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); if(input) input.click(); }
     });
-    ['dragenter','dragover'].forEach(evt => dropZone.addEventListener(evt, (e) => { e.preventDefault(); setHover(true); }));
-    dropZone.addEventListener('dragleave', (e) => { if(!dropZone.contains(e.relatedTarget)) setHover(false); });
-    dropZone.addEventListener('drop', (e) => {
+    ['dragenter','dragover'].forEach(evt => zone.addEventListener(evt, (e) => { e.preventDefault(); setHover(true); }));
+    zone.addEventListener('dragleave', (e) => { if(!zone.contains(e.relatedTarget)) setHover(false); });
+    zone.addEventListener('drop', (e) => {
       e.preventDefault();
       setHover(false);
       const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if(!file) return;
       const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
       if(!isPdf){
-        const statusEl = qs('#pdfImportStatus'); if(statusEl) statusEl.textContent = `"${file.name}" isn't a PDF — drop an invoice PDF.`;
+        const statusEl = qs(statusSel); if(statusEl) statusEl.textContent = `"${file.name}" isn't a PDF — drop an invoice PDF.`;
         return;
       }
-      if(fileInput) fileInput.value = '';
-      setDropFileName(file.name);
-      handleFile(file);
+      if(input) input.value = '';
+      onFile(file);
     });
   }
+
+  wirePdfDropZone('#pdfImportDropZone', '#pdfImportFile', '#pdfImportStatus', file => { setDropFileName(file.name); handleFile(file); });
+
+  // ---- TCR Americas: Update Invoice ----
+  // Finds an already-registered invoice (registry) by its WD/SINV number, re-reads a TCR PDF
+  // with the exact same parser as the import above (so Tax is allocated per unit the same way),
+  // and replaces only the per-unit Charge/Tax/Other amounts and the total on that registry.
+  // Units, leases, periods and dates are left alone — anything in the PDF that doesn't fit the
+  // registry's existing structure (another invoice's Doc number, a unit or month that isn't on
+  // it) blocks the save, since that needs the full Edit flow rather than an amounts refresh.
+  // A quarterly registry's periods are matched to the PDF's billed months by their start month;
+  // a non-quarterly one gets every month merged into its single breakdown, exactly like
+  // sendToRegistrationTcr does.
+  //   _tcrUpdate: { registry, slices, quarterly, newSlices, newTotal, blockers }
+  let _tcrUpdate = null;
+
+  const normKey = s => (s || '').toString().trim().toLowerCase();
+  const moneyNum = v => parseCurrency(v === undefined || v === null ? '' : v) || 0;
+  const money2 = n => n ? n.toFixed(2) : '';
+  const detailTotal = d => moneyNum(d.charge) + moneyNum(d.tax) + moneyNum(d.other);
+
+  function tcrUpdateSetStatus(sel, msg){ const el = qs(sel); if(el) el.textContent = msg || ''; }
+
+  function tcrUpdateFindRegistries(query){
+    const q = normKey(query); if(!q) return [];
+    const bare = q.replace(/^sinv-?/, '');
+    return (state.registries || []).filter(r => {
+      const wd = normKey(r.wdNumber);
+      return wd && (wd === q || wd.replace(/^sinv-?/, '') === bare);
+    });
+  }
+
+  // Read-only per-unit table for one period. When `oldDetails` is given, every value that
+  // differs from it is bolded with the previous value struck through underneath.
+  function tcrUpdateDetailTable(details, oldDetails){
+    const oldByUnit = {};
+    (oldDetails || []).forEach(d => { oldByUnit[normKey(d.unit)] = d; });
+    const table = document.createElement('table');
+    table.style.cssText = 'border-collapse:collapse;width:100%;font-size:12px;';
+    const headRow = document.createElement('tr');
+    ['Unit','Amount','Tax','Other Charges','Total'].forEach((label, i) => {
+      const th = document.createElement('th'); th.textContent = label;
+      th.style.cssText = 'padding:6px 8px;border-bottom:2px solid #e6e9ee;background:#f3f4f6;text-align:' + (i === 0 ? 'left' : 'right') + ';';
+      headRow.appendChild(th);
+    });
+    const thead = document.createElement('thead'); thead.appendChild(headRow); table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    let sum = 0;
+    details.forEach(d => {
+      const tr = document.createElement('tr');
+      const old = oldDetails ? oldByUnit[normKey(d.unit)] : null;
+      const unitTd = document.createElement('td'); unitTd.textContent = d.unit || '';
+      unitTd.style.cssText = 'padding:4px 8px;border-bottom:1px solid #eef0f3;';
+      tr.appendChild(unitTd);
+      const values = [moneyNum(d.charge), moneyNum(d.tax), moneyNum(d.other), detailTotal(d)];
+      const oldValues = old ? [moneyNum(old.charge), moneyNum(old.tax), moneyNum(old.other), detailTotal(old)] : null;
+      values.forEach((v, i) => {
+        const td = document.createElement('td');
+        td.style.cssText = 'padding:4px 8px;border-bottom:1px solid #eef0f3;text-align:right;';
+        td.textContent = formatCurrency(v.toFixed(2));
+        if(oldValues && Math.round(oldValues[i]*100) !== Math.round(v*100)){
+          td.style.fontWeight = '600';
+          td.style.background = '#ecfdf5';
+          const prev = document.createElement('div');
+          prev.textContent = formatCurrency(oldValues[i].toFixed(2));
+          prev.style.cssText = 'font-weight:400;color:#9ca3af;text-decoration:line-through;font-size:11px;';
+          td.appendChild(prev);
+        }
+        tr.appendChild(td);
+      });
+      sum += detailTotal(d);
+      tbody.appendChild(tr);
+    });
+    const totalRow = document.createElement('tr');
+    const label = document.createElement('td'); label.textContent = 'Total'; label.colSpan = 4;
+    label.style.cssText = 'padding:6px 8px;font-weight:600;text-align:right;';
+    const val = document.createElement('td'); val.textContent = formatCurrency(sum.toFixed(2));
+    val.style.cssText = 'padding:6px 8px;font-weight:600;text-align:right;';
+    totalRow.appendChild(label); totalRow.appendChild(val); tbody.appendChild(totalRow);
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function tcrUpdatePeriodCards(container, slices, oldSlices){
+    slices.forEach((s, i) => {
+      const card = document.createElement('div');
+      card.style.cssText = 'border:1px solid #e6e9ee;border-radius:8px;padding:10px;margin-bottom:10px;background:#fafbfc;overflow-x:auto;';
+      const title = document.createElement('strong');
+      title.textContent = (slices.length > 1 ? 'Period ' + (i + 1) + ' ' : 'Period ') + '(' + formatDate(s.from) + ' — ' + formatDate(s.to) + ')';
+      card.appendChild(title);
+      const tableWrap = document.createElement('div'); tableWrap.style.marginTop = '8px';
+      tableWrap.appendChild(tcrUpdateDetailTable(s.unitDetails || [], oldSlices ? (oldSlices[i].unitDetails || []) : null));
+      card.appendChild(tableWrap);
+      container.appendChild(card);
+    });
+  }
+
+  function tcrUpdateRenderCurrent(){
+    const wrap = qs('#tcrUpdateCurrent'); if(!wrap || !_tcrUpdate) return;
+    const reg = _tcrUpdate.registry;
+    wrap.innerHTML = '';
+    const heading = document.createElement('h4'); heading.textContent = 'Current invoice'; heading.style.margin = '0 0 8px';
+    wrap.appendChild(heading);
+    const info = document.createElement('div');
+    info.style.cssText = 'display:flex;flex-direction:column;gap:4px;font-size:13px;margin-bottom:10px;';
+    [
+      ['WD Invoice Number', reg.wdNumber || ''],
+      ['Doc Number', reg.docNumber || ''],
+      ['Lease', reg.lease || ''],
+      ['Category', reg.category || ''],
+      ['Period', formatDate(reg.periodStart) + ' — ' + formatDate(reg.periodEnd)],
+      ['Invoice Date', formatDate(reg.invoiceDate) || '—'],
+      ['Units', String((reg.units || []).length)],
+      ['Total Amount', formatCurrency(moneyNum(reg.totalAmount).toFixed(2))]
+    ].forEach(([label, val]) => {
+      const row = document.createElement('div');
+      row.innerHTML = `<strong>${escapeHtml(label)}:</strong> ${escapeHtml(val)}`;
+      info.appendChild(row);
+    });
+    wrap.appendChild(info);
+    tcrUpdatePeriodCards(wrap, _tcrUpdate.slices, null);
+  }
+
+  function tcrUpdateClearPreview(){
+    if(_tcrUpdate){ _tcrUpdate.newSlices = null; _tcrUpdate.newTotal = 0; _tcrUpdate.blockers = []; }
+    const preview = qs('#tcrUpdatePreview'); if(preview) preview.style.display = 'none';
+    const warn = qs('#tcrUpdateWarnings'); if(warn) warn.innerHTML = '';
+    const nw = qs('#tcrUpdateNew'); if(nw) nw.innerHTML = '';
+    const fileInput = qs('#tcrUpdateFile'); if(fileInput) fileInput.value = '';
+    tcrUpdateSetStatus('#tcrUpdateDropFileName', '');
+    tcrUpdateSetStatus('#tcrUpdateStatus', '');
+    const saveBtn = qs('#tcrUpdateSaveBtn'); if(saveBtn) saveBtn.disabled = true;
+  }
+
+  function tcrUpdateSelect(registry){
+    const slices = getRegistryCoveragePeriods(registry).map(s => ({ from: s.from, to: s.to, unitDetails: (s.unitDetails || []).slice() }));
+    const quarterly = !!(registry.period1From || registry.period1To || (Array.isArray(registry.periods) && registry.periods.length > 0));
+    _tcrUpdate = { registry, slices, quarterly, newSlices: null, newTotal: 0, blockers: [] };
+    const matches = qs('#tcrUpdateMatches'); if(matches) matches.innerHTML = '';
+    tcrUpdateClearPreview();
+    tcrUpdateRenderCurrent();
+    const wrap = qs('#tcrUpdateInvoice'); if(wrap) wrap.style.display = 'block';
+  }
+
+  function tcrUpdateReset(){
+    _tcrUpdate = null;
+    tcrUpdateClearPreview();
+    const wrap = qs('#tcrUpdateInvoice'); if(wrap) wrap.style.display = 'none';
+    const cur = qs('#tcrUpdateCurrent'); if(cur) cur.innerHTML = '';
+    const matches = qs('#tcrUpdateMatches'); if(matches) matches.innerHTML = '';
+    const search = qs('#tcrUpdateSearch'); if(search) search.value = '';
+    tcrUpdateSetStatus('#tcrUpdateSearchStatus', '');
+  }
+
+  function tcrUpdateSearch(){
+    const query = (qs('#tcrUpdateSearch') || {}).value || '';
+    _tcrUpdate = null;
+    tcrUpdateClearPreview();
+    const wrap = qs('#tcrUpdateInvoice'); if(wrap) wrap.style.display = 'none';
+    const matchesWrap = qs('#tcrUpdateMatches'); if(matchesWrap) matchesWrap.innerHTML = '';
+    if(!query.trim()){ tcrUpdateSetStatus('#tcrUpdateSearchStatus', 'Enter a WD Invoice Number.'); return; }
+    const found = tcrUpdateFindRegistries(query);
+    if(found.length === 0){ tcrUpdateSetStatus('#tcrUpdateSearchStatus', `No registered invoice found for "${query.trim()}".`); return; }
+    if(found.length === 1){ tcrUpdateSetStatus('#tcrUpdateSearchStatus', ''); tcrUpdateSelect(found[0]); return; }
+    // Same WD on more than one registry (different Doc numbers) — let the operator pick.
+    tcrUpdateSetStatus('#tcrUpdateSearchStatus', `${found.length} invoices share this WD number — pick one:`);
+    found.forEach(r => {
+      const btn = document.createElement('button'); btn.type = 'button';
+      btn.textContent = `${r.wdNumber} · Doc ${r.docNumber || '(none)'} · ${formatDate(r.periodStart)} — ${formatDate(r.periodEnd)} · ${formatCurrency(moneyNum(r.totalAmount).toFixed(2))}`;
+      btn.style.cssText = 'display:block;margin-bottom:6px;font-size:12px;';
+      btn.addEventListener('click', () => { tcrUpdateSetStatus('#tcrUpdateSearchStatus', ''); tcrUpdateSelect(r); });
+      if(matchesWrap) matchesWrap.appendChild(btn);
+    });
+  }
+
+  // Maps the parsed PDF onto the selected registry's own periods/units (see the block comment
+  // above) and collects anything that should block the save or just be pointed out.
+  function tcrUpdateBuild(header, built, parseIssues){
+    const { registry, slices, quarterly } = _tcrUpdate;
+    const blockers = [];
+    const warnings = [];
+
+    if(header.docNumber && registry.docNumber && normKey(header.docNumber) !== normKey(registry.docNumber)){
+      blockers.push(`This PDF is invoice ${header.docNumber}, but ${registry.wdNumber} was registered with Doc Number ${registry.docNumber}. Drop the matching PDF.`);
+    }
+    if(!header.docNumber) warnings.push('The PDF\'s invoice (Doc) number couldn\'t be read — make sure it\'s the right invoice before saving.');
+    const regLeases = (Array.isArray(registry.leases) && registry.leases.length ? registry.leases : (registry.lease || '').split(',')).map(normKey).filter(Boolean);
+    if(header.leaseNumber && regLeases.length && regLeases.indexOf(normKey(header.leaseNumber)) === -1){
+      warnings.push(`The PDF references lease ${header.leaseNumber}, which isn't this invoice's lease (${registry.lease}).`);
+    }
+    if(parseIssues.length) warnings.push(`${parseIssues.length} line item(s) in the PDF couldn't be read confidently and aren't included below. Use the import processor above to see them.`);
+    if(built.unmatchedUnitIds.length) warnings.push(`${built.unmatchedUnitIds.length} unit(s) in the PDF don't exist in the system and are skipped: ${built.unmatchedUnitIds.join(', ')}`);
+
+    // One { uid: seedRow } map per registry slice.
+    let dataBySlice;
+    if(quarterly){
+      dataBySlice = slices.map(() => ({}));
+      built.periods.forEach(p => {
+        const idx = slices.findIndex(s => (s.from || '').slice(0, 7) === p.key);
+        if(idx === -1){ blockers.push(`The PDF bills ${monthLabel(p.key)}, which isn't one of this invoice's periods.`); return; }
+        dataBySlice[idx] = p.unitData;
+      });
+    } else {
+      const merged = {};
+      built.periods.forEach(p => {
+        Object.keys(p.unitData).forEach(uid => {
+          const row = p.unitData[uid];
+          if(!merged[uid]) merged[uid] = { charge: 0, tax: 0, other: 0, otherChargeDetails: [] };
+          merged[uid].charge += moneyNum(row.charge);
+          merged[uid].tax += moneyNum(row.tax);
+          merged[uid].other += moneyNum(row.other);
+          merged[uid].otherChargeDetails = merged[uid].otherChargeDetails.concat(row.otherChargeDetails || []);
+        });
+      });
+      dataBySlice = [merged];
+    }
+
+    const missingUnits = new Set();
+    const newSlices = slices.map((s, i) => {
+      const data = dataBySlice[i] || {};
+      const dataKeys = Object.keys(data);
+      const sliceUnits = new Set(s.unitDetails.map(d => normKey(d.unit)));
+      dataKeys.forEach(uid => {
+        if(!sliceUnits.has(normKey(uid))){
+          blockers.push(`Unit ${uid} is billed in the PDF${quarterly ? ' for ' + formatDate(s.from) + ' — ' + formatDate(s.to) : ''} but isn't on this invoice${quarterly ? ' for that period' : ''}. Add it with Edit on the registry first.`);
+        }
+      });
+      const unitDetails = s.unitDetails.map(d => {
+        const key = dataKeys.find(k => normKey(k) === normKey(d.unit));
+        const row = key ? data[key] : null;
+        if(!row) missingUnits.add(d.unit);
+        return Object.assign({}, d, {
+          charge: row ? money2(moneyNum(row.charge)) : '',
+          tax: row ? money2(moneyNum(row.tax)) : '',
+          other: row ? money2(moneyNum(row.other)) : '',
+          otherChargeDetails: row ? (row.otherChargeDetails || []) : []
+        });
+      });
+      return { from: s.from, to: s.to, unitDetails };
+    });
+    if(missingUnits.size) warnings.push(`No amounts in the PDF for ${Array.from(missingUnits).join(', ')}${quarterly ? ' in at least one period' : ''} — those rows will be saved blank.`);
+
+    const newTotal = newSlices.reduce((s, sl) => s + sl.unitDetails.reduce((a, d) => a + detailTotal(d), 0), 0);
+    const pdfTotal = header.subtotalAmount !== null ? header.subtotalAmount + (header.tax || 0) : header.totalAmount;
+    if(pdfTotal !== null && Math.round(newTotal*100) !== Math.round(pdfTotal*100)){
+      warnings.push(`Updated total (${formatCurrency(newTotal.toFixed(2))}) doesn't match the PDF's own total (${formatCurrency(pdfTotal.toFixed(2))}, Subtotal + Tax).`);
+    }
+    if(header.tax === null) warnings.push('The PDF\'s Tax row couldn\'t be read — no tax was allocated.');
+
+    return { newSlices, newTotal, blockers, warnings };
+  }
+
+  function tcrUpdateRenderPreview(result){
+    const warnWrap = qs('#tcrUpdateWarnings');
+    const newWrap = qs('#tcrUpdateNew');
+    if(!warnWrap || !newWrap) return;
+    warnWrap.innerHTML = ''; newWrap.innerHTML = '';
+    result.blockers.forEach(msg => {
+      const d = document.createElement('div');
+      d.style.cssText = 'background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:6px;padding:8px 10px;font-size:12px;margin-bottom:6px;';
+      d.textContent = '⛔ ' + msg;
+      warnWrap.appendChild(d);
+    });
+    result.warnings.forEach(msg => {
+      const d = document.createElement('div');
+      d.style.cssText = 'background:#fef9c3;color:#92400e;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;font-size:12px;margin-bottom:6px;';
+      d.textContent = '⚠ ' + msg;
+      warnWrap.appendChild(d);
+    });
+    const heading = document.createElement('h4'); heading.style.margin = '0 0 8px';
+    const oldTotal = moneyNum(_tcrUpdate.registry.totalAmount);
+    heading.textContent = `Updated data — total ${formatCurrency(result.newTotal.toFixed(2))} (was ${formatCurrency(oldTotal.toFixed(2))})`;
+    newWrap.appendChild(heading);
+    tcrUpdatePeriodCards(newWrap, result.newSlices, _tcrUpdate.slices);
+    const preview = qs('#tcrUpdatePreview'); if(preview) preview.style.display = 'block';
+  }
+
+  async function tcrUpdateHandleFile(file){
+    if(!_tcrUpdate) return;
+    tcrUpdateClearPreview();
+    tcrUpdateSetStatus('#tcrUpdateDropFileName', file.name);
+    tcrUpdateSetStatus('#tcrUpdateStatus', 'Reading PDF…');
+    try{
+      const lib = await loadPdfJs();
+      const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+      const rows = await extractRows(pdf);
+      if(detectInvoiceType(rows) !== 'tcr'){ tcrUpdateSetStatus('#tcrUpdateStatus', 'This isn\'t a TCR Americas invoice PDF.'); return; }
+      const header = parseHeaderInfo(rows);
+      const { unitMonthCat, totalCandidates, issues } = parseDetailRows(rows);
+      if(totalCandidates === 0){ tcrUpdateSetStatus('#tcrUpdateStatus', 'No recognizable line items found — this may not be a TCR quarterly usage-detail invoice.'); return; }
+      const built = buildPeriods(unitMonthCat, header.tax);
+      if(!_tcrUpdate) return; // cancelled while reading
+      const result = tcrUpdateBuild(header, built, issues);
+      Object.assign(_tcrUpdate, { newSlices: result.newSlices, newTotal: result.newTotal, blockers: result.blockers });
+      tcrUpdateRenderPreview(result);
+      tcrUpdateSetStatus('#tcrUpdateStatus', result.blockers.length ? 'Can\'t save — see the issues below.' : 'Review the updated amounts below, then Save Changes.');
+      const saveBtn = qs('#tcrUpdateSaveBtn'); if(saveBtn) saveBtn.disabled = result.blockers.length > 0;
+    }catch(err){
+      tcrUpdateSetStatus('#tcrUpdateStatus', 'Failed to parse PDF: ' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  function tcrUpdateUserName(){
+    const session = typeof currentSession === 'function' ? currentSession() : null;
+    if(!session) return 'Unknown User';
+    if(session.user === 'Master') return 'Master';
+    const u = (state.users || []).find(x => x.username === session.user);
+    if(!u) return session.user || 'Unknown User';
+    return ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.username || 'Unknown User';
+  }
+
+  async function tcrUpdateSave(){
+    const u = _tcrUpdate;
+    if(!u || !u.newSlices || u.blockers.length) return;
+    const reg = u.registry;
+    if(!reg.id){
+      alert(`Registry ${reg.seq || ''} (WD ${reg.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so it can't be updated safely. Add an identifier to that row in the "invoices" sheet, then reload.`);
+      return;
+    }
+
+    const oldTotal = moneyNum(reg.totalAmount);
+    const updated = Object.assign({}, reg, {
+      unitDetails: u.newSlices[0].unitDetails,
+      totalAmount: u.newTotal.toFixed(2),
+      comments: (Array.isArray(reg.comments) ? reg.comments.slice() : []).concat([{
+        text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.`,
+        user: tcrUpdateUserName(),
+        timestamp: new Date().toISOString()
+      }])
+    });
+    if(Array.isArray(reg.periods) && reg.periods.length){
+      updated.periods = reg.periods.map((p, i) => Object.assign({}, p, { unitDetails: u.newSlices[i + 1].unitDetails }));
+    }
+
+    const saveBtn = qs('#tcrUpdateSaveBtn');
+    if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
+    try{
+      await DB.updateRegistry(updated);
+    }catch(e){
+      console.error('TCR invoice update save error:', e);
+      alert('Failed to save to Google Sheets: ' + e.message);
+      if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = 'Save Changes'; }
+      return;
+    }
+    if(saveBtn) saveBtn.textContent = 'Save Changes';
+
+    Object.assign(reg, updated);
+    // In-session invoice records only ever mirror Period 1 (see the registration submit handler).
+    const wd = normKey(reg.wdNumber), doc = normKey(reg.docNumber);
+    (state.invoices || []).forEach(inv => {
+      if(normKey(inv.wdNumber) !== wd || normKey(inv.docNumber) !== doc) return;
+      const d = updated.unitDetails.find(x => normKey(x.unit) === normKey(inv.unit));
+      if(!d) return;
+      Object.assign(inv, { amount: d.charge, taxAmount: d.tax, otherCharges: d.other, otherChargeDetails: d.otherChargeDetails });
+    });
+
+    saveState();
+    renderRegistries(reg.id);
+    renderInvoices();
+    renderUnitOverview();
+    renderLeaseOverview();
+    renderOverview();
+
+    const savedWd = reg.wdNumber;
+    tcrUpdateReset();
+    tcrUpdateSetStatus('#tcrUpdateSearchStatus', `✓ ${savedWd} updated — new total ${formatCurrency(u.newTotal.toFixed(2))}.`);
+  }
+
+  const tcrUpdateSearchInput = qs('#tcrUpdateSearch');
+  if(tcrUpdateSearchInput) tcrUpdateSearchInput.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); tcrUpdateSearch(); } });
+  const tcrUpdateSearchBtn = qs('#tcrUpdateSearchBtn');
+  if(tcrUpdateSearchBtn) tcrUpdateSearchBtn.addEventListener('click', tcrUpdateSearch);
+  wirePdfDropZone('#tcrUpdateDropZone', '#tcrUpdateFile', '#tcrUpdateStatus', tcrUpdateHandleFile);
+  const tcrUpdateSaveBtn = qs('#tcrUpdateSaveBtn');
+  if(tcrUpdateSaveBtn) tcrUpdateSaveBtn.addEventListener('click', tcrUpdateSave);
+  const tcrUpdateCancelBtn = qs('#tcrUpdateCancelBtn');
+  if(tcrUpdateCancelBtn) tcrUpdateCancelBtn.addEventListener('click', tcrUpdateReset);
+
   const sendBtn = qs('#pdfImportSendBtn');
   if(sendBtn) sendBtn.addEventListener('click', sendToRegistration);
   const clearBtn = qs('#pdfImportClearBtn');
