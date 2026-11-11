@@ -3137,15 +3137,7 @@ function renderRegistries(keepOpenRegistryId){
   const hadAnyRegistries = regs.length > 0;
   const registrySearchGroups = parseSearchGroups(state.meta.registrySearch);
   if(registrySearchGroups.length > 0){
-    regs = regs.filter(r => {
-      const wd = (r.wdNumber || '').toString().toLowerCase();
-      const doc = (r.docNumber || '').toString().toLowerCase();
-      const category = (r.category || '').toString().toLowerCase();
-      const leases = Array.isArray(r.leases) && r.leases.length ? r.leases.join(' ') : (r.lease || '').toString();
-      const units = Array.isArray(r.units) ? r.units.join(' ') : '';
-      const comments = Array.isArray(r.comments) ? r.comments.map(c => (c.text||'').toString()).join(' ') : '';
-      return matchesSearchGroups(registrySearchGroups, [wd, doc, category, leases.toLowerCase(), units.toLowerCase(), comments.toLowerCase()]);
-    });
+    regs = regs.filter(r => matchesSearchGroups(registrySearchGroups, registrySearchFields(r)));
   }
   if(regs.length === 0){
     const em = document.createElement('div'); em.className = 'small-muted';
@@ -4767,6 +4759,56 @@ function parseSearchGroups(raw){
       return { term, exact };
     }).filter(t => t.term.length > 0))
     .filter(group => group.length > 0);
+}
+
+// Every searchable value for one registry in the Invoices tab search box: its own header fields
+// (WD/Doc/category/seq/total/dates), comments, and each tag shown on the expanded card — every
+// period's per-unit details (company/supplier/arrangement/invoicing/cost center/lease/other
+// charge names), the registry's lease records, and each member unit's own record (description,
+// spend category, status, ...). Dates match both as stored (YYYY-MM-DD) and as displayed.
+function registrySearchFields(r){
+  const vals = [];
+  const add = v => { if(v !== undefined && v !== null && v !== '') vals.push(v.toString()); };
+  const addDate = d => { add(d); add(formatDate(d)); };
+
+  add(r.wdNumber); add(r.docNumber); add(r.category); add(r.seq);
+  add(r.totalAmount); add(formatCurrency(r.totalAmount || ''));
+  [r.invoiceDate, r.periodStart, r.periodEnd, r.submittedDate, r.period1From, r.period1To].forEach(addDate);
+
+  const leaseList = Array.isArray(r.leases) && r.leases.length ? r.leases : (r.lease || '').toString().split(',').map(s => s.trim()).filter(Boolean);
+  leaseList.forEach(add);
+  (Array.isArray(r.units) ? r.units : []).forEach(add);
+  (Array.isArray(r.comments) ? r.comments : []).forEach(c => { add(c.text); add(c.user); });
+
+  const periods = Array.isArray(r.periods) ? r.periods : [];
+  periods.forEach(p => { addDate(p.fromDate); addDate(p.toDate); });
+  const allDetails = (Array.isArray(r.unitDetails) ? r.unitDetails : []).concat(...periods.map(p => Array.isArray(p.unitDetails) ? p.unitDetails : []));
+  allDetails.forEach(d => {
+    ['unit','lease','company','supplier','arrangement','invoicing','costCenter'].forEach(k => add(d[k]));
+    (Array.isArray(d.otherChargeDetails) ? d.otherChargeDetails : []).forEach(oc => { add(oc.name); add(oc.description); });
+  });
+
+  leaseList.forEach(lv => {
+    const key = lv.toString().trim().toLowerCase();
+    const l = (state.leases || []).find(x => (x.leaseNumber || x.id || '').toString().trim().toLowerCase() === key);
+    if(l) ['company','supplier','arrangement','invoicing'].forEach(k => add(l[k]));
+  });
+
+  const unitIds = new Set((Array.isArray(r.units) ? r.units : []).concat(allDetails.map(d => d.unit)).map(u => (u || '').toString().trim().toLowerCase()).filter(Boolean));
+  (state.units || []).forEach(u => {
+    if(!unitIds.has((u.unitId || u.id || '').toString().trim().toLowerCase())) return;
+    ['company','supplier','arrangement','invoicing','spendCategory','costCenter','description','status'].forEach(k => add(u[k]));
+  });
+
+  // Category fallback mirrors the expanded card: registries without their own category show the
+  // first matching invoice's.
+  if(!r.category){
+    const wd = (r.wdNumber || '').toString().trim().toLowerCase();
+    const inv = (state.invoices || []).find(i => (i.wdNumber || '').toString().trim().toLowerCase() === wd);
+    if(inv) add(inv.category);
+  }
+
+  return vals.map(v => v.toLowerCase());
 }
 
 function matchesSearchGroups(groups, fields){
