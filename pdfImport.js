@@ -1158,14 +1158,11 @@
   // ---- TCR Americas: Update Invoice ----
   // Finds an already-registered invoice (registry) by its WD/SINV number, re-reads a TCR PDF
   // with the exact same parser as the import above (so Tax is allocated per unit the same way),
-  // and replaces only the per-unit Charge/Tax/Other amounts and the total on that registry.
-  // Units, leases, periods and dates are left alone — anything in the PDF that doesn't fit the
-  // registry's existing structure (another invoice's Doc number, a unit or month that isn't on
-  // it) blocks the save, since that needs the full Edit flow rather than an amounts refresh.
-  // A quarterly registry's periods are matched to the PDF's billed months by their start month;
-  // a non-quarterly one gets every month merged into its single breakdown, exactly like
-  // sendToRegistrationTcr does.
-  //   _tcrUpdate: { registry, slices, quarterly, newSlices, newTotal, blockers }
+  // and rebuilds that registry's periods, per-unit amounts, units/leases and total the way the
+  // import would have registered it (see tcrUpdateBuild). WD/Doc/category/dates submitted stay
+  // as they are; a PDF for a different Doc number blocks the save.
+  //   _tcrUpdate: { registry, slices, quarterly, newSlices, newTotal, blockers, usePeriods,
+  //                 overallFrom, overallTo }
   let _tcrUpdate = null;
 
   const normKey = s => (s || '').toString().trim().toLowerCase();
@@ -1250,7 +1247,10 @@
       title.textContent = (slices.length > 1 ? 'Period ' + (i + 1) + ' ' : 'Period ') + '(' + formatDate(s.from) + ' — ' + formatDate(s.to) + ')';
       card.appendChild(title);
       const tableWrap = document.createElement('div'); tableWrap.style.marginTop = '8px';
-      tableWrap.appendChild(tcrUpdateDetailTable(s.unitDetails || [], oldSlices ? (oldSlices[i].unitDetails || []) : null));
+      // Changes are only highlighted against an old period covering exactly the same dates —
+      // when the periods were rebuilt there's nothing like-for-like to compare a value to.
+      const oldMatch = oldSlices ? oldSlices.find(o => o.from === s.from && o.to === s.to) : null;
+      tableWrap.appendChild(tcrUpdateDetailTable(s.unitDetails || [], oldMatch ? (oldMatch.unitDetails || []) : null));
       card.appendChild(tableWrap);
       container.appendChild(card);
     });
@@ -1334,10 +1334,15 @@
     });
   }
 
-  // Maps the parsed PDF onto the selected registry's own periods/units (see the block comment
-  // above) and collects anything that should block the save or just be pointed out.
+  // Rebuilds the selected registry's periods/units from the parsed PDF exactly the way the
+  // import's "Send to Registration" would lay them out (see sendToRegistrationTcr): one period
+  // per billed month when the invoice is on a Quarterly lease (or was already registered with
+  // periods), otherwise every month merged into one breakdown spanning the PDF's whole range.
+  // Every period lists every unit — the ones already on the invoice plus any the PDF bills —
+  // with each unit's lease details carried over from its existing row, blanks filled from its
+  // own unit record. Also collects anything that should block the save or just be pointed out.
   function tcrUpdateBuild(header, built, parseIssues){
-    const { registry, slices, quarterly } = _tcrUpdate;
+    const { registry, slices } = _tcrUpdate;
     const blockers = [];
     const warnings = [];
 
@@ -1345,22 +1350,70 @@
       blockers.push(`This PDF is invoice ${header.docNumber}, but ${registry.wdNumber} was registered with Doc Number ${registry.docNumber}. Drop the matching PDF.`);
     }
     if(!header.docNumber) warnings.push('The PDF\'s invoice (Doc) number couldn\'t be read — make sure it\'s the right invoice before saving.');
-    const regLeases = (Array.isArray(registry.leases) && registry.leases.length ? registry.leases : (registry.lease || '').split(',')).map(normKey).filter(Boolean);
-    if(header.leaseNumber && regLeases.length && regLeases.indexOf(normKey(header.leaseNumber)) === -1){
-      warnings.push(`The PDF references lease ${header.leaseNumber}, which isn't this invoice's lease (${registry.lease}).`);
-    }
+    if(built.periods.length === 0) blockers.push('None of the units billed in the PDF exist in the system, so there\'s nothing to update.');
     if(parseIssues.length) warnings.push(`${parseIssues.length} line item(s) in the PDF couldn't be read confidently and aren't included below. Use the import processor above to see them.`);
     if(built.unmatchedUnitIds.length) warnings.push(`${built.unmatchedUnitIds.length} unit(s) in the PDF don't exist in the system and are skipped: ${built.unmatchedUnitIds.join(', ')}`);
 
-    // One { uid: seedRow } map per registry slice.
-    let dataBySlice;
-    if(quarterly){
-      dataBySlice = slices.map(() => ({}));
-      built.periods.forEach(p => {
-        const idx = slices.findIndex(s => (s.from || '').slice(0, 7) === p.key);
-        if(idx === -1){ blockers.push(`The PDF bills ${monthLabel(p.key)}, which isn't one of this invoice's periods.`); return; }
-        dataBySlice[idx] = p.unitData;
+    const regLeases = (Array.isArray(registry.leases) && registry.leases.length ? registry.leases : (registry.lease || '').split(',')).map(normKey).filter(Boolean);
+
+    // Every unit on the updated invoice, in order: what it already lists, then what the PDF adds.
+    const unitOrder = [];
+    const pushUnit = uid => { if(uid && !unitOrder.some(x => normKey(x) === normKey(uid))) unitOrder.push(uid); };
+    (registry.units || []).forEach(pushUnit);
+    slices.forEach(s => s.unitDetails.forEach(d => pushUnit(d.unit)));
+    built.matchedUnitIds.forEach(pushUnit);
+
+    const oldByUnit = {};
+    slices.forEach(s => s.unitDetails.forEach(d => { const k = normKey(d.unit); if(!oldByUnit[k]) oldByUnit[k] = d; }));
+
+    // Per-unit lease details (no amounts). A unit registered without its lease selected — or
+    // not on the invoice at all yet — gets its lease details from its own unit record; only
+    // blanks are filled, anything already set is kept.
+    const existingLeases = new Set(regLeases);
+    const addedUnits = [], addedLeases = new Set(), noLeaseUnits = [];
+    const baseByUnit = {};
+    unitOrder.forEach(uid => {
+      const k = normKey(uid);
+      const old = oldByUnit[k];
+      const base = { unit: uid };
+      ['lease','company','supplier','arrangement','invoicing','costCenter'].forEach(f => { if(old && old[f]) base[f] = old[f]; });
+      if(!base.lease){
+        const resolved = resolveInvoiceUnitLeaseInfo(uid, regLeases);
+        Object.keys(resolved).forEach(f => { if(!base[f] && resolved[f]) base[f] = resolved[f]; });
+        if(!base.lease) noLeaseUnits.push(uid);
+      }
+      if(!base.costCenter){
+        const unitRec = (state.units || []).find(u => normKey(u.unitId || u.id) === k);
+        if(unitRec && unitRec.costCenter) base.costCenter = unitRec.costCenter;
+      }
+      if(!old && !(registry.units || []).some(x => normKey(x) === k)){ base.__added = true; addedUnits.push(uid); }
+      if(base.lease && !existingLeases.has(normKey(base.lease))) addedLeases.add(base.lease);
+      baseByUnit[k] = base;
+    });
+
+    // Same period rule as sendToRegistrationTcr.
+    const leaseRecFor = l => (state.leases || []).find(x => normKey(x.leaseNumber || x.id) === normKey(l));
+    const allLeases = regLeases.concat(Array.from(addedLeases), header.leaseNumber ? [header.leaseNumber] : []);
+    const isQuarterlyLease = allLeases.some(l => { const rec = leaseRecFor(l); return !!rec && normKey(rec.arrangement) === 'quarterly'; });
+    const usePeriods = built.periods.length > 1 && (isQuarterlyLease || _tcrUpdate.quarterly);
+    if(built.periods.length > 1 && !usePeriods){
+      warnings.push(`The PDF bills ${built.periods.length} separate months, but none of this invoice's leases is marked Quarterly — they're merged into one period, the same as the import does.`);
+    }
+
+    const rowFor = (data, uid) => { const key = Object.keys(data).find(k => normKey(k) === normKey(uid)); return key ? data[key] : null; };
+    const makeDetails = data => unitOrder.map(uid => {
+      const row = rowFor(data, uid);
+      return Object.assign({}, baseByUnit[normKey(uid)], {
+        charge: row ? money2(moneyNum(row.charge)) : '',
+        tax: row ? money2(moneyNum(row.tax)) : '',
+        other: row ? money2(moneyNum(row.other)) : '',
+        otherChargeDetails: row ? (row.otherChargeDetails || []) : []
       });
+    });
+
+    let newSlices;
+    if(usePeriods){
+      newSlices = built.periods.map(p => ({ from: p.fromDate, to: p.toDate, unitDetails: makeDetails(p.unitData) }));
     } else {
       const merged = {};
       built.periods.forEach(p => {
@@ -1373,60 +1426,29 @@
           merged[uid].otherChargeDetails = merged[uid].otherChargeDetails.concat(row.otherChargeDetails || []);
         });
       });
-      dataBySlice = [merged];
+      newSlices = [{ from: built.overallFrom, to: built.overallTo, unitDetails: makeDetails(merged) }];
     }
 
-    // A unit billed in the PDF but missing from the invoice (or from that one period of it) is
-    // added with its own lease details, exactly like checking it in the registration form's unit
-    // picker would — invoices registered before the import existed often left some units (and so
-    // their leases) out entirely.
-    const existingLeases = new Set(regLeases);
-    const addedUnits = new Set();
-    const addedLeases = new Set();
-    const missingUnits = new Set();
-    const noLeaseUnits = new Set();
-    const newSlices = slices.map((s, i) => {
-      const data = dataBySlice[i] || {};
-      const dataKeys = Object.keys(data);
-      const sliceUnits = new Set(s.unitDetails.map(d => normKey(d.unit)));
-      const baseDetails = s.unitDetails.slice();
-      dataKeys.forEach(uid => {
-        if(sliceUnits.has(normKey(uid))) return;
-        const resolved = resolveInvoiceUnitLeaseInfo(uid, regLeases);
-        const unitRec = (state.units || []).find(u => normKey(u.unitId || u.id) === normKey(uid));
-        // Older registries can list a unit in registry.units without any per-unit detail row —
-        // that unit just gets its row filled in, it isn't reported as newly added.
-        const alreadyListed = (registry.units || []).some(x => normKey(x) === normKey(uid));
-        baseDetails.push(Object.assign({ unit: uid }, resolved, { costCenter: unitRec ? (unitRec.costCenter || '') : '', __added: !alreadyListed }));
-        if(!alreadyListed) addedUnits.add(uid);
-      });
-      const unitDetails = baseDetails.map(d => {
-        const key = dataKeys.find(k => normKey(k) === normKey(d.unit));
-        const row = key ? data[key] : null;
-        if(!row) missingUnits.add(d.unit);
-        // A unit registered without its lease selected gets its lease details filled in from
-        // its own unit record (only blanks are filled — anything already set is kept).
-        let leaseFill = {};
-        if(!d.lease){
-          const resolved = resolveInvoiceUnitLeaseInfo(d.unit, regLeases);
-          Object.keys(resolved).forEach(k => { if(!d[k] && resolved[k]) leaseFill[k] = resolved[k]; });
-          if(!resolved.lease) noLeaseUnits.add(d.unit);
-        }
-        const lease = leaseFill.lease || d.lease;
-        if(lease && !existingLeases.has(normKey(lease))) addedLeases.add(lease);
-        return Object.assign({}, d, leaseFill, {
-          charge: row ? money2(moneyNum(row.charge)) : '',
-          tax: row ? money2(moneyNum(row.tax)) : '',
-          other: row ? money2(moneyNum(row.other)) : '',
-          otherChargeDetails: row ? (row.otherChargeDetails || []) : []
-        });
-      });
-      return { from: s.from, to: s.to, unitDetails };
-    });
-    if(addedUnits.size) warnings.push(`${addedUnits.size} unit(s) billed in the PDF aren't on this invoice${quarterly ? ' (or a period of it)' : ''} and will be added: ${Array.from(addedUnits).join(', ')}`);
+    const overallFrom = built.overallFrom || registry.periodStart || '';
+    const overallTo = built.overallTo || registry.periodEnd || '';
+    if(overallFrom !== (registry.periodStart || '') || overallTo !== (registry.periodEnd || '')){
+      warnings.push(`The invoice period changes from ${formatDate(registry.periodStart) || '(none)'} — ${formatDate(registry.periodEnd) || '(none)'} to ${formatDate(overallFrom)} — ${formatDate(overallTo)}, per the PDF.`);
+    }
+    const oldLayout = slices.map(s => s.from + '|' + s.to).join(',');
+    const newLayout = newSlices.map(s => s.from + '|' + s.to).join(',');
+    if(oldLayout !== newLayout){
+      warnings.push(usePeriods
+        ? `Periods are rebuilt as ${newSlices.length} monthly periods (was ${slices.length}).`
+        : `Periods are rebuilt as one period (was ${slices.length}).`);
+    }
+
+    const billedUnits = new Set();
+    newSlices.forEach(s => s.unitDetails.forEach(d => { if(detailTotal(d)) billedUnits.add(normKey(d.unit)); }));
+    const unbilled = unitOrder.filter(uid => !billedUnits.has(normKey(uid)));
+    if(addedUnits.length) warnings.push(`${addedUnits.length} unit(s) billed in the PDF aren't on this invoice and will be added: ${addedUnits.join(', ')}`);
     if(addedLeases.size) warnings.push(`Lease(s) added to this invoice from its units' records: ${Array.from(addedLeases).join(', ')}`);
-    if(noLeaseUnits.size) warnings.push(`No lease in the unit record for ${Array.from(noLeaseUnits).join(', ')} — saved without one.`);
-    if(missingUnits.size) warnings.push(`No amounts in the PDF for ${Array.from(missingUnits).join(', ')}${quarterly ? ' in at least one period' : ''} — those rows will be saved blank.`);
+    if(noLeaseUnits.length) warnings.push(`No lease in the unit record for ${noLeaseUnits.join(', ')} — saved without one.`);
+    if(unbilled.length) warnings.push(`No amounts in the PDF for ${unbilled.join(', ')} — they stay on the invoice with blank amounts.`);
 
     const newTotal = newSlices.reduce((s, sl) => s + sl.unitDetails.reduce((a, d) => a + detailTotal(d), 0), 0);
     const pdfTotal = header.subtotalAmount !== null ? header.subtotalAmount + (header.tax || 0) : header.totalAmount;
@@ -1435,7 +1457,7 @@
     }
     if(header.tax === null) warnings.push('The PDF\'s Tax row couldn\'t be read — no tax was allocated.');
 
-    return { newSlices, newTotal, blockers, warnings };
+    return { newSlices, newTotal, blockers, warnings, usePeriods, overallFrom, overallTo };
   }
 
   function tcrUpdateRenderPreview(result){
@@ -1479,7 +1501,7 @@
       const built = buildPeriods(unitMonthCat, header.tax);
       if(!_tcrUpdate) return; // cancelled while reading
       const result = tcrUpdateBuild(header, built, issues);
-      Object.assign(_tcrUpdate, { newSlices: result.newSlices, newTotal: result.newTotal, blockers: result.blockers });
+      Object.assign(_tcrUpdate, { newSlices: result.newSlices, newTotal: result.newTotal, blockers: result.blockers, usePeriods: result.usePeriods, overallFrom: result.overallFrom, overallTo: result.overallTo });
       tcrUpdateRenderPreview(result);
       tcrUpdateSetStatus('#tcrUpdateStatus', result.blockers.length ? 'Can\'t save — see the issues below.' : 'Review the updated amounts below, then Save Changes.');
       const saveBtn = qs('#tcrUpdateSaveBtn'); if(saveBtn) saveBtn.disabled = result.blockers.length > 0;
@@ -1520,8 +1542,16 @@
     }));
     const addedUnits = units.filter(x => !(reg.units || []).some(y => normKey(y) === normKey(x)));
 
+    // Period layout mirrors what the registration form saves: Period 1 lives on unitDetails
+    // (+ period1From/To when quarterly), every later period in periods[]; a non-quarterly
+    // invoice clears both so it reads as one period over periodStart/periodEnd.
     const updated = Object.assign({}, reg, {
+      periodStart: u.overallFrom,
+      periodEnd: u.overallTo,
       unitDetails: newSlices[0].unitDetails,
+      period1From: u.usePeriods ? newSlices[0].from : '',
+      period1To: u.usePeriods ? newSlices[0].to : '',
+      periods: u.usePeriods ? newSlices.slice(1).map(s => ({ fromDate: s.from, toDate: s.to, unitDetails: s.unitDetails })) : [],
       units,
       unitCount: units.length,
       leases,
@@ -1533,9 +1563,6 @@
         timestamp: new Date().toISOString()
       }])
     });
-    if(Array.isArray(reg.periods) && reg.periods.length){
-      updated.periods = reg.periods.map((p, i) => Object.assign({}, p, { unitDetails: newSlices[i + 1].unitDetails }));
-    }
 
     const saveBtn = qs('#tcrUpdateSaveBtn');
     if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
@@ -1558,6 +1585,7 @@
       const fields = {
         lease: d.lease || '', company: d.company || '', supplier: d.supplier || '',
         arrangement: d.arrangement || '', invoicing: d.invoicing || '',
+        periodStart: updated.periodStart || '', periodEnd: updated.periodEnd || '',
         amount: d.charge, taxAmount: d.tax, otherCharges: d.other, otherChargeDetails: d.otherChargeDetails
       };
       const inv = state.invoices.find(i => normKey(i.wdNumber) === wd && normKey(i.docNumber) === doc && normKey(i.unit) === normKey(d.unit));
