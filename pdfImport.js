@@ -5,7 +5,8 @@
 //     rows of barcode/fleet code/model/dates/Labour|Parts|Usage amounts, repeated once per
 //     billed month, all under ONE lease). Usage is the unit's actual rent, so it becomes the
 //     main Charge amount; Labour and Parts are billed alongside it but aren't rent, so
-//     they're placed as named Other Charges instead.
+//     they're placed as named Other Charges instead. The invoice-level Tax is split equally
+//     between the units (see buildPeriods).
 //   - Toyota Industries Commercial Finance's account invoice summary (one "ACCOUNT
 //     INFORMATION / SUMMARY OF CHARGES" block per contract/unit, each contract billed under
 //     its OWN lease — a single PDF can span many leases at once). Each block's Contract
@@ -350,7 +351,12 @@
   // named Other Charge rows. Only units that actually have an amount for that month are
   // included (so ragged data across units/months is naturally supported); barcodes that don't
   // match an existing UnitId are excluded per the app's convention and reported separately.
-  function buildPeriods(unitMonthCat){
+  // The invoice's Tax is only printed as one invoice-level total, so it's split equally
+  // between every unit on the invoice (matched or not — an unmatched unit's share is skipped
+  // along with it, same as its charges), then each unit's share is split equally across the
+  // months it was billed. Done in whole cents with the leftover pennies going to the first
+  // entries, so the shares always add back up to the PDF's Tax exactly.
+  function buildPeriods(unitMonthCat, invoiceTax){
     const monthKeys = new Set();
     Object.values(unitMonthCat).forEach(byMonth => Object.keys(byMonth).forEach(k => monthKeys.add(k)));
     const sortedKeys = Array.from(monthKeys).sort();
@@ -365,6 +371,23 @@
     const labourName = mapOtherChargeName('Labour');
     const partsName = mapOtherChargeName('Parts');
 
+    const splitCents = (cents, n) => {
+      const base = Math.floor(cents / n), rem = cents - base * n;
+      return Array.from({ length: n }, (_, i) => base + (i < rem ? 1 : 0));
+    };
+    const taxByUnitMonth = {};
+    const taxedUnits = Object.keys(unitMonthCat).filter(uid => Object.keys(unitMonthCat[uid]).length > 0).sort();
+    const taxCents = Math.round((Number(invoiceTax) || 0) * 100);
+    if(taxCents > 0 && taxedUnits.length > 0){
+      const unitShares = splitCents(taxCents, taxedUnits.length);
+      taxedUnits.forEach((uid, i) => {
+        const months = Object.keys(unitMonthCat[uid]).sort();
+        const monthShares = splitCents(unitShares[i], months.length);
+        taxByUnitMonth[uid] = {};
+        months.forEach((mk, j) => { taxByUnitMonth[uid][mk] = monthShares[j] / 100; });
+      });
+    }
+
     const periods = sortedKeys.map(key => {
       const [yyyy, mm] = key.split('-');
       const lastDay = new Date(Number(yyyy), Number(mm), 0).getDate();
@@ -375,9 +398,10 @@
         if(cat.Labour) otherChargeDetails.push({ name: labourName, amount: cat.Labour.toFixed(2), tax: '', description: '' });
         if(cat.Parts) otherChargeDetails.push({ name: partsName, amount: cat.Parts.toFixed(2), tax: '', description: '' });
         const otherSum = cat.Labour + cat.Parts;
+        const tax = (taxByUnitMonth[uid] && taxByUnitMonth[uid][key]) || 0;
         unitData[uid] = {
           charge: cat.Usage ? cat.Usage.toFixed(2) : '',
-          tax: '',
+          tax: tax ? tax.toFixed(2) : '',
           other: otherSum ? otherSum.toFixed(2) : '',
           otherChargeDetails
         };
@@ -425,7 +449,7 @@
       combined[issue.unit][issue.monthKey] = combined[issue.unit][issue.monthKey] || { Labour:0, Parts:0, Usage:0 };
       combined[issue.unit][issue.monthKey][issue.category] += amt;
     });
-    const built = buildPeriods(combined);
+    const built = buildPeriods(combined, _reviewData.header.tax);
     _reviewData.periods = built.periods;
     _reviewData.matchedUnitIds = built.matchedUnitIds;
     _reviewData.unmatchedUnitIds = built.unmatchedUnitIds;
@@ -640,8 +664,13 @@
     if(periods.length > 1 && leaseRec && !isQuarterlyLease) warnings.push(`This invoice spans ${periods.length} separate months, but Lease ${header.leaseNumber} isn't marked Quarterly — periods will be merged into one period unless you fix the lease's Arrangement first.`);
     if(unmatchedUnitIds.length > 0) warnings.push(`${unmatchedUnitIds.length} unit(s) in the PDF don't match any UnitId in the system and will be skipped: ${unmatchedUnitIds.join(', ')}`);
     const parsedSum = periods.reduce((s,p) => s + periodTotalFromUnitData(p.unitData), 0);
-    if(header.subtotalAmount !== null && Math.round(parsedSum*100) !== Math.round(header.subtotalAmount*100)){
-      warnings.push(`Parsed total (${formatCurrency(parsedSum.toFixed(2))}) doesn't match the PDF's own "Subtotal Amount" (${formatCurrency(header.subtotalAmount.toFixed(2))}) — some rows may not have been read correctly. Note: this excludes the invoice's Tax (${header.tax !== null ? formatCurrency(header.tax.toFixed(2)) : 'n/a'}), which isn't broken out per unit and isn't allocated automatically.`);
+    // Tax is allocated across the units above, so the parse should add up to the full
+    // Subtotal + Tax; fall back to the PDF's Total Amount row if Subtotal wasn't readable.
+    const pdfTotal = header.subtotalAmount !== null ? header.subtotalAmount + (header.tax || 0) : header.totalAmount;
+    const taxMaybeMissing = header.tax === null && !(header.subtotalAmount !== null && header.totalAmount !== null && Math.round(header.subtotalAmount*100) === Math.round(header.totalAmount*100));
+    if(taxMaybeMissing) warnings.push(`The invoice's Tax row couldn't be read — no tax was allocated to the units. Enter each unit's Tax manually if this invoice has one.`);
+    if(pdfTotal !== null && Math.round(parsedSum*100) !== Math.round(pdfTotal*100)){
+      warnings.push(`Parsed total (${formatCurrency(parsedSum.toFixed(2))}) doesn't match the PDF's own total (${formatCurrency(pdfTotal.toFixed(2))}, Subtotal + Tax) — some rows may not have been read correctly, or some units aren't in the system yet.`);
     }
     warnings.forEach(msg => {
       const d = document.createElement('div');
@@ -1070,6 +1099,7 @@
   function clearImport(){
     _reviewData = null;
     const fileInput = qs('#pdfImportFile'); if(fileInput) fileInput.value = '';
+    setDropFileName('');
     const statusEl = qs('#pdfImportStatus'); if(statusEl) statusEl.textContent = '';
     const reviewWrap = qs('#pdfImportReview'); if(reviewWrap) reviewWrap.style.display = 'none';
     const issuesWrap = qs('#pdfImportIssuesWrap'); if(issuesWrap) issuesWrap.innerHTML = '';
@@ -1078,11 +1108,45 @@
     const tableWrap = qs('#pdfImportTableWrap'); if(tableWrap) tableWrap.innerHTML = '';
   }
 
+  function setDropFileName(name){
+    const el = qs('#pdfImportDropFileName'); if(el) el.textContent = name || '';
+  }
+
   const fileInput = qs('#pdfImportFile');
   if(fileInput){
     fileInput.addEventListener('change', () => {
       const file = fileInput.files && fileInput.files[0];
-      if(file) handleFile(file);
+      if(file){ setDropFileName(file.name); handleFile(file); }
+    });
+  }
+
+  // Drop zone: dropping a PDF runs the exact same path as picking it in the (hidden) file
+  // input; clicking/Enter/Space on the zone just opens that input's picker.
+  const dropZone = qs('#pdfImportDropZone');
+  if(dropZone){
+    const setHover = (on) => {
+      dropZone.style.background = on ? '#e0f2fe' : '#f8fafc';
+      dropZone.style.borderColor = on ? '#0284c7' : '#cbd5e1';
+    };
+    dropZone.addEventListener('click', () => { if(fileInput) fileInput.click(); });
+    dropZone.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); if(fileInput) fileInput.click(); }
+    });
+    ['dragenter','dragover'].forEach(evt => dropZone.addEventListener(evt, (e) => { e.preventDefault(); setHover(true); }));
+    dropZone.addEventListener('dragleave', (e) => { if(!dropZone.contains(e.relatedTarget)) setHover(false); });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      setHover(false);
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if(!file) return;
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      if(!isPdf){
+        const statusEl = qs('#pdfImportStatus'); if(statusEl) statusEl.textContent = `"${file.name}" isn't a PDF — drop an invoice PDF.`;
+        return;
+      }
+      if(fileInput) fileInput.value = '';
+      setDropFileName(file.name);
+      handleFile(file);
     });
   }
   const sendBtn = qs('#pdfImportSendBtn');

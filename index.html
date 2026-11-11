@@ -257,8 +257,12 @@
         <div class="invoice-registration-block">
           <h3 class="invoice-registration-block-title">TCR Americas, LLC — ATS PDF Reader Processor</h3>
           <p class="small-muted" style="margin-top:-6px;">Quarterly usage-detail invoices only (per-unit Labour/Parts/Usage rows, repeated per billed month).</p>
+          <div id="pdfImportDropZone" role="button" tabindex="0" style="border:2px dashed #cbd5e1;border-radius:8px;padding:22px 16px;text-align:center;background:#f8fafc;color:#475569;font-size:13px;cursor:pointer;margin-bottom:10px;transition:background .15s,border-color .15s;">
+            <strong>Drop the invoice PDF here</strong> or click to browse
+            <div id="pdfImportDropFileName" class="small-muted" style="margin-top:4px;"></div>
+          </div>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <input type="file" id="pdfImportFile" accept="application/pdf">
+            <input type="file" id="pdfImportFile" accept="application/pdf" style="display:none;">
             <button type="button" id="pdfImportClearBtn">Clear</button>
             <span id="pdfImportStatus" class="small-muted"></span>
           </div>
