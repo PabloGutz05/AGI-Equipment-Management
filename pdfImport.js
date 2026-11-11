@@ -1205,6 +1205,13 @@
       const old = oldDetails ? oldByUnit[normKey(d.unit)] : null;
       const unitTd = document.createElement('td'); unitTd.textContent = d.unit || '';
       unitTd.style.cssText = 'padding:4px 8px;border-bottom:1px solid #eef0f3;';
+      if(d.__added){
+        tr.style.background = '#eff6ff';
+        const tag = document.createElement('span');
+        tag.textContent = ' added' + (d.lease ? ' · ' + d.lease : '');
+        tag.style.cssText = 'font-size:11px;color:#1d4ed8;font-weight:600;';
+        unitTd.appendChild(tag);
+      }
       tr.appendChild(unitTd);
       const values = [moneyNum(d.charge), moneyNum(d.tax), moneyNum(d.other), detailTotal(d)];
       const oldValues = old ? [moneyNum(old.charge), moneyNum(old.tax), moneyNum(old.other), detailTotal(old)] : null;
@@ -1212,7 +1219,7 @@
         const td = document.createElement('td');
         td.style.cssText = 'padding:4px 8px;border-bottom:1px solid #eef0f3;text-align:right;';
         td.textContent = formatCurrency(v.toFixed(2));
-        if(oldValues && Math.round(oldValues[i]*100) !== Math.round(v*100)){
+        if(oldValues && !d.__added && Math.round(oldValues[i]*100) !== Math.round(v*100)){
           td.style.fontWeight = '600';
           td.style.background = '#ecfdf5';
           const prev = document.createElement('div');
@@ -1369,21 +1376,45 @@
       dataBySlice = [merged];
     }
 
+    // A unit billed in the PDF but missing from the invoice (or from that one period of it) is
+    // added with its own lease details, exactly like checking it in the registration form's unit
+    // picker would — invoices registered before the import existed often left some units (and so
+    // their leases) out entirely.
+    const existingLeases = new Set(regLeases);
+    const addedUnits = new Set();
+    const addedLeases = new Set();
     const missingUnits = new Set();
+    const noLeaseUnits = new Set();
     const newSlices = slices.map((s, i) => {
       const data = dataBySlice[i] || {};
       const dataKeys = Object.keys(data);
       const sliceUnits = new Set(s.unitDetails.map(d => normKey(d.unit)));
+      const baseDetails = s.unitDetails.slice();
       dataKeys.forEach(uid => {
-        if(!sliceUnits.has(normKey(uid))){
-          blockers.push(`Unit ${uid} is billed in the PDF${quarterly ? ' for ' + formatDate(s.from) + ' — ' + formatDate(s.to) : ''} but isn't on this invoice${quarterly ? ' for that period' : ''}. Add it with Edit on the registry first.`);
-        }
+        if(sliceUnits.has(normKey(uid))) return;
+        const resolved = resolveInvoiceUnitLeaseInfo(uid, regLeases);
+        const unitRec = (state.units || []).find(u => normKey(u.unitId || u.id) === normKey(uid));
+        // Older registries can list a unit in registry.units without any per-unit detail row —
+        // that unit just gets its row filled in, it isn't reported as newly added.
+        const alreadyListed = (registry.units || []).some(x => normKey(x) === normKey(uid));
+        baseDetails.push(Object.assign({ unit: uid }, resolved, { costCenter: unitRec ? (unitRec.costCenter || '') : '', __added: !alreadyListed }));
+        if(!alreadyListed) addedUnits.add(uid);
       });
-      const unitDetails = s.unitDetails.map(d => {
+      const unitDetails = baseDetails.map(d => {
         const key = dataKeys.find(k => normKey(k) === normKey(d.unit));
         const row = key ? data[key] : null;
         if(!row) missingUnits.add(d.unit);
-        return Object.assign({}, d, {
+        // A unit registered without its lease selected gets its lease details filled in from
+        // its own unit record (only blanks are filled — anything already set is kept).
+        let leaseFill = {};
+        if(!d.lease){
+          const resolved = resolveInvoiceUnitLeaseInfo(d.unit, regLeases);
+          Object.keys(resolved).forEach(k => { if(!d[k] && resolved[k]) leaseFill[k] = resolved[k]; });
+          if(!resolved.lease) noLeaseUnits.add(d.unit);
+        }
+        const lease = leaseFill.lease || d.lease;
+        if(lease && !existingLeases.has(normKey(lease))) addedLeases.add(lease);
+        return Object.assign({}, d, leaseFill, {
           charge: row ? money2(moneyNum(row.charge)) : '',
           tax: row ? money2(moneyNum(row.tax)) : '',
           other: row ? money2(moneyNum(row.other)) : '',
@@ -1392,6 +1423,9 @@
       });
       return { from: s.from, to: s.to, unitDetails };
     });
+    if(addedUnits.size) warnings.push(`${addedUnits.size} unit(s) billed in the PDF aren't on this invoice${quarterly ? ' (or a period of it)' : ''} and will be added: ${Array.from(addedUnits).join(', ')}`);
+    if(addedLeases.size) warnings.push(`Lease(s) added to this invoice from its units' records: ${Array.from(addedLeases).join(', ')}`);
+    if(noLeaseUnits.size) warnings.push(`No lease in the unit record for ${Array.from(noLeaseUnits).join(', ')} — saved without one.`);
     if(missingUnits.size) warnings.push(`No amounts in the PDF for ${Array.from(missingUnits).join(', ')}${quarterly ? ' in at least one period' : ''} — those rows will be saved blank.`);
 
     const newTotal = newSlices.reduce((s, sl) => s + sl.unitDetails.reduce((a, d) => a + detailTotal(d), 0), 0);
@@ -1473,17 +1507,34 @@
     }
 
     const oldTotal = moneyNum(reg.totalAmount);
+    const clean = details => details.map(d => { const c = Object.assign({}, d); delete c.__added; return c; });
+    const newSlices = u.newSlices.map(s => Object.assign({}, s, { unitDetails: clean(s.unitDetails) }));
+
+    // Units/leases now on the invoice: everything it already had, plus any unit (and that
+    // unit's lease) the PDF bills that wasn't on it yet.
+    const units = Array.isArray(reg.units) ? reg.units.slice() : [];
+    const leases = (Array.isArray(reg.leases) && reg.leases.length ? reg.leases : (reg.lease || '').toString().split(',').map(s => s.trim()).filter(Boolean)).slice();
+    newSlices.forEach(s => s.unitDetails.forEach(d => {
+      if(d.unit && !units.some(x => normKey(x) === normKey(d.unit))) units.push(d.unit);
+      if(d.lease && !leases.some(x => normKey(x) === normKey(d.lease))) leases.push(d.lease);
+    }));
+    const addedUnits = units.filter(x => !(reg.units || []).some(y => normKey(y) === normKey(x)));
+
     const updated = Object.assign({}, reg, {
-      unitDetails: u.newSlices[0].unitDetails,
+      unitDetails: newSlices[0].unitDetails,
+      units,
+      unitCount: units.length,
+      leases,
+      lease: leases.join(', '),
       totalAmount: u.newTotal.toFixed(2),
       comments: (Array.isArray(reg.comments) ? reg.comments.slice() : []).concat([{
-        text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.`,
+        text: `Amounts updated from the TCR invoice PDF (TCR Americas — Update Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(u.newTotal.toFixed(2))}.` + (addedUnits.length ? ` Units added: ${addedUnits.join(', ')}.` : ''),
         user: tcrUpdateUserName(),
         timestamp: new Date().toISOString()
       }])
     });
     if(Array.isArray(reg.periods) && reg.periods.length){
-      updated.periods = reg.periods.map((p, i) => Object.assign({}, p, { unitDetails: u.newSlices[i + 1].unitDetails }));
+      updated.periods = reg.periods.map((p, i) => Object.assign({}, p, { unitDetails: newSlices[i + 1].unitDetails }));
     }
 
     const saveBtn = qs('#tcrUpdateSaveBtn');
@@ -1499,13 +1550,24 @@
     if(saveBtn) saveBtn.textContent = 'Save Changes';
 
     Object.assign(reg, updated);
-    // In-session invoice records only ever mirror Period 1 (see the registration submit handler).
+    // In-session invoice records only ever mirror Period 1 (see the registration submit handler):
+    // update each unit's record, or create one for a unit that was just added.
     const wd = normKey(reg.wdNumber), doc = normKey(reg.docNumber);
-    (state.invoices || []).forEach(inv => {
-      if(normKey(inv.wdNumber) !== wd || normKey(inv.docNumber) !== doc) return;
-      const d = updated.unitDetails.find(x => normKey(x.unit) === normKey(inv.unit));
-      if(!d) return;
-      Object.assign(inv, { amount: d.charge, taxAmount: d.tax, otherCharges: d.other, otherChargeDetails: d.otherChargeDetails });
+    state.invoices = state.invoices || [];
+    updated.unitDetails.forEach(d => {
+      const fields = {
+        lease: d.lease || '', company: d.company || '', supplier: d.supplier || '',
+        arrangement: d.arrangement || '', invoicing: d.invoicing || '',
+        amount: d.charge, taxAmount: d.tax, otherCharges: d.other, otherChargeDetails: d.otherChargeDetails
+      };
+      const inv = state.invoices.find(i => normKey(i.wdNumber) === wd && normKey(i.docNumber) === doc && normKey(i.unit) === normKey(d.unit));
+      if(inv){ Object.assign(inv, fields); return; }
+      state.invoices.push(Object.assign({
+        id: id(), unit: d.unit, comment: '',
+        wdNumber: reg.wdNumber || '', docNumber: reg.docNumber || '', category: reg.category || '',
+        invoiceDate: reg.invoiceDate || '', periodStart: reg.periodStart || '', periodEnd: reg.periodEnd || '',
+        submittedDate: reg.submittedDate || ''
+      }, fields));
     });
 
     saveState();
