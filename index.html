@@ -151,6 +151,15 @@
         <h2>Invoices</h2>
         <div class="invoice-registration-block">
           <h3 class="invoice-registration-block-title">Invoice Registration</h3>
+          <!-- Shown while a registered invoice is loaded here from Unit ID Correction's
+               "Edit Invoice": saving rewrites that invoice instead of adding a new one. -->
+          <div id="invoiceReplaceBanner" style="display:none;background:#dbeafe;border:1px solid #93c5fd;color:#1e3a8a;border-radius:6px;padding:8px 10px;font-size:13px;margin-bottom:10px;">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <span id="invoiceReplaceBannerText" style="flex:1;"></span>
+              <button type="button" id="invoiceReplaceCancelBtn">Cancel edit</button>
+            </div>
+            <div id="invoiceReplaceBannerNotes" style="font-size:12px;margin-top:4px;"></div>
+          </div>
           <form id="invoiceForm" class="inline-form">
             <div class="invoice-form-row">
               <input id="invoiceWD" name="invoiceWD" placeholder="WD Invoice Number">
@@ -315,7 +324,7 @@
              See unitIdCorrection.js. -->
         <div class="invoice-registration-block dev-only-tool" style="display:none;">
           <h3 class="invoice-registration-block-title">Unit ID Correction</h3>
-          <p class="small-muted" style="margin-top:-6px;">Lists every registered invoice (SINV) that includes a unit. Open one to review it and, if it's missing information, replace it from its TCR PDF. Enter a new Unit ID to rename the unit on every listed invoice. Rename first, then re-read PDFs that bill the new ID.</p>
+          <p class="small-muted" style="margin-top:-6px;">Lists every registered invoice (SINV) that includes a unit. Open one to review it and, if it's missing information, replace it from its TCR PDF. Enter a new Unit ID (e.g. the assets team's serial number) to rename the unit: first in Unit Control, keeping its cost center, monthly payment and history, then its coverage, accruals and every listed invoice. Rename first, then re-read PDFs that bill the new ID.</p>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
             <input type="text" id="unitFixSearch" placeholder="Unit ID" style="min-width:220px;">
             <button type="button" id="unitFixSearchBtn" class="btn-primary">Search</button>
@@ -1621,9 +1630,9 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.83"></script>
-  <script src="app.js?v=11.83"></script>
-  <script src="pdfImport.js?v=11.83"></script>
-  <script src="unitIdCorrection.js?v=11.83"></script>
+  <script src="db.js?v=11.85"></script>
+  <script src="app.js?v=11.85"></script>
+  <script src="pdfImport.js?v=11.85"></script>
+  <script src="unitIdCorrection.js?v=11.85"></script>
 </body>
 </html>

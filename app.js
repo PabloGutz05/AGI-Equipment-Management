@@ -662,6 +662,9 @@ qs('#invoiceForm').addEventListener('submit', e=>{
       return;
     }
   }catch(err){ alert('Validation error: ' + err.message); return; }
+  // A registered invoice loaded here by Unit ID Correction's "Edit Invoice": rewrite that
+  // registry in place (same validation as above) instead of registering a new one.
+  if(form.dataset.replacingRegistry){ submitInvoiceReplacement(form, fd); return; }
   // New rule: only block submission when an existing invoice has the same
   // Lease, Category, Unit and WD Invoice number. If any of those differs,
   // allow the registration. Editing the same invoice is allowed.
@@ -1120,6 +1123,273 @@ qs('#invoiceForm').addEventListener('submit', e=>{
     else if(skipped.length && createdIds.length===0){ alert('No invoices were created — all provided units already have an invoice with the same Lease, Category and WD number.'); }
   }
 
+});
+
+// ========== Edit a registered invoice in the registration form (replace mode) ==========
+// Used by Unit ID Correction's "Edit Invoice": loads a registry into the Invoice Registration
+// form exactly as if it were being entered (WD/Doc/category/amount/dates, leases, units, every
+// period with its own dates and per-unit amounts), and on submit rewrites that same registry
+// — same id/seq/created date/comments — with whatever the form now holds, through the form's
+// own validation. Nothing is merged: units, periods and amounts are replaced outright.
+
+function exitInvoiceReplaceMode(){
+  const form = qs('#invoiceForm'); if(!form) return;
+  const wasReplacing = !!form.dataset.replacingRegistry;
+  delete form.dataset.replacingRegistry;
+  const banner = qs('#invoiceReplaceBanner'); if(banner) banner.style.display = 'none';
+  const submitBtn = form.querySelector('button[type="submit"]');
+  if(wasReplacing && submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Add Invoice'; }
+}
+
+function loadRegistryIntoInvoiceForm(reg){
+  const form = qs('#invoiceForm'); if(!form || !reg) return;
+  const norm = s => (s || '').toString().trim().toLowerCase();
+  const invoicesTabBtn = document.querySelector('.tab[data-tab="invoices"]');
+  if(invoicesTabBtn) invoicesTabBtn.click();
+
+  // Start from a clean form (same as the Clear button), then switch into replace mode.
+  const clearBtn = qs('#invoiceClearBtn');
+  if(clearBtn) clearBtn.click(); else { form.reset(); resetInvoiceQuarterlyPeriods(); }
+  delete form.dataset.editing; delete form.dataset.editingGroupIds;
+  form.dataset.replacingRegistry = reg.id;
+  const notes = [];
+
+  // Leases, matched to the picker's own values (case-insensitive).
+  if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
+  const leaseOptions = (state.leases || []).filter(l => norm(l.status || 'Enabled') !== 'disabled').map(l => (l.leaseNumber || l.id || '').toString());
+  const regLeases = (Array.isArray(reg.leases) && reg.leases.length ? reg.leases : (reg.lease || '').toString().split(',')).map(s => (s || '').toString().trim()).filter(Boolean);
+  const leases = [];
+  regLeases.forEach(l => {
+    const opt = leaseOptions.find(o => norm(o) === norm(l));
+    if(opt){ if(leases.indexOf(opt) === -1) leases.push(opt); }
+    else notes.push(`Lease ${l} isn't an enabled lease, so it can't be selected.`);
+  });
+
+  // Units in invoice order (Period 1, then any only billed in later periods), matched to
+  // Unit Control's exact spelling. Units the picker can't offer are pointed out.
+  const slices = getRegistryCoveragePeriods(reg);
+  const regUnits = [];
+  const pushUnit = u => { if(u && !regUnits.some(x => norm(x) === norm(u))) regUnits.push(u); };
+  (Array.isArray(reg.units) ? reg.units : []).forEach(pushUnit);
+  slices.forEach(s => (s.unitDetails || []).forEach(d => pushUnit(d.unit)));
+  const unitValue = {};
+  const units = [];
+  regUnits.forEach(u => {
+    const rec = (state.units || []).find(x => norm(x.unitId || x.id) === norm(u));
+    if(!rec){ notes.push(`Unit ${u} isn't in Unit Control, so it can't be selected — it will be dropped on save unless it's added there first.`); return; }
+    if(leases.length && leases.indexOf(rec.lease) === -1) notes.push(`Unit ${u} belongs to lease ${rec.lease || '(none)'}, which isn't selected — select that lease to keep the unit.`);
+    const val = (rec.unitId || rec.id || '').toString();
+    unitValue[norm(u)] = val;
+    units.push(val);
+  });
+
+  const setVal = (sel, v) => { const e = qs(sel); if(e) e.value = v || ''; };
+  setVal('#invoiceWD', reg.wdNumber);
+  setVal('#invoiceDoc', reg.docNumber);
+  const catSel = qs('#invoiceCategory');
+  if(catSel){
+    const opt = Array.from(catSel.options).find(o => norm(o.value) === norm(reg.category));
+    catSel.value = opt ? opt.value : '';
+    if(reg.category && !opt) notes.push(`Category "${reg.category}" isn't in the Developer list — pick one.`);
+  }
+  setVal('#invoiceSupplierInvoiceDate', reg.invoiceDate);
+  setVal('#invoicePeriodStart', reg.periodStart);
+  setVal('#invoicePeriodEnd', reg.periodEnd);
+
+  syncInvoiceLeaseOptions(leases);
+  syncInvoiceUnitOptions(leases, units);
+  if(typeof renderInvoiceLeaseDetailTable === 'function') renderInvoiceLeaseDetailTable();
+  updateInvoiceAddPeriodAvailability();
+  // Selecting leases pre-fills Submitted with today — keep the invoice's own date.
+  setVal('#invoiceSubmitted', reg.submittedDate || new Date().toISOString().slice(0,10));
+
+  const seedOf = details => {
+    const seed = {};
+    (details || []).forEach(d => {
+      const v = unitValue[norm(d.unit)]; if(!v) return;
+      seed[v] = { charge: d.charge || '', tax: d.tax || '', other: d.other || '', otherChargeDetails: d.otherChargeDetails || [] };
+    });
+    return seed;
+  };
+  const seedTotal = seed => Object.values(seed).reduce((s, r) => s + (parseCurrency(r.charge || '') || 0) + (parseCurrency(r.tax || '') || 0) + (parseCurrency(r.other || '') || 0), 0);
+
+  const hasPeriods = slices.length > 1 || !!(reg.period1From || reg.period1To);
+  const quarterly = invoiceHasQuarterlyLeaseSelected();
+  let total = 0;
+  if(hasPeriods && quarterly){
+    const seed1 = seedOf(slices[0].unitDetails);
+    renderInvoiceUnitBreakdown(seed1);
+    total += seedTotal(seed1);
+    _invoicePeriod1.fromDate = slices[0].from || ''; _invoicePeriod1.toDate = slices[0].to || '';
+    if(_invoicePeriod1.fromInputEl) _invoicePeriod1.fromInputEl.value = _invoicePeriod1.fromDate;
+    if(_invoicePeriod1.toInputEl) _invoicePeriod1.toInputEl.value = _invoicePeriod1.toDate;
+    // Periods 2+ built directly with their seed (see sendToRegistrationTcr for why).
+    slices.slice(1).forEach(s => {
+      _invoicePeriodSeq++;
+      const pUnits = (s.unitDetails || []).map(d => unitValue[norm(d.unit)]).filter(Boolean);
+      const periodObj = { id: 'p' + _invoicePeriodSeq, wrapId: 'invoicePeriodBreakdown_' + _invoicePeriodSeq, fromDate: s.from || '', toDate: s.to || '', units: pUnits };
+      _invoicePeriods.push(periodObj);
+      const seed = seedOf(s.unitDetails);
+      renderInvoicePeriodBlock(periodObj, seed);
+      total += seedTotal(seed);
+    });
+    validateInvoicePeriodRanges();
+  } else {
+    // One table: a multi-period invoice without a Quarterly lease is merged per unit.
+    const merged = {};
+    slices.forEach(s => {
+      const seed = seedOf(s.unitDetails);
+      Object.keys(seed).forEach(u => {
+        const r = seed[u];
+        if(!merged[u]) merged[u] = { charge: 0, tax: 0, other: 0, otherChargeDetails: [] };
+        merged[u].charge += parseCurrency(r.charge || '') || 0;
+        merged[u].tax += parseCurrency(r.tax || '') || 0;
+        merged[u].other += parseCurrency(r.other || '') || 0;
+        merged[u].otherChargeDetails = merged[u].otherChargeDetails.concat(r.otherChargeDetails || []);
+      });
+    });
+    Object.keys(merged).forEach(u => ['charge','tax','other'].forEach(k => { merged[u][k] = merged[u][k] ? merged[u][k].toFixed(2) : ''; }));
+    renderInvoiceUnitBreakdown(merged);
+    total = seedTotal(merged);
+    if(hasPeriods) notes.push(`This invoice has ${slices.length} periods, but none of its selected leases is Quarterly — they're shown merged into one table and will be saved as one period.`);
+  }
+  // Declared Amount = the invoice's registered total (the form checks the tables add up to it).
+  const amountInput = qs('#invoiceAmount');
+  if(amountInput){
+    const regTotal = parseCurrency(reg.totalAmount || '');
+    amountInput.value = (regTotal !== null && regTotal !== undefined && reg.totalAmount !== '' ? Number(regTotal) : total).toFixed(2);
+    amountInput.dispatchEvent(new Event('input'));
+  }
+  if(typeof updateUnitBreakdownTotal === 'function') updateUnitBreakdownTotal('invoiceUnitBreakdown');
+  if(typeof updateQuarterlyPeriodsAggregateTotal === 'function') updateQuarterlyPeriodsAggregateTotal();
+
+  const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Save Changes';
+  const banner = qs('#invoiceReplaceBanner');
+  const bannerText = qs('#invoiceReplaceBannerText');
+  const bannerNotes = qs('#invoiceReplaceBannerNotes');
+  if(bannerText) bannerText.innerHTML = `<strong>Editing ${escapeHtml(reg.wdNumber || '(no WD)')}</strong> (registry ${escapeHtml(String(reg.seq || ''))}). Save Changes replaces the registered invoice with what's in this form.`;
+  if(bannerNotes) bannerNotes.innerHTML = notes.map(n => '⚠ ' + escapeHtml(n)).join('<br>');
+  if(banner){ banner.style.display = 'block'; banner.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+}
+
+async function submitInvoiceReplacement(form, fd){
+  const norm = s => (s || '').toString().trim().toLowerCase();
+  const reg = (state.registries || []).find(r => r.id === form.dataset.replacingRegistry);
+  if(!reg){ alert('The invoice being edited no longer exists in this session. Reload and try again.'); exitInvoiceReplaceMode(); return; }
+  const money = v => { const n = parseCurrency(v || ''); return n === null ? '' : n.toFixed(2); };
+
+  const wdNumber = (fd.get('invoiceWD') || '').toString().trim();
+  const docNumber = (fd.get('invoiceDoc') || '').toString().trim();
+  const other = (state.registries || []).find(r => r !== reg && norm(r.wdNumber) === norm(wdNumber) && norm(r.docNumber) === norm(docNumber));
+  if(other){ alert(`Registry ${other.seq} already has WD ${wdNumber} with Doc ${docNumber}. Nothing was saved.`); return; }
+
+  const selectedLeases = getSelectedInvoiceLeases();
+  const detailFor = (uid, row) => {
+    const resolved = resolveInvoiceUnitLeaseInfo(uid, selectedLeases);
+    const unitRec = (state.units || []).find(u => (u.unitId || u.id || '').toString().trim() === uid.toString().trim());
+    return {
+      unit: uid, lease: resolved.lease || '', company: resolved.company || '', supplier: resolved.supplier || '',
+      arrangement: resolved.arrangement || '', invoicing: resolved.invoicing || '', costCenter: unitRec ? (unitRec.costCenter || '') : '',
+      tax: money(row.tax), other: money(row.other), otherChargeDetails: row.otherChargeDetails || [], charge: money(row.charge)
+    };
+  };
+  const units = getSelectedInvoiceUnits();
+  const p1Data = getInvoiceBreakdownRowsData();
+  const unitDetails = units.map(u => detailFor(u, p1Data[u] || {}));
+  const periods = _invoicePeriods.map(p => {
+    const data = getUnitBreakdownRowsData(p.wrapId);
+    return { fromDate: p.fromDate, toDate: p.toDate, unitDetails: p.units.map(u => detailFor(u, data[u] || {})) };
+  });
+  const leases = [];
+  unitDetails.concat(...periods.map(p => p.unitDetails)).forEach(d => { if(d.lease && leases.indexOf(d.lease) === -1) leases.push(d.lease); });
+
+  const totalAmount = money(fd.get('invoiceAmount'));
+  const userName = (() => {
+    const session = currentSession(); if(!session) return 'Unknown User';
+    if(session.user === 'Master') return 'Master';
+    const u = (state.users || []).find(x => x.username === session.user);
+    return u ? (((u.firstName || '') + ' ' + (u.lastName || '')).trim() || u.username || 'Unknown User') : (session.user || 'Unknown User');
+  })();
+  const now = new Date().toISOString();
+  const comments = (Array.isArray(reg.comments) ? reg.comments.slice() : []);
+  const typedComment = (fd.get('invoiceComment') || '').toString().trim();
+  if(typedComment) comments.push({ text: typedComment, user: userName, timestamp: now });
+  const oldTotal = parseCurrency(reg.totalAmount || '') || 0;
+  comments.push({ text: `Invoice edited and replaced (Unit ID Correction — Edit Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(totalAmount || '0')}.`, user: userName, timestamp: now });
+
+  const record = {
+    id: reg.id, seq: reg.seq, wdNumber, docNumber,
+    category: (fd.get('invoiceCategory') || '').toString(),
+    totalAmount, unitCount: units.length, units: units.slice(),
+    invoiceDate: (fd.get('invoiceSupplierInvoiceDate') || '').toString(),
+    periodStart: (fd.get('invoicePeriodStart') || '').toString(),
+    periodEnd: (fd.get('invoicePeriodEnd') || '').toString(),
+    submittedDate: (fd.get('invoiceSubmitted') || '').toString(),
+    createdAt: reg.createdAt || '', comments, leases, lease: leases.join(', '),
+    unitDetails, periods
+  };
+  // Same Period-1 rule as a new registration; old period-1 values are blanked if no longer used.
+  if(_invoiceQuarterlyPeriod1Active || reg.period1From || reg.period1To){
+    record.period1From = _invoiceQuarterlyPeriod1Active ? (_invoicePeriod1.fromDate || '') : '';
+    record.period1To = _invoiceQuarterlyPeriod1Active ? (_invoicePeriod1.toDate || '') : '';
+  }
+  Object.keys(reg).forEach(k => { if(/^(unitDetails|periods)__\d+$/.test(k)) record[k] = ''; });
+
+  const changes = [];
+  if(reg.units && units.length !== reg.units.length) changes.push(`units ${reg.units.length} → ${units.length}`);
+  const oldPeriods = getRegistryCoveragePeriods(reg).length, newPeriods = 1 + periods.length;
+  if(oldPeriods !== newPeriods) changes.push(`periods ${oldPeriods} → ${newPeriods}`);
+  if(!confirm(`Replace ${reg.wdNumber || '(no WD)'} with what's in the form?\n\nTotal ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(totalAmount || '0')}` + (changes.length ? '\n' + changes.join(', ') : '') + '\n\nThe registered invoice is overwritten — nothing is merged.')) return;
+
+  const submitBtn = form.querySelector('button[type="submit"]');
+  if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Saving...'; }
+  const isNetworkError = e => /Failed to fetch|NetworkError|Load failed|network/i.test((e && e.message) || '');
+  let lastErr = null;
+  for(let attempt = 1; attempt <= 2; attempt++){
+    try{ await DB.updateRegistry(record); lastErr = null; break; }
+    catch(e){
+      lastErr = e;
+      console.error(`Invoice replace save error (attempt ${attempt}):`, e);
+      if(attempt === 1 && isNetworkError(e)){ await new Promise(r => setTimeout(r, 2000)); continue; }
+      break;
+    }
+  }
+  if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Save Changes'; }
+  if(lastErr){
+    alert('Failed to save to Google Sheets: ' + lastErr.message + '\n\nNothing was changed — the form still holds your edits, so you can press Save Changes again.');
+    return;
+  }
+
+  // Confirmed — mirror in memory. The registry object keeps its identity; every field is replaced.
+  const oldWd = norm(reg.wdNumber), oldDoc = norm(reg.docNumber);
+  Object.assign(reg, record);
+  if(!record.period1From && !record.period1To){ delete reg.period1From; delete reg.period1To; }
+  // In-session invoice records mirror Period 1: rebuild this invoice's set from scratch.
+  const isOld = i => norm(i.wdNumber) === oldWd && norm(i.docNumber) === oldDoc;
+  const prevInvoices = (state.invoices || []).filter(isOld);
+  const fresh = record.unitDetails.map(d => {
+    const prev = prevInvoices.find(i => norm(i.unit) === norm(d.unit));
+    return {
+      id: prev ? prev.id : id(), unit: d.unit, comment: prev ? (prev.comment || '') : '',
+      wdNumber: record.wdNumber, docNumber: record.docNumber, category: record.category,
+      invoiceDate: record.invoiceDate, periodStart: record.periodStart, periodEnd: record.periodEnd, submittedDate: record.submittedDate,
+      lease: d.lease, company: d.company, supplier: d.supplier, arrangement: d.arrangement, invoicing: d.invoicing,
+      amount: d.charge, taxAmount: d.tax, otherCharges: d.other, otherChargeDetails: d.otherChargeDetails
+    };
+  });
+  state.invoices = (state.invoices || []).filter(i => !isOld(i)).concat(fresh);
+
+  saveState();
+  renderInvoices(); renderRegistries(reg.id);
+  renderUnitOverview(); renderLeaseOverview(); renderOverview();
+  const clearBtn = qs('#invoiceClearBtn'); if(clearBtn) clearBtn.click(); else exitInvoiceReplaceMode();
+  document.dispatchEvent(new CustomEvent('agi:registry-replaced', { detail: { registry: reg } }));
+}
+
+const invoiceReplaceCancelBtn = qs('#invoiceReplaceCancelBtn');
+if(invoiceReplaceCancelBtn) invoiceReplaceCancelBtn.addEventListener('click', () => {
+  const clearBtn = qs('#invoiceClearBtn'); if(clearBtn) clearBtn.click(); else exitInvoiceReplaceMode();
+  document.dispatchEvent(new CustomEvent('agi:registry-replace-cancelled'));
 });
 
 // Prevent submitting invoice via Enter key on inputs; only allow button click
@@ -2656,7 +2926,7 @@ function renderInvoices(){
     editOpt.addEventListener('click', ()=>{
       if(!list || list.length === 0) return; const inv = list[0];
       const form = qs('#invoiceForm'); if(!form) return;
-      delete form.dataset.editing;
+      delete form.dataset.editing; exitInvoiceReplaceMode();
       form.dataset.editingGroupIds = JSON.stringify(list.map(i => i.id));
 
       const groupLeases = Array.from(new Set(list.map(i => i.lease).filter(Boolean)));
@@ -4724,6 +4994,7 @@ if(invoiceClearBtn){
     form.reset();
     delete form.dataset.editing;
     delete form.dataset.editingGroupIds;
+    exitInvoiceReplaceMode();
     const submitBtn = form.querySelector('button[type="submit"]'); if(submitBtn) submitBtn.textContent = 'Add Invoice';
     const invCancel = qs('#invoiceCancelBtn'); if(invCancel) invCancel.style.display = 'none';
     const sub = qs('#invoiceSubmitted'); if(sub) sub.value = new Date().toISOString().slice(0,10);
@@ -4957,6 +5228,9 @@ async function loadStateFromDB(){
     // Record what Sheets actually returned — this becomes the reference for the save guard.
     _updateSheetConfigSnapshot();
 
+    // Read by the Unit ID Correction tool, which must not move a unit's coverage rows while
+    // this session's copy of them may be incomplete.
+    window.__agiManualCoverageLoadFailed = manualCoverageLoadFailed;
     if(manualCoverageLoadFailed){
       alert('Manual coverage data could not be loaded (Google Sheets may be busy — this can happen right after a new deployment, or when several people are using the app at once).\n\nUntil you reload, the Accruals "missing periods" checklist may incorrectly show some manually-covered units as missing, even though their actual coverage hasn\'t changed. Please wait a moment and reload the page before acting on anything it shows.');
     }

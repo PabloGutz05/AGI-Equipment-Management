@@ -918,6 +918,7 @@
     if(!form) return;
     form.reset();
     delete form.dataset.editing; delete form.dataset.editingGroupIds;
+    if(typeof exitInvoiceReplaceMode === "function") exitInvoiceReplaceMode();
     if(typeof resetInvoiceQuarterlyPeriods === 'function') resetInvoiceQuarterlyPeriods();
 
     const docInput = qs('#invoiceDoc'); if(docInput) docInput.value = header.docNumber || '';
@@ -1031,6 +1032,7 @@
     if(!form) return;
     form.reset();
     delete form.dataset.editing; delete form.dataset.editingGroupIds;
+    if(typeof exitInvoiceReplaceMode === "function") exitInvoiceReplaceMode();
     if(typeof resetInvoiceQuarterlyPeriods === 'function') resetInvoiceQuarterlyPeriods();
 
     const docInput = qs('#invoiceDoc'); if(docInput) docInput.value = header.docNumber || '';

@@ -6,11 +6,15 @@
 //   2. opens any of them with the same detail the Invoices tab shows, and lets it be replaced
 //      from its TCR PDF through the exact same flow as "TCR Americas — Update Invoice"
 //      (window.TcrInvoiceUpdater from pdfImport.js — replaces, never merges),
-//   3. renames the unit to a new Unit ID on every listed invoice at once.
+//   3. renames the unit to a new Unit ID — the same unit, now known by its serial number.
 //
-// A rename rewrites only the unit id on each invoice (units list, every period's per-unit row);
-// amounts, leases and everything else stay as they are. Each invoice is one whole-row overwrite
-// by id, and memory only changes for the invoices Google Sheets confirmed.
+// A rename runs in this order, each step only after Google Sheets confirms the one before:
+//   a. the unit's own row in Unit Control gets the new Unit ID (same row, so its cost center,
+//      monthly payment, lease, status history, comments… all carry over unchanged),
+//   b. its manual coverage days and accrual records (stored by Unit ID) move to the new ID,
+//   c. every listed invoice (units list, every period's per-unit row) and its Invoice Tracking
+//      entries get the new ID; amounts and leases on the invoices stay as they are.
+// Each write is a whole-row overwrite by id, and memory only changes for what Sheets confirmed.
 (function(){
   const P = 'unitFix';
   const normKey = s => (s || '').toString().trim().toLowerCase();
@@ -97,13 +101,15 @@
     setText('RenameStatus', '');
     if(!q){ setText('SearchStatus', 'Enter a Unit ID.'); return; }
     const regs = findRegistriesForUnit(q);
-    if(regs.length === 0){ setText('SearchStatus', statusMsg || `No registered invoice includes unit "${q}".`); return; }
-    // Use the unit's spelling as registered (search is case-insensitive) for labels/comments.
-    const stored = [].concat(regs[0].units || [], (regs[0].unitDetails || []).map(d => d && d.unit)).find(u => normKey(u) === normKey(q));
+    const unitRec = (state.units || []).find(u => normKey(u.unitId || u.id) === normKey(q));
+    const hasAccruals = (state.accruals || []).some(a => normKey(a.unitId) === normKey(q));
+    // A unit with no invoices can still be renamed in Unit Control (and its accruals).
+    if(regs.length === 0 && !unitRec && !hasAccruals){ setText('SearchStatus', statusMsg || `Unit "${q}" isn't in Unit Control or on any registered invoice.`); return; }
+    // Use the unit's spelling as stored (search is case-insensitive) for labels/comments.
+    const stored = unitRec ? unitRec.unitId : (regs.length ? [].concat(regs[0].units || [], (regs[0].unitDetails || []).map(d => d && d.unit)).find(u => normKey(u) === normKey(q)) : '');
     _search = { unitId: stored ? String(stored).trim() : q, registries: regs, selectedId: null };
-    const unitExists = (state.units || []).some(u => normKey(u.unitId || u.id) === normKey(q));
-    setText('SearchStatus', statusMsg || `${regs.length} invoice(s) include ${q}.` + (unitExists ? '' : ' (This Unit ID isn\'t in Unit Control.)'));
-    const applyBtn = el('ApplyBtn'); if(applyBtn) applyBtn.textContent = `Apply to all ${regs.length} listed invoice(s)`;
+    setText('SearchStatus', statusMsg || `${regs.length} invoice(s) include ${q}.` + (unitRec ? ` Unit Control: lease ${unitRec.lease || '(none)'}${unitRec.costCenter ? ', cost center ' + unitRec.costCenter : ''}.` : ' (This Unit ID isn\'t in Unit Control.)'));
+    const applyBtn = el('ApplyBtn'); if(applyBtn) applyBtn.textContent = unitRec ? `Rename unit and its ${regs.length} invoice(s)` : `Apply to all ${regs.length} listed invoice(s)`;
     if(results) results.style.display = 'block';
     renderList();
   }
@@ -127,9 +133,16 @@
   function renderDetailInfo(r){
     const wrap = el('DetailInfo'); if(!wrap) return;
     wrap.innerHTML = '';
-    const heading = document.createElement('h4'); heading.style.margin = '0 0 8px';
+    const headRow = document.createElement('div');
+    headRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;';
+    const heading = document.createElement('h4'); heading.style.margin = '0';
     heading.textContent = `${r.seq ? r.seq + '. ' : ''}${r.wdNumber || '(no WD)'}`;
-    wrap.appendChild(heading);
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button'; editBtn.className = 'btn-primary'; editBtn.textContent = 'Edit Invoice';
+    editBtn.title = 'Open this invoice in the Invoice Registration form; saving replaces it';
+    editBtn.addEventListener('click', () => editInvoice(r));
+    headRow.appendChild(heading); headRow.appendChild(editBtn);
+    wrap.appendChild(headRow);
     const lease = registryLeaseInfo(r);
     const info = document.createElement('div');
     info.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:4px 16px;font-size:13px;margin-bottom:10px;';
@@ -206,6 +219,34 @@
     });
     const detail = el('Detail'); if(detail){ detail.style.display = 'block'; detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
   }
+
+  // ---- Edit Invoice: the registration form in replace mode (see loadRegistryIntoInvoiceForm) ----
+
+  let _editing = null; // { unitId, regId } while an invoice from this tool is open in the form
+
+  function editInvoice(r){
+    if(!_search || !isDevSession()) return;
+    _editing = { unitId: _search.unitId, regId: r.id };
+    loadRegistryIntoInvoiceForm(r);
+  }
+
+  function returnFromEdit(statusMsg){
+    if(!_editing) return;
+    const { unitId, regId } = _editing;
+    _editing = null;
+    const tab = document.querySelector('.tab[data-tab="pdfImport"]'); if(tab) tab.click();
+    search(unitId, statusMsg);
+    const reg = _search && _search.registries.find(x => x.id === regId);
+    if(reg) openDetail(reg);
+    else if(statusMsg) setText('SearchStatus', statusMsg + ` (it no longer includes ${unitId}).`);
+  }
+
+  document.addEventListener('agi:registry-replaced', e => {
+    const reg = e.detail && e.detail.registry;
+    if(!_editing || !reg || reg.id !== _editing.regId) return;
+    returnFromEdit(`✓ ${reg.wdNumber} saved — total ${formatCurrency(moneyNum(reg.totalAmount).toFixed(2))}.`);
+  });
+  document.addEventListener('agi:registry-replace-cancelled', () => returnFromEdit());
 
   function closeDetail(){
     if(window.TcrInvoiceUpdater) window.TcrInvoiceUpdater.end(P);
@@ -287,15 +328,38 @@
       return;
     }
 
-    const newUnitExists = (state.units || []).some(u => normKey(u.unitId || u.id) === newKey);
+    // The unit's own record(s) in Unit Control. None left under the old id means it was already
+    // renamed by an earlier, partly-failed Apply (or was never in Unit Control) — then only the
+    // invoices are left to do.
+    const unitKey = u => normKey(u.unitId || u.id);
+    const oldUnits = (state.units || []).filter(u => unitKey(u) === oldKey);
+    const newUnits = (state.units || []).filter(u => unitKey(u) === newKey && !oldUnits.includes(u));
+    if(oldUnits.length && newUnits.length){
+      alert(`${newId} already exists in Unit Control as a separate unit${newUnits[0].lease ? ' (lease ' + newUnits[0].lease + ')' : ''}.\n\nRenaming ${oldId} would leave two units with the same ID. Remove or rename that unit first. Nothing was changed.`);
+      return;
+    }
+    if(oldUnits.length && window.__agiManualCoverageLoadFailed){
+      alert('Manual coverage data didn\'t load in this session, so the unit\'s coverage days can\'t be moved safely. Reload the page and try again. Nothing was changed.');
+      return;
+    }
+    const accruals = (state.accruals || []).filter(a => normKey(a.unitId) === oldKey);
+    const coverageCount = oldUnits.reduce((n, u) => n + (u.manualCoverageDates || []).length, 0);
+
+    const newUnitExists = newUnits.length > 0 || oldUnits.length > 0;
     const wdSet = new Set(regs.map(r => normKey(r.wdNumber)).filter(Boolean));
     const tracking = (state.invoiceTracking || []).filter(t => wdSet.has(normKey(t.wdInvoiceNum)) &&
       ((t.unitsInDispute || []).some(u => normKey(u) === oldKey) || (t.unitAmountDetails || []).some(d => normKey(d.unit) === oldKey)));
-    const msg = `Change unit ${oldId} → ${newId} on these ${regs.length} invoice(s)?\n\n` +
+    const msg = `Change unit ${oldId} → ${newId}?\n\n` +
+      (oldUnits.length
+        ? `1. Unit Control: ${oldUnits.length > 1 ? oldUnits.length + ' unit records' : 'the unit record'} (lease ${oldUnits.map(u => u.lease || '(none)').join(', ')}) get${oldUnits.length > 1 ? '' : 's'} the new ID — cost center, monthly payment, status history and comments stay.` +
+          (coverageCount ? ` Its ${coverageCount} manual coverage day(s) move with it.` : '')
+        : `1. Unit Control: ${oldId} isn't there${newUnits.length ? ` (${newId} already is — already renamed)` : ''}, so only invoices change.`) +
+      (accruals.length ? `\n2. Accruals: ${accruals.length} record(s) move to the new ID.` : '') +
+      `\n${accruals.length ? '3' : '2'}. Invoices (${regs.length}):\n` +
       regs.map(r => '  • ' + (r.wdNumber || '(no WD)')).join('\n') +
-      (tracking.length ? `\n\n${tracking.length} Invoice Tracking entr${tracking.length > 1 ? 'ies' : 'y'} for these invoices will be updated too.` : '') +
-      (newUnitExists ? '' : `\n\n⚠ ${newId} doesn't exist in Unit Control — the invoices will reference a unit the system doesn't know yet.`) +
-      '\n\nOnly the Unit ID changes; amounts and leases stay as they are.';
+      (tracking.length ? `\n   plus ${tracking.length} Invoice Tracking entr${tracking.length > 1 ? 'ies' : 'y'}.` : '') +
+      (newUnitExists ? '' : `\n\n⚠ ${newId} won't exist in Unit Control — the invoices will reference a unit the system doesn't know.`) +
+      '\n\nOn the invoices only the Unit ID changes; amounts and leases stay as they are.';
     if(!confirm(msg)) return;
 
     const applyBtn = el('ApplyBtn');
@@ -303,7 +367,83 @@
     if(applyBtn) applyBtn.disabled = true;
     if(searchBtn) searchBtn.disabled = true;
     closeDetail();
+    const finish = () => { if(applyBtn) applyBtn.disabled = false; if(searchBtn) searchBtn.disabled = false; };
+    const refreshAll = () => {
+      saveState();
+      renderRegistries();
+      renderInvoices();
+      if(typeof renderUnits === 'function') renderUnits();
+      renderUnitOverview();
+      renderLeaseOverview();
+      renderOverview();
+      if(typeof renderInvoiceTrackingTable === 'function') renderInvoiceTrackingTable();
+    };
+    const problems = [];
 
+    // a. Unit Control first — the unit keeps its row (and with it every other field); only its
+    // Unit ID changes. If this fails nothing else is touched.
+    for(const unit of oldUnits){
+      setText('RenameStatus', `Renaming ${oldId} in Unit Control…`);
+      const updated = Object.assign({}, unit, {
+        unitId: newId,
+        comments: (Array.isArray(unit.comments) ? unit.comments.slice() : []).concat([{
+          text: `Unit ID changed ${unit.unitId || oldId} → ${newId} (Unit ID Correction — assets team serial number).`,
+          user: userName(),
+          timestamp: new Date().toISOString()
+        }])
+      });
+      try{
+        await withRetry(() => DB.updateUnit(updated));
+      }catch(e){
+        console.error('Unit ID Correction unit save error:', e);
+        finish();
+        if(oldUnits.indexOf(unit) > 0) refreshAll();
+        setText('RenameStatus', 'Not saved — see the message.');
+        alert(`Failed to rename ${oldId} in Unit Control: ${(e && e.message) || e}\n\n` +
+          (oldUnits.indexOf(unit) > 0 ? 'Some of its unit records were already renamed; press Apply again to finish.' : 'Nothing was changed.'));
+        return;
+      }
+      Object.assign(unit, { unitId: newId, comments: updated.comments });
+    }
+
+    // b. Manual coverage days (one row per day, keyed by Unit ID): add them under the new ID
+    // first, then remove the old rows — so a failure can never lose a day, only leave a
+    // harmless leftover under the old ID.
+    for(const unit of oldUnits){
+      const dates = (unit.manualCoverageDates || []).slice();
+      if(!dates.length) continue;
+      setText('RenameStatus', `Moving ${dates.length} manual coverage day(s)…`);
+      const oldRowIds = unit.manualCoverageRowIds || {};
+      const newRowIds = {};
+      const rows = dates.map(date => { const rowId = id(); newRowIds[date] = rowId; return { id: rowId, unitId: newId, date, createdAt: new Date().toISOString() }; });
+      try{
+        await DB.bulkSaveManualCoverage(rows);
+      }catch(e){
+        console.error('Unit ID Correction coverage save error:', e);
+        problems.push(`Manual coverage days couldn't be moved (${(e && e.message) || e}). They're still saved under ${oldId}; mark them again for ${newId} in Accruals.`);
+        continue;
+      }
+      unit.manualCoverageRowIds = newRowIds;
+      const staleIds = dates.map(d => oldRowIds[d]).filter(Boolean);
+      try{ if(staleIds.length) await DB.bulkDeleteManualCoverage(staleIds); }
+      catch(e){ console.error('Unit ID Correction coverage cleanup error:', e); problems.push(`The old coverage rows under ${oldId} couldn't be removed from the "Manual Coverage" sheet (they no longer affect ${newId}).`); }
+    }
+
+    // Accrual records keyed by Unit ID — each one rewritten whole, by its id.
+    let accrualsDone = 0;
+    for(const a of accruals){
+      setText('RenameStatus', `Moving accrual records (${accrualsDone + 1} of ${accruals.length})…`);
+      try{
+        await withRetry(() => DB.updateAccrual(Object.assign({}, a, { unitId: newId })));
+        a.unitId = newId;
+        accrualsDone++;
+      }catch(e){
+        console.error('Unit ID Correction accrual save error:', e);
+      }
+    }
+    if(accrualsDone < accruals.length) problems.push(`${accruals.length - accrualsDone} accrual record(s) still list ${oldId}; press Apply again to retry.`);
+
+    // c. Invoices.
     const done = [], failed = [];
     for(let i = 0; i < regs.length; i++){
       const reg = regs[i];
@@ -343,30 +483,23 @@
       }
     }
 
-    if(applyBtn) applyBtn.disabled = false;
-    if(searchBtn) searchBtn.disabled = false;
-    if(done.length){
-      saveState();
-      renderRegistries();
-      renderInvoices();
-      renderUnitOverview();
-      renderLeaseOverview();
-      renderOverview();
-      if(typeof renderInvoiceTrackingTable === 'function') renderInvoiceTrackingTable();
-    }
+    finish();
+    refreshAll();
 
-    if(failed.length){
-      // Still listed under the old id, so Apply can simply be pressed again for the rest.
-      search(oldId, `${done.length} of ${regs.length} renamed to ${newId}. Not saved: ${failed.map(f => f.reg.wdNumber || '(no WD)').join(', ')} — press Apply again to retry.`);
-      alert('Failed to save to Google Sheets:\n' + failed.map(f => `${f.reg.wdNumber || '(no WD)'}: ${f.error}`).join('\n'));
+    if(failed.length) problems.push('Invoices not saved — press Apply again to retry:\n' + failed.map(f => `  ${f.reg.wdNumber || '(no WD)'}: ${f.error}`).join('\n'));
+    if(trackingFailed.length) problems.push(`These Invoice Tracking entries couldn't be saved and still list ${oldId}: ${trackingFailed.join(', ')}.`);
+    const unitPart = oldUnits.length ? 'Unit Control' + (accruals.length ? ', accruals' : '') + ' and ' : '';
+    const leftUnderOld = failed.length || accrualsDone < accruals.length;
+    if(leftUnderOld){
+      // Whatever still carries the old id stays listed under it, so Apply can simply be pressed again.
+      search(oldId, `${unitPart}${done.length} of ${regs.length} invoice(s) renamed to ${newId}; some items still list ${oldId} — press Apply again to retry.`);
+      const newIdInput = el('NewId'); if(newIdInput) newIdInput.value = newId;
     } else {
       const searchInput = el('Search'); if(searchInput) searchInput.value = newId;
       const newIdInput = el('NewId'); if(newIdInput) newIdInput.value = '';
-      search(newId, `✓ ${oldId} renamed to ${newId} on ${done.length} invoice(s).`);
+      search(newId, `✓ ${oldId} renamed to ${newId}: ${unitPart}${done.length} invoice(s).`);
     }
-    if(trackingFailed.length){
-      alert(`The invoices were renamed, but these Invoice Tracking entries couldn't be saved and still list ${oldId}: ${trackingFailed.join(', ')}.`);
-    }
+    if(problems.length) alert('Rename finished with problems:\n\n' + problems.join('\n\n'));
   }
 
   // ---- Wiring ----
