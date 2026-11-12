@@ -1125,6 +1125,72 @@ qs('#invoiceForm').addEventListener('submit', e=>{
 
 });
 
+// ========== Blocking progress window ==========
+// Multi-step saves (Unit ID Correction rename, invoice replace, TCR PDF update) cover the whole
+// app with a window showing the step in progress and a percentage bar. Until it closes, every
+// click and key is swallowed, the auto-refresh skips its cycles (and discards one that was
+// already fetching), and leaving the page asks for confirmation — so nothing can start a second
+// change, or reload stale data, while the first is still being written.
+var _blockingOpActive = false;
+var _blockingOpSeq = 0;
+
+function _blockingKeyGuard(e){ e.preventDefault(); e.stopPropagation(); }
+function _blockingUnloadGuard(e){ e.preventDefault(); e.returnValue = ''; return ''; }
+
+function beginBlockingProgress(title, step){
+  let overlay = qs('#blockingProgress');
+  if(!overlay){
+    overlay = document.createElement('div');
+    overlay.id = 'blockingProgress';
+    overlay.setAttribute('role', 'alertdialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px;cursor:wait;';
+    overlay.innerHTML =
+      '<div style="background:#fff;border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,.3);width:100%;max-width:440px;padding:20px 22px;cursor:default;">' +
+        '<div id="blockingProgressTitle" style="font-size:15px;font-weight:700;color:#111827;margin-bottom:12px;"></div>' +
+        '<div id="blockingProgressStep" style="font-size:13px;color:#374151;min-height:36px;margin-bottom:10px;"></div>' +
+        '<div style="height:12px;background:#e5e7eb;border-radius:6px;overflow:hidden;">' +
+          '<div id="blockingProgressBar" style="height:100%;width:0;background:#0b74de;border-radius:6px;transition:width .3s ease;"></div>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:#6b7280;">' +
+          '<span>Please wait — don\'t close or reload the page.</span><span id="blockingProgressPct">0%</span>' +
+        '</div>' +
+      '</div>';
+    ['click','mousedown','mouseup','dblclick','wheel','contextmenu'].forEach(t => overlay.addEventListener(t, e => { if(e.type !== 'wheel') e.preventDefault(); e.stopPropagation(); }));
+    document.body.appendChild(overlay);
+  }
+  overlay.querySelector('#blockingProgressTitle').textContent = title || 'Saving…';
+  overlay.style.display = 'flex';
+  if(!_blockingOpActive){
+    _blockingOpActive = true;
+    _blockingOpSeq++;
+    try{ if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); }catch(e){}
+    document.addEventListener('keydown', _blockingKeyGuard, true);
+    document.addEventListener('keypress', _blockingKeyGuard, true);
+    window.addEventListener('beforeunload', _blockingUnloadGuard);
+  }
+  setBlockingProgress(0, step || '');
+}
+
+function setBlockingProgress(pct, step){
+  const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  const bar = qs('#blockingProgressBar'); if(bar) bar.style.width = p + '%';
+  const pctEl = qs('#blockingProgressPct'); if(pctEl) pctEl.textContent = p + '%';
+  if(step !== undefined){ const s = qs('#blockingProgressStep'); if(s) s.textContent = step; }
+}
+
+// Safe to call more than once (e.g. before an error alert and again in a finally).
+function endBlockingProgress(){
+  const overlay = qs('#blockingProgress'); if(overlay) overlay.style.display = 'none';
+  if(_blockingOpActive){
+    _blockingOpActive = false;
+    _blockingOpSeq++;
+    document.removeEventListener('keydown', _blockingKeyGuard, true);
+    document.removeEventListener('keypress', _blockingKeyGuard, true);
+    window.removeEventListener('beforeunload', _blockingUnloadGuard);
+  }
+}
+
 // ========== Edit a registered invoice in the registration form (replace mode) ==========
 // Used by Unit ID Correction's "Edit Invoice": loads a registry into the Invoice Registration
 // form exactly as if it were being entered (WD/Doc/category/amount/dates, leases, units, every
@@ -1272,7 +1338,14 @@ function loadRegistryIntoInvoiceForm(reg){
   if(banner){ banner.style.display = 'block'; banner.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 }
 
+// The progress window always closes, even if something unexpected throws mid-save.
 async function submitInvoiceReplacement(form, fd){
+  try{ return await _submitInvoiceReplacement(form, fd); }
+  catch(e){ console.error('Invoice replace error:', e); endBlockingProgress(); alert('Unexpected error while saving: ' + ((e && e.message) || e)); }
+  finally{ endBlockingProgress(); }
+}
+
+async function _submitInvoiceReplacement(form, fd){
   const norm = s => (s || '').toString().trim().toLowerCase();
   const reg = (state.registries || []).find(r => r.id === form.dataset.replacingRegistry);
   if(!reg){ alert('The invoice being edited no longer exists in this session. Reload and try again.'); exitInvoiceReplaceMode(); return; }
@@ -1343,6 +1416,9 @@ async function submitInvoiceReplacement(form, fd){
 
   const submitBtn = form.querySelector('button[type="submit"]');
   if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = 'Saving...'; }
+  const wdLabel = reg.wdNumber || '(no WD)';
+  beginBlockingProgress(`Saving ${wdLabel}`, `Step 1 of 2 — Writing the invoice to Google Sheets…`);
+  setBlockingProgress(15);
   const isNetworkError = e => /Failed to fetch|NetworkError|Load failed|network/i.test((e && e.message) || '');
   let lastErr = null;
   for(let attempt = 1; attempt <= 2; attempt++){
@@ -1350,16 +1426,22 @@ async function submitInvoiceReplacement(form, fd){
     catch(e){
       lastErr = e;
       console.error(`Invoice replace save error (attempt ${attempt}):`, e);
-      if(attempt === 1 && isNetworkError(e)){ await new Promise(r => setTimeout(r, 2000)); continue; }
+      if(attempt === 1 && isNetworkError(e)){
+        setBlockingProgress(30, 'Step 1 of 2 — Connection to Google Sheets dropped, retrying…');
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
       break;
     }
   }
   if(submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Save Changes'; }
   if(lastErr){
+    endBlockingProgress();
     alert('Failed to save to Google Sheets: ' + lastErr.message + '\n\nNothing was changed — the form still holds your edits, so you can press Save Changes again.');
     return;
   }
 
+  setBlockingProgress(80, 'Step 2 of 2 — Updating the app with the saved invoice…');
   // Confirmed — mirror in memory. The registry object keeps its identity; every field is replaced.
   const oldWd = norm(reg.wdNumber), oldDoc = norm(reg.docNumber);
   Object.assign(reg, record);
@@ -1383,6 +1465,8 @@ async function submitInvoiceReplacement(form, fd){
   renderInvoices(); renderRegistries(reg.id);
   renderUnitOverview(); renderLeaseOverview(); renderOverview();
   const clearBtn = qs('#invoiceClearBtn'); if(clearBtn) clearBtn.click(); else exitInvoiceReplaceMode();
+  setBlockingProgress(100, 'Done.');
+  endBlockingProgress();
   document.dispatchEvent(new CustomEvent('agi:registry-replaced', { detail: { registry: reg } }));
 }
 
@@ -5332,6 +5416,9 @@ function startAutoRefresh(){
     // sheet exactly as it was before the edit and silently overwrite the just-accepted local
     // state right back to it.
     if(typeof _accrualsSyncInFlight !== 'undefined' && _accrualsSyncInFlight) return;
+    // Nor while a blocking multi-step save is writing (Unit ID Correction, invoice replace…).
+    if(_blockingOpActive) return;
+    const blockingSeqAtFetch = _blockingOpSeq;
 
     _refreshRunning = true;
     _autoRefreshCycleCount++;
@@ -5368,6 +5455,9 @@ function startAutoRefresh(){
       );
 
       if(!registries || !units || !leases){ _refreshRunning = false; return; }
+      // A blocking multi-step save (see beginBlockingProgress) ran while this was fetching —
+      // what came back may predate its writes, so drop this whole cycle.
+      if(_blockingOpActive || _blockingOpSeq !== blockingSeqAtFetch){ _refreshRunning = false; return; }
 
       // The guards above only look at the Accruals flags BEFORE the fetch, which can itself take
       // most of a minute — an Accrue Period / manual-coverage action made while it was on its

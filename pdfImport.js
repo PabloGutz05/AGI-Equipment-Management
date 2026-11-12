@@ -1590,7 +1590,14 @@
   // backend's updateRow leaves every other column of the row untouched. The write is one
   // whole-row overwrite by id, so retrying it can't duplicate or partially apply anything —
   // and nothing in memory changes until Google Sheets confirms it.
+  // The progress window (app.js beginBlockingProgress) always closes, even on an unexpected error.
   async function tcrUpdateSave(u){
+    try{ return await _tcrUpdateSave(u); }
+    catch(e){ console.error('TCR invoice update error:', e); endBlockingProgress(); alert('Unexpected error while saving: ' + ((e && e.message) || e)); }
+    finally{ endBlockingProgress(); }
+  }
+
+  async function _tcrUpdateSave(u){
     if(!u || _tcrCtx[u.p] !== u || !u.newSlices || u.blockers.length) return;
     const reg = u.registry;
     if(!reg.id){
@@ -1669,6 +1676,8 @@
       if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = 'Save Changes'; }
       if(cancelBtn) cancelBtn.disabled = false;
     };
+    beginBlockingProgress(`Updating ${reg.wdNumber || '(no WD)'} from its PDF`, 'Step 1 of 2 — Writing the rebuilt invoice to Google Sheets…');
+    setBlockingProgress(15);
 
     // A network-level failure ("Failed to fetch") leaves it unknown whether the request reached
     // Google at all; since this is a whole-row overwrite by id, re-sending the same record is
@@ -1685,6 +1694,7 @@
         console.error(`TCR invoice update save error (attempt ${attempt}):`, e);
         if(attempt === 1 && isNetworkError(e)){
           tcrUpdateSetStatus('#' + u.p + 'Status', 'Connection to Google Sheets dropped — retrying…');
+          setBlockingProgress(30, 'Step 1 of 2 — Connection to Google Sheets dropped, retrying…');
           await new Promise(r => setTimeout(r, 2000));
           continue;
         }
@@ -1693,11 +1703,13 @@
     }
     if(lastErr){
       restoreButtons();
+      endBlockingProgress();
       tcrUpdateSetStatus('#' + u.p + 'Status', 'Not saved — see the message.');
       alert('Failed to save to Google Sheets: ' + lastErr.message + '\n\nNothing was changed in the app. It\'s safe to press Save Changes again — the invoice is rewritten as a whole, so a repeated save can\'t duplicate anything.');
       return;
     }
     restoreButtons();
+    setBlockingProgress(80, 'Step 2 of 2 — Updating the app with the saved invoice…');
 
     // Confirmed saved — now mirror it in memory. The registry object keeps its identity (other
     // views hold references to it); every rewritten field is replaced outright.
@@ -1731,6 +1743,8 @@
 
     _tcrCtx[u.p] = null;
     tcrUpdateClearPreview(u.p);
+    setBlockingProgress(100, 'Done.');
+    endBlockingProgress();
     if(typeof u.onSaved === 'function') u.onSaved(reg, u.newTotal);
   }
 

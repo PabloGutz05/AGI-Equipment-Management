@@ -303,7 +303,20 @@
     }
   }
 
+  // The progress window (app.js beginBlockingProgress) always closes, even on an unexpected error.
   async function applyRename(){
+    try{ return await _applyRename(); }
+    catch(e){
+      console.error('Unit ID Correction error:', e);
+      endBlockingProgress();
+      const applyBtn = el('ApplyBtn'); if(applyBtn) applyBtn.disabled = false;
+      const searchBtn = el('SearchBtn'); if(searchBtn) searchBtn.disabled = false;
+      alert('Unexpected error during the rename: ' + ((e && e.message) || e) + '\n\nReload the page and search the unit again to see what was saved.');
+    }
+    finally{ endBlockingProgress(); }
+  }
+
+  async function _applyRename(){
     if(!_search || !isDevSession()) return;
     const oldId = _search.unitId;
     const oldKey = normKey(oldId);
@@ -367,6 +380,24 @@
     if(applyBtn) applyBtn.disabled = true;
     if(searchBtn) searchBtn.disabled = true;
     closeDetail();
+
+    // Progress window: one step per write, in the order they happen.
+    const coverageUnits = oldUnits.filter(u => (u.manualCoverageDates || []).length);
+    const sections = [];
+    if(oldUnits.length) sections.push('Unit Control');
+    if(coverageUnits.length) sections.push('Manual coverage');
+    if(accruals.length) sections.push('Accruals');
+    sections.push('Invoices');
+    if(tracking.length) sections.push('Invoice Tracking');
+    const totalSteps = oldUnits.length + coverageUnits.length * 2 + accruals.length + regs.length + tracking.length + 1;
+    let doneSteps = 0;
+    const progress = (section, detail) => {
+      const label = `Step ${sections.indexOf(section) + 1} of ${sections.length} — ${section}: ${detail}`;
+      setBlockingProgress(doneSteps / totalSteps * 100, label);
+      setText('RenameStatus', label);
+    };
+    const advance = () => { doneSteps++; setBlockingProgress(doneSteps / totalSteps * 100); };
+    beginBlockingProgress(`Renaming ${oldId} → ${newId}`, 'Starting…');
     const finish = () => { if(applyBtn) applyBtn.disabled = false; if(searchBtn) searchBtn.disabled = false; };
     const refreshAll = () => {
       saveState();
@@ -383,7 +414,7 @@
     // a. Unit Control first — the unit keeps its row (and with it every other field); only its
     // Unit ID changes. If this fails nothing else is touched.
     for(const unit of oldUnits){
-      setText('RenameStatus', `Renaming ${oldId} in Unit Control…`);
+      progress('Unit Control', `renaming ${unit.unitId || oldId} → ${newId}${unit.lease ? ' (lease ' + unit.lease + ')' : ''}…`);
       const updated = Object.assign({}, unit, {
         unitId: newId,
         comments: (Array.isArray(unit.comments) ? unit.comments.slice() : []).concat([{
@@ -397,6 +428,7 @@
       }catch(e){
         console.error('Unit ID Correction unit save error:', e);
         finish();
+        endBlockingProgress();
         if(oldUnits.indexOf(unit) > 0) refreshAll();
         setText('RenameStatus', 'Not saved — see the message.');
         alert(`Failed to rename ${oldId} in Unit Control: ${(e && e.message) || e}\n\n` +
@@ -404,6 +436,7 @@
         return;
       }
       Object.assign(unit, { unitId: newId, comments: updated.comments });
+      advance();
     }
 
     // b. Manual coverage days (one row per day, keyed by Unit ID): add them under the new ID
@@ -412,7 +445,7 @@
     for(const unit of oldUnits){
       const dates = (unit.manualCoverageDates || []).slice();
       if(!dates.length) continue;
-      setText('RenameStatus', `Moving ${dates.length} manual coverage day(s)…`);
+      progress('Manual coverage', `saving ${dates.length} covered day(s) under ${newId}…`);
       const oldRowIds = unit.manualCoverageRowIds || {};
       const newRowIds = {};
       const rows = dates.map(date => { const rowId = id(); newRowIds[date] = rowId; return { id: rowId, unitId: newId, date, createdAt: new Date().toISOString() }; });
@@ -421,18 +454,23 @@
       }catch(e){
         console.error('Unit ID Correction coverage save error:', e);
         problems.push(`Manual coverage days couldn't be moved (${(e && e.message) || e}). They're still saved under ${oldId}; mark them again for ${newId} in Accruals.`);
+        advance(); advance();
         continue;
       }
+      advance();
       unit.manualCoverageRowIds = newRowIds;
       const staleIds = dates.map(d => oldRowIds[d]).filter(Boolean);
+      progress('Manual coverage', `removing the old rows under ${oldId}…`);
       try{ if(staleIds.length) await DB.bulkDeleteManualCoverage(staleIds); }
       catch(e){ console.error('Unit ID Correction coverage cleanup error:', e); problems.push(`The old coverage rows under ${oldId} couldn't be removed from the "Manual Coverage" sheet (they no longer affect ${newId}).`); }
+      advance();
     }
 
     // Accrual records keyed by Unit ID — each one rewritten whole, by its id.
     let accrualsDone = 0;
-    for(const a of accruals){
-      setText('RenameStatus', `Moving accrual records (${accrualsDone + 1} of ${accruals.length})…`);
+    for(let i = 0; i < accruals.length; i++){
+      const a = accruals[i];
+      progress('Accruals', `moving record ${i + 1} of ${accruals.length}${a.periodStart ? ' (' + formatDate(a.periodStart) + ' — ' + formatDate(a.periodEnd) + ')' : ''}…`);
       try{
         await withRetry(() => DB.updateAccrual(Object.assign({}, a, { unitId: newId })));
         a.unitId = newId;
@@ -440,6 +478,7 @@
       }catch(e){
         console.error('Unit ID Correction accrual save error:', e);
       }
+      advance();
     }
     if(accrualsDone < accruals.length) problems.push(`${accruals.length - accrualsDone} accrual record(s) still list ${oldId}; press Apply again to retry.`);
 
@@ -447,15 +486,17 @@
     const done = [], failed = [];
     for(let i = 0; i < regs.length; i++){
       const reg = regs[i];
-      setText('RenameStatus', `Saving ${i + 1} of ${regs.length} (${reg.wdNumber || '(no WD)'})…`);
+      progress('Invoices', `saving ${reg.wdNumber || '(no WD)'} (${i + 1} of ${regs.length})…`);
       const record = renamedRecord(reg, oldKey, newId, oldId);
       try{
         await withRetry(() => DB.updateRegistry(record));
       }catch(e){
         console.error('Unit ID Correction save error:', reg.wdNumber, e);
         failed.push({ reg, error: (e && e.message) || String(e) });
+        advance();
         continue;
       }
+      advance();
       // Confirmed — mirror in memory (keep the object's identity; other views reference it).
       Object.assign(reg, record);
       const wd = normKey(reg.wdNumber), doc = normKey(reg.docNumber);
@@ -469,7 +510,8 @@
     const doneWds = new Set(done.map(r => normKey(r.wdNumber)).filter(Boolean));
     const trackingFailed = [];
     for(const t of tracking){
-      if(!doneWds.has(normKey(t.wdInvoiceNum))) continue;
+      if(!doneWds.has(normKey(t.wdInvoiceNum))){ advance(); continue; }
+      progress('Invoice Tracking', `updating the entry for ${t.wdInvoiceNum || '(no WD)'}…`);
       const updated = Object.assign({}, t, {
         unitsInDispute: (t.unitsInDispute || []).map(u => (normKey(u) === oldKey ? newId : u)),
         unitAmountDetails: (t.unitAmountDetails || []).map(d => (normKey(d.unit) === oldKey ? Object.assign({}, d, { unit: newId }) : d))
@@ -481,10 +523,14 @@
         console.error('Unit ID Correction tracking save error:', t.wdInvoiceNum, e);
         trackingFailed.push(t.wdInvoiceNum || '(no WD)');
       }
+      advance();
     }
 
+    setBlockingProgress(doneSteps / totalSteps * 100, 'Finishing — updating the app…');
     finish();
     refreshAll();
+    setBlockingProgress(100, 'Done.');
+    endBlockingProgress();
 
     if(failed.length) problems.push('Invoices not saved — press Apply again to retry:\n' + failed.map(f => `  ${f.reg.wdNumber || '(no WD)'}: ${f.error}`).join('\n'));
     if(trackingFailed.length) problems.push(`These Invoice Tracking entries couldn't be saved and still list ${oldId}: ${trackingFailed.join(', ')}.`);
