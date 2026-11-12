@@ -1184,9 +1184,12 @@
   // and rebuilds that registry's periods, per-unit amounts, units/leases and total the way the
   // import would have registered it (see tcrUpdateBuild). WD/Doc/category/dates submitted stay
   // as they are; a PDF for a different Doc number blocks the save.
-  //   _tcrUpdate: { registry, slices, quarterly, newSlices, newTotal, blockers, usePeriods,
-  //                 overallFrom, overallTo }
-  let _tcrUpdate = null;
+  // The same flow also backs the Unit ID Correction tool (unitIdCorrection.js), so each tool
+  // keeps its own context, keyed by the prefix of its element ids (#<p>DropZone, #<p>Status…):
+  //   { p, registry, slices, quarterly, newSlices, newTotal, blockers, usePeriods,
+  //     overallFrom, overallTo, category, onSaved(registry, newTotal) }
+  const _tcrCtx = {};
+  const tcrEl = (p, name) => qs('#' + p + name);
 
   const normKey = s => (s || '').toString().trim().toLowerCase();
   const moneyNum = v => parseCurrency(v === undefined || v === null ? '' : v) || 0;
@@ -1279,9 +1282,9 @@
     });
   }
 
-  function tcrUpdateRenderCurrent(){
-    const wrap = qs('#tcrUpdateCurrent'); if(!wrap || !_tcrUpdate) return;
-    const reg = _tcrUpdate.registry;
+  function tcrUpdateRenderCurrent(u){
+    const wrap = qs('#tcrUpdateCurrent'); if(!wrap || !u) return;
+    const reg = u.registry;
     wrap.innerHTML = '';
     const heading = document.createElement('h4'); heading.textContent = 'Current invoice'; heading.style.margin = '0 0 8px';
     wrap.appendChild(heading);
@@ -1302,33 +1305,53 @@
       info.appendChild(row);
     });
     wrap.appendChild(info);
-    tcrUpdatePeriodCards(wrap, _tcrUpdate.slices, null);
+    tcrUpdatePeriodCards(wrap, u.slices, null);
   }
 
-  function tcrUpdateClearPreview(){
-    if(_tcrUpdate){ _tcrUpdate.newSlices = null; _tcrUpdate.newTotal = 0; _tcrUpdate.blockers = []; }
-    const preview = qs('#tcrUpdatePreview'); if(preview) preview.style.display = 'none';
-    const warn = qs('#tcrUpdateWarnings'); if(warn) warn.innerHTML = '';
-    const nw = qs('#tcrUpdateNew'); if(nw) nw.innerHTML = '';
-    const fileInput = qs('#tcrUpdateFile'); if(fileInput) fileInput.value = '';
-    tcrUpdateSetStatus('#tcrUpdateDropFileName', '');
-    tcrUpdateSetStatus('#tcrUpdateStatus', '');
-    const saveBtn = qs('#tcrUpdateSaveBtn'); if(saveBtn) saveBtn.disabled = true;
+  // Clears the PDF preview of the tool with element-id prefix `p` (and its context's pending
+  // rebuild, if one is open).
+  function tcrUpdateClearPreview(p){
+    const u = _tcrCtx[p];
+    if(u){ u.newSlices = null; u.newTotal = 0; u.blockers = []; }
+    const preview = tcrEl(p, 'Preview'); if(preview) preview.style.display = 'none';
+    const warn = tcrEl(p, 'Warnings'); if(warn) warn.innerHTML = '';
+    const nw = tcrEl(p, 'New'); if(nw) nw.innerHTML = '';
+    const fileInput = tcrEl(p, 'File'); if(fileInput) fileInput.value = '';
+    tcrUpdateSetStatus('#' + p + 'DropFileName', '');
+    tcrUpdateSetStatus('#' + p + 'Status', '');
+    const saveBtn = tcrEl(p, 'SaveBtn'); if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Save Changes'; }
+  }
+
+  // Opens a PDF-update context for `registry` on the tool with element-id prefix `p`,
+  // replacing any context that tool already had open.
+  function tcrUpdateBegin(p, registry, onSaved){
+    const slices = getRegistryCoveragePeriods(registry).map(s => ({ from: s.from, to: s.to, unitDetails: (s.unitDetails || []).slice() }));
+    const quarterly = !!(registry.period1From || registry.period1To || (Array.isArray(registry.periods) && registry.periods.length > 0));
+    _tcrCtx[p] = null;
+    tcrUpdateClearPreview(p);
+    const u = { p, registry, slices, quarterly, newSlices: null, newTotal: 0, blockers: [], onSaved };
+    _tcrCtx[p] = u;
+    return u;
+  }
+
+  function tcrUpdateEnd(p){
+    _tcrCtx[p] = null;
+    tcrUpdateClearPreview(p);
   }
 
   function tcrUpdateSelect(registry){
-    const slices = getRegistryCoveragePeriods(registry).map(s => ({ from: s.from, to: s.to, unitDetails: (s.unitDetails || []).slice() }));
-    const quarterly = !!(registry.period1From || registry.period1To || (Array.isArray(registry.periods) && registry.periods.length > 0));
-    _tcrUpdate = { registry, slices, quarterly, newSlices: null, newTotal: 0, blockers: [] };
+    const u = tcrUpdateBegin('tcrUpdate', registry, (reg, newTotal) => {
+      const savedWd = reg.wdNumber;
+      tcrUpdateReset();
+      tcrUpdateSetStatus('#tcrUpdateSearchStatus', `✓ ${savedWd} updated — new total ${formatCurrency(newTotal.toFixed(2))}.`);
+    });
     const matches = qs('#tcrUpdateMatches'); if(matches) matches.innerHTML = '';
-    tcrUpdateClearPreview();
-    tcrUpdateRenderCurrent();
+    tcrUpdateRenderCurrent(u);
     const wrap = qs('#tcrUpdateInvoice'); if(wrap) wrap.style.display = 'block';
   }
 
   function tcrUpdateReset(){
-    _tcrUpdate = null;
-    tcrUpdateClearPreview();
+    tcrUpdateEnd('tcrUpdate');
     const wrap = qs('#tcrUpdateInvoice'); if(wrap) wrap.style.display = 'none';
     const cur = qs('#tcrUpdateCurrent'); if(cur) cur.innerHTML = '';
     const matches = qs('#tcrUpdateMatches'); if(matches) matches.innerHTML = '';
@@ -1338,8 +1361,7 @@
 
   function tcrUpdateSearch(){
     const query = (qs('#tcrUpdateSearch') || {}).value || '';
-    _tcrUpdate = null;
-    tcrUpdateClearPreview();
+    tcrUpdateEnd('tcrUpdate');
     const wrap = qs('#tcrUpdateInvoice'); if(wrap) wrap.style.display = 'none';
     const matchesWrap = qs('#tcrUpdateMatches'); if(matchesWrap) matchesWrap.innerHTML = '';
     if(!query.trim()){ tcrUpdateSetStatus('#tcrUpdateSearchStatus', 'Enter a WD Invoice Number.'); return; }
@@ -1364,8 +1386,8 @@
   // Every period lists every unit — the ones already on the invoice plus any the PDF bills —
   // with each unit's lease details carried over from its existing row, blanks filled from its
   // own unit record. Also collects anything that should block the save or just be pointed out.
-  function tcrUpdateBuild(header, built, parseIssues){
-    const { registry, slices } = _tcrUpdate;
+  function tcrUpdateBuild(u, header, built, parseIssues){
+    const { registry, slices } = u;
     const blockers = [];
     const warnings = [];
 
@@ -1426,7 +1448,7 @@
     const leaseRecFor = l => (state.leases || []).find(x => normKey(x.leaseNumber || x.id) === normKey(l));
     const allLeases = regLeases.concat(Array.from(addedLeases), header.leaseNumber ? [header.leaseNumber] : []);
     const isQuarterlyLease = allLeases.some(l => { const rec = leaseRecFor(l); return !!rec && normKey(rec.arrangement) === 'quarterly'; });
-    const usePeriods = built.periods.length > 1 && (isQuarterlyLease || _tcrUpdate.quarterly);
+    const usePeriods = built.periods.length > 1 && (isQuarterlyLease || u.quarterly);
     if(built.periods.length > 1 && !usePeriods){
       warnings.push(`The PDF bills ${built.periods.length} separate months, but none of this invoice's leases is marked Quarterly — they're merged into one period, the same as the import does.`);
     }
@@ -1491,9 +1513,9 @@
     return { newSlices, newTotal, blockers, warnings, usePeriods, overallFrom, overallTo, category };
   }
 
-  function tcrUpdateRenderPreview(result){
-    const warnWrap = qs('#tcrUpdateWarnings');
-    const newWrap = qs('#tcrUpdateNew');
+  function tcrUpdateRenderPreview(u, result){
+    const warnWrap = tcrEl(u.p, 'Warnings');
+    const newWrap = tcrEl(u.p, 'New');
     if(!warnWrap || !newWrap) return;
     warnWrap.innerHTML = ''; newWrap.innerHTML = '';
     result.blockers.forEach(msg => {
@@ -1509,35 +1531,37 @@
       warnWrap.appendChild(d);
     });
     const heading = document.createElement('h4'); heading.style.margin = '0 0 8px';
-    const oldTotal = moneyNum(_tcrUpdate.registry.totalAmount);
+    const oldTotal = moneyNum(u.registry.totalAmount);
     heading.textContent = `Updated data — total ${formatCurrency(result.newTotal.toFixed(2))} (was ${formatCurrency(oldTotal.toFixed(2))})`;
     newWrap.appendChild(heading);
-    tcrUpdatePeriodCards(newWrap, result.newSlices, _tcrUpdate.slices);
-    const preview = qs('#tcrUpdatePreview'); if(preview) preview.style.display = 'block';
+    tcrUpdatePeriodCards(newWrap, result.newSlices, u.slices);
+    const preview = tcrEl(u.p, 'Preview'); if(preview) preview.style.display = 'block';
   }
 
-  async function tcrUpdateHandleFile(file){
-    if(!_tcrUpdate) return;
-    tcrUpdateClearPreview();
-    tcrUpdateSetStatus('#tcrUpdateDropFileName', file.name);
-    tcrUpdateSetStatus('#tcrUpdateStatus', 'Reading PDF…');
+  async function tcrUpdateHandleFile(u, file){
+    if(!u || _tcrCtx[u.p] !== u) return;
+    const p = u.p;
+    const status = msg => tcrUpdateSetStatus('#' + p + 'Status', msg);
+    tcrUpdateClearPreview(p);
+    tcrUpdateSetStatus('#' + p + 'DropFileName', file.name);
+    status('Reading PDF…');
     try{
       const lib = await loadPdfJs();
       const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
       const rows = await extractRows(pdf);
-      if(detectInvoiceType(rows) !== 'tcr'){ tcrUpdateSetStatus('#tcrUpdateStatus', 'This isn\'t a TCR Americas invoice PDF.'); return; }
+      if(detectInvoiceType(rows) !== 'tcr'){ status('This isn\'t a TCR Americas invoice PDF.'); return; }
       const header = parseHeaderInfo(rows);
       const { unitMonthCat, totalCandidates, issues } = parseDetailRows(rows, header.isCredit ? -1 : 1);
-      if(totalCandidates === 0){ tcrUpdateSetStatus('#tcrUpdateStatus', 'No recognizable line items found — this may not be a TCR quarterly usage-detail invoice.'); return; }
+      if(totalCandidates === 0){ status('No recognizable line items found — this may not be a TCR quarterly usage-detail invoice.'); return; }
       const built = buildPeriods(unitMonthCat, header.tax);
-      if(!_tcrUpdate) return; // cancelled while reading
-      const result = tcrUpdateBuild(header, built, issues);
-      Object.assign(_tcrUpdate, { newSlices: result.newSlices, newTotal: result.newTotal, blockers: result.blockers, usePeriods: result.usePeriods, overallFrom: result.overallFrom, overallTo: result.overallTo, category: result.category });
-      tcrUpdateRenderPreview(result);
-      tcrUpdateSetStatus('#tcrUpdateStatus', result.blockers.length ? 'Can\'t save — see the issues below.' : 'Review the updated amounts below, then Save Changes.');
-      const saveBtn = qs('#tcrUpdateSaveBtn'); if(saveBtn) saveBtn.disabled = result.blockers.length > 0;
+      if(_tcrCtx[p] !== u) return; // cancelled (or another invoice picked) while reading
+      const result = tcrUpdateBuild(u, header, built, issues);
+      Object.assign(u, { newSlices: result.newSlices, newTotal: result.newTotal, blockers: result.blockers, usePeriods: result.usePeriods, overallFrom: result.overallFrom, overallTo: result.overallTo, category: result.category });
+      tcrUpdateRenderPreview(u, result);
+      status(result.blockers.length ? 'Can\'t save — see the issues below.' : 'Review the updated amounts below, then Save Changes.');
+      const saveBtn = tcrEl(p, 'SaveBtn'); if(saveBtn) saveBtn.disabled = result.blockers.length > 0;
     }catch(err){
-      tcrUpdateSetStatus('#tcrUpdateStatus', 'Failed to parse PDF: ' + (err && err.message ? err.message : String(err)));
+      status('Failed to parse PDF: ' + (err && err.message ? err.message : String(err)));
     }
   }
 
@@ -1564,9 +1588,8 @@
   // backend's updateRow leaves every other column of the row untouched. The write is one
   // whole-row overwrite by id, so retrying it can't duplicate or partially apply anything —
   // and nothing in memory changes until Google Sheets confirms it.
-  async function tcrUpdateSave(){
-    const u = _tcrUpdate;
-    if(!u || !u.newSlices || u.blockers.length) return;
+  async function tcrUpdateSave(u){
+    if(!u || _tcrCtx[u.p] !== u || !u.newSlices || u.blockers.length) return;
     const reg = u.registry;
     if(!reg.id){
       alert(`Registry ${reg.seq || ''} (WD ${reg.wdNumber || '(no WD)'}) has no saved identifier in Google Sheets, so it can't be updated safely. Add an identifier to that row in the "invoices" sheet, then reload.`);
@@ -1636,8 +1659,8 @@
       return;
     }
 
-    const saveBtn = qs('#tcrUpdateSaveBtn');
-    const cancelBtn = qs('#tcrUpdateCancelBtn');
+    const saveBtn = tcrEl(u.p, 'SaveBtn');
+    const cancelBtn = tcrEl(u.p, 'CancelBtn');
     if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
     if(cancelBtn) cancelBtn.disabled = true;
     const restoreButtons = () => {
@@ -1659,7 +1682,7 @@
         lastErr = e;
         console.error(`TCR invoice update save error (attempt ${attempt}):`, e);
         if(attempt === 1 && isNetworkError(e)){
-          tcrUpdateSetStatus('#tcrUpdateStatus', 'Connection to Google Sheets dropped — retrying…');
+          tcrUpdateSetStatus('#' + u.p + 'Status', 'Connection to Google Sheets dropped — retrying…');
           await new Promise(r => setTimeout(r, 2000));
           continue;
         }
@@ -1668,7 +1691,7 @@
     }
     if(lastErr){
       restoreButtons();
-      tcrUpdateSetStatus('#tcrUpdateStatus', 'Not saved — see the message.');
+      tcrUpdateSetStatus('#' + u.p + 'Status', 'Not saved — see the message.');
       alert('Failed to save to Google Sheets: ' + lastErr.message + '\n\nNothing was changed in the app. It\'s safe to press Save Changes again — the invoice is rewritten as a whole, so a repeated save can\'t duplicate anything.');
       return;
     }
@@ -1704,20 +1727,29 @@
     renderLeaseOverview();
     renderOverview();
 
-    const savedWd = reg.wdNumber;
-    tcrUpdateReset();
-    tcrUpdateSetStatus('#tcrUpdateSearchStatus', `✓ ${savedWd} updated — new total ${formatCurrency(u.newTotal.toFixed(2))}.`);
+    _tcrCtx[u.p] = null;
+    tcrUpdateClearPreview(u.p);
+    if(typeof u.onSaved === 'function') u.onSaved(reg, u.newTotal);
   }
+
+  // Wires a tool's PDF drop zone and Save/Cancel buttons (#<p>DropZone, #<p>File, #<p>Status,
+  // #<p>SaveBtn, #<p>CancelBtn) to whatever context that tool currently has open.
+  function tcrUpdateWire(p, onCancel){
+    wirePdfDropZone('#' + p + 'DropZone', '#' + p + 'File', '#' + p + 'Status', file => tcrUpdateHandleFile(_tcrCtx[p], file));
+    const saveBtn = tcrEl(p, 'SaveBtn');
+    if(saveBtn) saveBtn.addEventListener('click', () => tcrUpdateSave(_tcrCtx[p]));
+    const cancelBtn = tcrEl(p, 'CancelBtn');
+    if(cancelBtn && onCancel) cancelBtn.addEventListener('click', onCancel);
+  }
+
+  // Lets unitIdCorrection.js run this same PDF update against an invoice it picked.
+  window.TcrInvoiceUpdater = { begin: tcrUpdateBegin, end: tcrUpdateEnd, wire: tcrUpdateWire };
 
   const tcrUpdateSearchInput = qs('#tcrUpdateSearch');
   if(tcrUpdateSearchInput) tcrUpdateSearchInput.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); tcrUpdateSearch(); } });
   const tcrUpdateSearchBtn = qs('#tcrUpdateSearchBtn');
   if(tcrUpdateSearchBtn) tcrUpdateSearchBtn.addEventListener('click', tcrUpdateSearch);
-  wirePdfDropZone('#tcrUpdateDropZone', '#tcrUpdateFile', '#tcrUpdateStatus', tcrUpdateHandleFile);
-  const tcrUpdateSaveBtn = qs('#tcrUpdateSaveBtn');
-  if(tcrUpdateSaveBtn) tcrUpdateSaveBtn.addEventListener('click', tcrUpdateSave);
-  const tcrUpdateCancelBtn = qs('#tcrUpdateCancelBtn');
-  if(tcrUpdateCancelBtn) tcrUpdateCancelBtn.addEventListener('click', tcrUpdateReset);
+  tcrUpdateWire('tcrUpdate', tcrUpdateReset);
 
   const sendBtn = qs('#pdfImportSendBtn');
   if(sendBtn) sendBtn.addEventListener('click', sendToRegistration);

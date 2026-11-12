@@ -280,7 +280,8 @@
         <!-- Update an already-registered TCR invoice in place from its PDF: look the registry up
              by its WD (SINV) number, re-read the PDF with the same parser as above, and replace
              only the per-unit Charge/Tax/Other amounts (and the total) on that registry. -->
-        <div class="invoice-registration-block">
+        <!-- Developer-only (shown by applyRoleRestrictions for Developer/Master sessions). -->
+        <div class="invoice-registration-block dev-only-tool" style="display:none;">
           <h3 class="invoice-registration-block-title">TCR Americas, LLC — Update Invoice</h3>
           <p class="small-muted" style="margin-top:-6px;">Re-reads a TCR PDF for an invoice that's already registered and replaces its per-unit amounts (e.g. to add the tax that earlier imports left out).</p>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
@@ -304,6 +305,46 @@
             <div style="margin-top:14px;display:flex;gap:8px;">
               <button type="button" id="tcrUpdateSaveBtn" class="btn-primary" disabled>Save Changes</button>
               <button type="button" id="tcrUpdateCancelBtn">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Developer-only. Unit ID Correction: list every registered invoice (SINV) that bills a
+             unit, open any of them to see its detail and replace it from its TCR PDF, and rename
+             the unit (e.g. to the assets team's serial number) on every listed invoice at once.
+             See unitIdCorrection.js. -->
+        <div class="invoice-registration-block dev-only-tool" style="display:none;">
+          <h3 class="invoice-registration-block-title">Unit ID Correction</h3>
+          <p class="small-muted" style="margin-top:-6px;">Lists every registered invoice (SINV) that includes a unit. Open one to review it and, if it's missing information, replace it from its TCR PDF. Enter a new Unit ID to rename the unit on every listed invoice. Rename first, then re-read PDFs that bill the new ID.</p>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+            <input type="text" id="unitFixSearch" placeholder="Unit ID" style="min-width:220px;">
+            <button type="button" id="unitFixSearchBtn" class="btn-primary">Search</button>
+            <span id="unitFixSearchStatus" class="small-muted"></span>
+          </div>
+          <div id="unitFixResults" style="display:none;">
+            <div id="unitFixList" style="margin-bottom:12px;"></div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px;border:1px solid #d7dce2;border-radius:8px;background:#fff;margin-bottom:12px;">
+              <label for="unitFixNewId" style="font-weight:600;font-size:13px;">New Unit ID:</label>
+              <input type="text" id="unitFixNewId" placeholder="e.g. serial number" style="min-width:200px;">
+              <button type="button" id="unitFixApplyBtn" class="btn-primary">Apply to all listed invoices</button>
+              <span id="unitFixRenameStatus" class="small-muted"></span>
+            </div>
+            <div id="unitFixDetail" style="display:none;border:1px solid #d7dce2;border-radius:8px;padding:12px;background:#fff;margin-bottom:12px;">
+              <div id="unitFixDetailInfo" style="margin-bottom:14px;"></div>
+              <div id="unitFixDropZone" role="button" tabindex="0" style="border:2px dashed #cbd5e1;border-radius:8px;padding:22px 16px;text-align:center;background:#f8fafc;color:#475569;font-size:13px;cursor:pointer;margin-bottom:10px;transition:background .15s,border-color .15s;">
+                <strong>Drop this invoice's TCR PDF here</strong> to replace its information, or click to browse
+                <div id="unitFixDropFileName" class="small-muted" style="margin-top:4px;"></div>
+              </div>
+              <input type="file" id="unitFixFile" accept="application/pdf" style="display:none;">
+              <div id="unitFixStatus" class="small-muted" style="margin-bottom:10px;"></div>
+              <div id="unitFixPreview" style="display:none;">
+                <div id="unitFixWarnings" style="margin-bottom:12px;"></div>
+                <div id="unitFixNew"></div>
+              </div>
+              <div style="margin-top:14px;display:flex;gap:8px;">
+                <button type="button" id="unitFixSaveBtn" class="btn-primary" disabled>Save Changes</button>
+                <button type="button" id="unitFixCancelBtn">Close</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1580,8 +1621,9 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.82"></script>
-  <script src="app.js?v=11.82"></script>
-  <script src="pdfImport.js?v=11.82"></script>
+  <script src="db.js?v=11.83"></script>
+  <script src="app.js?v=11.83"></script>
+  <script src="pdfImport.js?v=11.83"></script>
+  <script src="unitIdCorrection.js?v=11.83"></script>
 </body>
 </html>

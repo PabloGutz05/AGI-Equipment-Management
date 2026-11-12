@@ -528,6 +528,11 @@ function applyRoleRestrictions(){
   }
 
   // Master and Developer: full access (do nothing)
+
+  // Developer-only tools (TCR Update Invoice, Unit ID Correction) inside otherwise shared tabs
+  const devTools = role === 'Developer' || role === 'Master';
+  document.querySelectorAll('.dev-only-tool').forEach(el => { el.style.display = devTools ? '' : 'none'; });
+
   // ensure the Users form role options reflect the current session role
   try{ updateUserRoleOptionsVisibility(); }catch(e){}
 }
