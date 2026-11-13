@@ -1202,12 +1202,16 @@ function exitInvoiceReplaceMode(){
   const form = qs('#invoiceForm'); if(!form) return;
   const wasReplacing = !!form.dataset.replacingRegistry;
   delete form.dataset.replacingRegistry;
+  delete form.dataset.replaceSource;
   const banner = qs('#invoiceReplaceBanner'); if(banner) banner.style.display = 'none';
   const submitBtn = form.querySelector('button[type="submit"]');
   if(wasReplacing && submitBtn){ submitBtn.disabled = false; submitBtn.textContent = 'Add Invoice'; }
 }
 
-function loadRegistryIntoInvoiceForm(reg){
+// opts (used by the edit form's PDF drop zone, pdfImport.js): { source: file label shown in the
+// banner and the saved comment, notes: PDF-related notes listed before the form's own }.
+function loadRegistryIntoInvoiceForm(reg, opts){
+  opts = opts || {};
   const form = qs('#invoiceForm'); if(!form || !reg) return;
   const norm = s => (s || '').toString().trim().toLowerCase();
   const invoicesTabBtn = document.querySelector('.tab[data-tab="invoices"]');
@@ -1218,7 +1222,8 @@ function loadRegistryIntoInvoiceForm(reg){
   if(clearBtn) clearBtn.click(); else { form.reset(); resetInvoiceQuarterlyPeriods(); }
   delete form.dataset.editing; delete form.dataset.editingGroupIds;
   form.dataset.replacingRegistry = reg.id;
-  const notes = [];
+  if(opts.source) form.dataset.replaceSource = opts.source;
+  const notes = (opts.notes || []).slice();
 
   // Leases, matched to the picker's own values (case-insensitive).
   if(typeof syncInvoiceCategoryOptions === 'function') syncInvoiceCategoryOptions();
@@ -1333,7 +1338,12 @@ function loadRegistryIntoInvoiceForm(reg){
   const banner = qs('#invoiceReplaceBanner');
   const bannerText = qs('#invoiceReplaceBannerText');
   const bannerNotes = qs('#invoiceReplaceBannerNotes');
-  if(bannerText) bannerText.innerHTML = `<strong>Editing ${escapeHtml(reg.wdNumber || '(no WD)')}</strong> (registry ${escapeHtml(String(reg.seq || ''))}). Save Changes replaces the registered invoice with what's in this form.`;
+  if(bannerText) bannerText.innerHTML = `<strong>Editing ${escapeHtml(reg.wdNumber || '(no WD)')}</strong> (registry ${escapeHtml(String(reg.seq || ''))}). Save Changes replaces the registered invoice with what's in this form.`
+    + (opts.source ? `<br><strong>Filled from ${escapeHtml(opts.source)}</strong> — review it, then press Save Changes. Nothing is saved until then.` : '');
+  if(!opts.source){
+    const st = qs('#invoiceReplaceStatus'); if(st) st.textContent = '';
+    const fn = qs('#invoiceReplaceDropFileName'); if(fn) fn.textContent = '';
+  }
   if(bannerNotes) bannerNotes.innerHTML = notes.map(n => '⚠ ' + escapeHtml(n)).join('<br>');
   if(banner){ banner.style.display = 'block'; banner.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 }
@@ -1388,7 +1398,8 @@ async function _submitInvoiceReplacement(form, fd){
   const typedComment = (fd.get('invoiceComment') || '').toString().trim();
   if(typedComment) comments.push({ text: typedComment, user: userName, timestamp: now });
   const oldTotal = parseCurrency(reg.totalAmount || '') || 0;
-  comments.push({ text: `Invoice edited and replaced (Unit ID Correction — Edit Invoice). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(totalAmount || '0')}.`, user: userName, timestamp: now });
+  const fillSource = form.dataset.replaceSource ? `, filled from ${form.dataset.replaceSource}` : '';
+  comments.push({ text: `Invoice edited and replaced (Unit ID Correction — Edit Invoice${fillSource}). Total ${formatCurrency(oldTotal.toFixed(2))} → ${formatCurrency(totalAmount || '0')}.`, user: userName, timestamp: now });
 
   const record = {
     id: reg.id, seq: reg.seq, wdNumber, docNumber,

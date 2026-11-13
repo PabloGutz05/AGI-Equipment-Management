@@ -159,6 +159,19 @@
               <button type="button" id="invoiceReplaceCancelBtn">Cancel edit</button>
             </div>
             <div id="invoiceReplaceBannerNotes" style="font-size:12px;margin-top:4px;"></div>
+            <!-- Dropping a known supplier's PDF refills this form from it (nothing is saved
+                 until Save Changes). An unrecognized PDF changes nothing. -->
+            <div id="invoiceReplaceDropZone" role="button" tabindex="0" style="border:2px dashed #cbd5e1;border-radius:8px;padding:14px 12px;text-align:center;background:#f8fafc;color:#475569;font-size:13px;cursor:pointer;margin-top:8px;transition:background .15s,border-color .15s;">
+              <strong>Drop the supplier's invoice PDF here</strong> to refill this form from it, or click to browse
+              <div style="margin-top:6px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap;align-items:center;">
+                <span class="small-muted">Accepted suppliers:</span>
+                <span style="background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;border-radius:999px;padding:1px 10px;font-size:12px;font-weight:600;">TCR Americas</span>
+                <span style="background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;border-radius:999px;padding:1px 10px;font-size:12px;font-weight:600;">Fortbrand</span>
+              </div>
+              <div id="invoiceReplaceDropFileName" class="small-muted" style="margin-top:4px;"></div>
+            </div>
+            <input type="file" id="invoiceReplaceFile" accept="application/pdf" style="display:none;">
+            <div id="invoiceReplaceStatus" style="font-size:12px;margin-top:6px;"></div>
           </div>
           <form id="invoiceForm" class="inline-form">
             <div class="invoice-form-row">
@@ -1630,9 +1643,9 @@
     </div>
   </div>
 
-  <script src="db.js?v=11.86"></script>
-  <script src="app.js?v=11.86"></script>
-  <script src="pdfImport.js?v=11.86"></script>
-  <script src="unitIdCorrection.js?v=11.86"></script>
+  <script src="db.js?v=11.87"></script>
+  <script src="app.js?v=11.87"></script>
+  <script src="pdfImport.js?v=11.87"></script>
+  <script src="unitIdCorrection.js?v=11.87"></script>
 </body>
 </html>

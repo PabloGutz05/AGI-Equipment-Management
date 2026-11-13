@@ -69,6 +69,7 @@
   function detectInvoiceType(rows){
     const joined = rows.join(' ');
     if(/Toyota Industries Commercial Finance/i.test(joined) || /Toyotacf\.com/i.test(joined)) return 'toyota';
+    if(/Fortbrand Services/i.test(joined) || /fortbrand\.com/i.test(joined)) return 'fortbrand';
     if(rows.some(r => /Document Detail/i.test(r))) return 'tcr';
     return 'unknown';
   }
@@ -437,6 +438,112 @@
       unmatchedUnitIds: Array.from(unmatchedUnits).sort(),
       overallFrom: periods.length ? periods[0].fromDate : '',
       overallTo: periods.length ? periods[periods.length-1].toDate : ''
+    };
+  }
+
+  // ---- Fortbrand Services: lease GSE invoice ("RPM Posted Invoice RI…") ----
+  // Header: "Invoice Number: RI18747", "Invoice Date: 10/1/2025", "Contract No. 20088-06".
+  // Each billed line is "<description> MM/DD/YY-MM/DD/YY <periods> <qty> <unit price> <total>";
+  // a unit line is followed (before the next line) by "Unit No. 5151 (SN: 8294)". Lines with no
+  // Unit No. (e.g. "TRANSPORTATION (EQUIPMENT)") are invoice-level extra charges. Totals sit in
+  // the summary block: "Subtotal: 5,432.98", "Total Sales Tax: 488.97", "Total USD: 5,921.95".
+  function fortbrandDate(s){
+    const m = (s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+    if(!m) return '';
+    const y = m[3].length === 2 ? '20' + m[3] : m[3];
+    return y + '-' + m[1].padStart(2,'0') + '-' + m[2].padStart(2,'0');
+  }
+  const FORTBRAND_LINE_RE = /^(.+?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s*-\s*(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(-?[\d.,]+)\s+(-?[\d.,]+)\s+(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})$/;
+
+  function parseFortbrandRows(rows){
+    const num = s => parseFloat(String(s).replace(/,/g,''));
+    const header = { docNumber:'', leaseNumber:'', invoiceDateIso:'', subtotalAmount:null, tax:null, totalAmount:null, isCredit:false };
+    rows.forEach(t => {
+      let m;
+      if(!header.docNumber && (m = t.match(/Invoice Number:\s*(\S+)/i))) header.docNumber = m[1];
+      if(!header.invoiceDateIso && (m = t.match(/Invoice Date:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i))) header.invoiceDateIso = fortbrandDate(m[1]);
+      if(!header.leaseNumber && (m = t.match(/Contract No\.?\s*(\S+)/i))) header.leaseNumber = m[1];
+      if(header.subtotalAmount === null && (m = t.match(/Subtotal:\s*(-?[\d,]+\.\d{2})/i))) header.subtotalAmount = num(m[1]);
+      if(header.tax === null && (m = t.match(/Total Sales Tax:\s*(-?[\d,]+\.\d{2})/i))) header.tax = num(m[1]);
+      if(header.totalAmount === null && (m = t.match(/Total USD:\s*(-?[\d,]+\.\d{2})/i))) header.totalAmount = num(m[1]);
+    });
+    const lines = [];
+    for(let i = 0; i < rows.length; i++){
+      const m = rows[i].match(FORTBRAND_LINE_RE);
+      if(!m) continue;
+      // The Unit No. row comes after the line (possibly after a repeated page header when the
+      // line is last on a page) and before the next line's "Month(s)" header.
+      let unitNo = '', sn = '';
+      for(let j = i + 1; j < Math.min(rows.length, i + 15); j++){
+        if(FORTBRAND_LINE_RE.test(rows[j]) || /^Month\(s\)/i.test(rows[j]) || /US DOLLARS/i.test(rows[j])) break;
+        const um = rows[j].match(/Unit No\.?\s*([^\s(]+)(?:\s*\(SN:\s*([^)]*?)\s*\))?/i);
+        if(um){ unitNo = um[1]; sn = (um[2] || '').trim(); break; }
+      }
+      lines.push({ description: m[1].trim(), from: fortbrandDate(m[2]), to: fortbrandDate(m[3]), amount: num(m[7]), unitNo, sn });
+    }
+    return { header, lines };
+  }
+
+  // Turns the parsed lines into the same shape buildPeriods returns (one period per distinct
+  // billed date range). A line's unit is the Unit Control unit whose UnitId equals its Unit No.
+  // or, failing that, its serial number (SN). The invoice-level extra charges and the Sales Tax
+  // are split equally (whole cents, leftover pennies to the first lines) between every unit
+  // line, matched or not; an unmatched line's share is skipped along with it.
+  function buildFortbrand(parsed){
+    const unitLines = parsed.lines.filter(l => l.unitNo || l.sn);
+    const extras = parsed.lines.filter(l => !(l.unitNo || l.sn));
+    const unitByKey = {};
+    (state.units || []).forEach(u => { const id = (u.unitId || u.id || '').toString().trim(); if(id) unitByKey[id.toLowerCase()] = id; });
+    const resolve = l => unitByKey[(l.unitNo || '').toLowerCase()] || unitByKey[(l.sn || '').toLowerCase()] || null;
+
+    const splitCents = (total, n) => {
+      const cents = Math.round(Math.abs(total) * 100), sign = total < 0 ? -1 : 1;
+      const base = Math.floor(cents / n), rem = cents - base * n;
+      return Array.from({ length: n }, (_, i) => sign * (base + (i < rem ? 1 : 0)) / 100);
+    };
+    const n = unitLines.length;
+    const taxShares = n ? splitCents(Number(parsed.header.tax) || 0, n) : [];
+    const extraShares = extras.map(x => n ? splitCents(x.amount, n) : []);
+    const extraNames = extras.map(x => {
+      const list = (state.meta && state.meta.devOtherCharges) || [];
+      const needles = /transport|freight|deliver/i.test(x.description) ? ['transport','freight','deliver'] : [x.description.toLowerCase()];
+      const found = list.find(v => needles.some(k => v.toLowerCase().indexOf(k) !== -1));
+      return found || x.description.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+    });
+
+    const byPeriod = {};
+    const matched = [], unmatched = [];
+    unitLines.forEach((l, i) => {
+      const uid = resolve(l);
+      if(!uid){ const label = l.unitNo + (l.sn ? ' (SN ' + l.sn + ')' : ''); if(unmatched.indexOf(label) === -1) unmatched.push(label); return; }
+      if(matched.indexOf(uid) === -1) matched.push(uid);
+      const key = l.from + '|' + l.to;
+      const p = byPeriod[key] = byPeriod[key] || { fromDate: l.from, toDate: l.to, unitData: {} };
+      const row = p.unitData[uid] = p.unitData[uid] || { charge: 0, tax: 0, other: 0, otherChargeDetails: [] };
+      row.charge += l.amount;
+      row.tax += taxShares[i] || 0;
+      extras.forEach((x, k) => {
+        const amt = extraShares[k][i] || 0; if(!amt) return;
+        row.other += amt;
+        row.otherChargeDetails.push({ name: extraNames[k], amount: amt.toFixed(2), tax: '', description: x.description });
+      });
+    });
+    const periods = Object.keys(byPeriod).sort().map(key => {
+      const p = byPeriod[key];
+      Object.keys(p.unitData).forEach(uid => {
+        const r = p.unitData[uid];
+        ['charge','tax','other'].forEach(f => { r[f] = r[f] ? r[f].toFixed(2) : ''; });
+      });
+      return p;
+    });
+    return {
+      periods,
+      matchedUnitIds: matched,
+      unmatchedUnitIds: unmatched,
+      overallFrom: periods.length ? periods.map(p => p.fromDate).sort()[0] : '',
+      overallTo: periods.length ? periods.map(p => p.toDate).sort().slice(-1)[0] : '',
+      unitLineCount: n,
+      extras
     };
   }
 
@@ -1096,6 +1203,10 @@
       const rows = await extractRows(pdf);
       const invoiceType = detectInvoiceType(rows);
 
+      if(invoiceType === 'fortbrand'){
+        if(statusEl) statusEl.textContent = 'This is a Fortbrand invoice. Fortbrand PDFs are read by Edit Invoice (Unit ID Correction) for now — nothing was imported here.';
+        return;
+      }
       if(invoiceType === 'toyota'){
         const header = parseToyotaHeaderInfo(rows);
         const { units, issues } = parseToyotaBlocks(rows);
@@ -1409,7 +1520,7 @@
       }
     }
     if(built.periods.length === 0) blockers.push('None of the units billed in the PDF exist in the system, so there\'s nothing to update.');
-    if(parseIssues.length) warnings.push(`${parseIssues.length} line item(s) in the PDF couldn't be read confidently and aren't included below. Use the import processor above to see them.`);
+    if(parseIssues.length) warnings.push(`${parseIssues.length} line item(s) in the PDF couldn't be read confidently and aren't included. Use the Import Invoice processor to see them.`);
     if(built.unmatchedUnitIds.length) warnings.push(`${built.unmatchedUnitIds.length} unit(s) in the PDF don't exist in the system and are skipped: ${built.unmatchedUnitIds.join(', ')}`);
 
     const regLeases = (Array.isArray(registry.leases) && registry.leases.length ? registry.leases : (registry.lease || '').split(',')).map(normKey).filter(Boolean);
@@ -1417,9 +1528,20 @@
     // Every unit on the updated invoice, in order: what it already lists, then what the PDF adds.
     const unitOrder = [];
     const pushUnit = uid => { if(uid && !unitOrder.some(x => normKey(x) === normKey(uid))) unitOrder.push(uid); };
-    (registry.units || []).forEach(pushUnit);
-    slices.forEach(s => s.unitDetails.forEach(d => pushUnit(d.unit)));
+    // pdfUnitsOnly (the edit form's drop zone): the PDF replaces the unit list outright.
+    const pdfUnitsOnly = !!(u.opts && u.opts.pdfUnitsOnly);
+    if(!pdfUnitsOnly){
+      (registry.units || []).forEach(pushUnit);
+      slices.forEach(s => s.unitDetails.forEach(d => pushUnit(d.unit)));
+    }
     built.matchedUnitIds.forEach(pushUnit);
+    if(pdfUnitsOnly){
+      const dropped = [];
+      (registry.units || []).concat(...slices.map(s => s.unitDetails.map(d => d.unit))).forEach(x => {
+        if(x && !unitOrder.some(y => normKey(y) === normKey(x)) && !dropped.some(y => normKey(y) === normKey(x))) dropped.push(x);
+      });
+      if(dropped.length) warnings.push(`Not billed in the PDF, so removed from the invoice: ${dropped.join(', ')}`);
+    }
 
     const oldByUnit = {};
     slices.forEach(s => s.unitDetails.forEach(d => { const k = normKey(d.unit); if(!oldByUnit[k]) oldByUnit[k] = d; }));
@@ -1766,6 +1888,108 @@
   const tcrUpdateSearchBtn = qs('#tcrUpdateSearchBtn');
   if(tcrUpdateSearchBtn) tcrUpdateSearchBtn.addEventListener('click', tcrUpdateSearch);
   tcrUpdateWire('tcrUpdate', tcrUpdateReset);
+
+  // ---- Edit Invoice (replace mode) — refill the form from a supplier PDF ----
+  // Reads a TCR Americas or Fortbrand PDF and reloads the Invoice Registration form (still in
+  // replace mode for the same registry) with the PDF's doc number, invoice date, period(s),
+  // units and amounts. Nothing is written until Save Changes; a PDF from any other supplier,
+  // or one whose Doc number doesn't match the invoice, leaves the form untouched.
+  const REPLACE_SUPPLIERS = 'TCR Americas, Fortbrand';
+  function replaceStatus(msg, kind){
+    const el = qs('#invoiceReplaceStatus'); if(!el) return;
+    el.textContent = msg || '';
+    el.style.color = kind === 'error' ? '#991b1b' : kind === 'ok' ? '#166534' : '#1e3a8a';
+    el.style.fontWeight = kind ? '600' : '';
+  }
+  let _replaceReadSeq = 0;
+  async function fillReplaceFormFromPdf(file){
+    const form = qs('#invoiceForm');
+    const regId = form && form.dataset.replacingRegistry;
+    const reg = regId && (state.registries || []).find(r => r.id === regId);
+    if(!reg){ replaceStatus('No invoice is being edited.', 'error'); return; }
+    const seq = ++_replaceReadSeq;
+    const fn = qs('#invoiceReplaceDropFileName'); if(fn) fn.textContent = file.name;
+    const fileInput = qs('#invoiceReplaceFile'); if(fileInput) fileInput.value = '';
+    const unchanged = ' Nothing in the form was changed.';
+    replaceStatus('Reading PDF…');
+    try{
+      const lib = await loadPdfJs();
+      const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+      const rows = await extractRows(pdf);
+      if(seq !== _replaceReadSeq || form.dataset.replacingRegistry !== regId) return; // superseded or edit closed
+      const type = detectInvoiceType(rows);
+      let header, built, issues = [], supplier;
+      if(type === 'tcr'){
+        supplier = 'TCR Americas';
+        header = parseHeaderInfo(rows);
+        const r = parseDetailRows(rows, header.isCredit ? -1 : 1);
+        if(r.totalCandidates === 0){ replaceStatus('This looks like a TCR Americas PDF, but no line items could be read.' + unchanged, 'error'); return; }
+        built = buildPeriods(r.unitMonthCat, header.tax);
+        issues = r.issues;
+      } else if(type === 'fortbrand'){
+        supplier = 'Fortbrand';
+        const parsed = parseFortbrandRows(rows);
+        header = parsed.header;
+        built = buildFortbrand(parsed);
+        if(!built.unitLineCount){ replaceStatus('This looks like a Fortbrand PDF, but no unit lines could be read — this layout isn\'t supported yet.' + unchanged, 'error'); return; }
+      } else {
+        replaceStatus(`"${file.name}" isn't an invoice from an accepted supplier (${REPLACE_SUPPLIERS}).` + unchanged, 'error');
+        return;
+      }
+
+      const u = {
+        registry: reg,
+        slices: getRegistryCoveragePeriods(reg).map(s => ({ from: s.from, to: s.to, unitDetails: (s.unitDetails || []).slice() })),
+        quarterly: !!(reg.period1From || reg.period1To || (Array.isArray(reg.periods) && reg.periods.length > 0)),
+        opts: { pdfUnitsOnly: true }
+      };
+      const result = tcrUpdateBuild(u, header, built, issues);
+      if(result.blockers.length){ replaceStatus('⛔ ' + result.blockers.join(' ') + unchanged, 'error'); return; }
+
+      // Sanity check: units whose supplier (from Unit Control) clearly isn't this one.
+      const supplierKey = type === 'tcr' ? 'tcr' : 'fortbrand';
+      const otherSupplier = [];
+      result.newSlices.forEach(s => s.unitDetails.forEach(d => {
+        const label = d.unit + ' (' + d.supplier + ')';
+        if(d.supplier && normKey(d.supplier).indexOf(supplierKey) === -1 && otherSupplier.indexOf(label) === -1) otherSupplier.push(label);
+      }));
+      const notes = result.warnings.slice();
+      if(otherSupplier.length) notes.unshift(`This is a ${supplier} PDF, but these units are recorded under another supplier: ${otherSupplier.join(', ')}. Make sure it's the right invoice.`);
+
+      let category = result.category;
+      if(!category){
+        const rental = ((state.meta && state.meta.devRentals) || []).find(r => normKey(r) === 'rental');
+        category = rental || '';
+      }
+      const slicesOut = result.newSlices;
+      const units = [], leases = [];
+      slicesOut.forEach(s => s.unitDetails.forEach(d => {
+        if(d.unit && !units.some(x => normKey(x) === normKey(d.unit))) units.push(d.unit);
+        if(d.lease && !leases.some(x => normKey(x) === normKey(d.lease))) leases.push(d.lease);
+      }));
+      const pseudo = Object.assign({}, reg, {
+        docNumber: header.docNumber || reg.docNumber || '',
+        category,
+        invoiceDate: header.invoiceDateIso || reg.invoiceDate || '',
+        periodStart: result.overallFrom || '',
+        periodEnd: result.overallTo || '',
+        units, leases, lease: leases.join(', '),
+        unitDetails: slicesOut[0] ? slicesOut[0].unitDetails : [],
+        periods: result.usePeriods ? slicesOut.slice(1).map(s => ({ fromDate: s.from, toDate: s.to, unitDetails: s.unitDetails })) : [],
+        totalAmount: result.newTotal.toFixed(2)
+      });
+      delete pseudo.period1From; delete pseudo.period1To;
+      if(result.usePeriods && slicesOut[0]){ pseudo.period1From = slicesOut[0].from; pseudo.period1To = slicesOut[0].to; }
+
+      loadRegistryIntoInvoiceForm(pseudo, { source: `${supplier} PDF ${file.name}`, notes });
+      const fn2 = qs('#invoiceReplaceDropFileName'); if(fn2) fn2.textContent = file.name;
+      replaceStatus(`✓ Form filled from ${supplier} invoice ${header.docNumber || ''} — ${units.length} unit(s), total ${formatCurrency(result.newTotal.toFixed(2))}. Review it, then press Save Changes.`, 'ok');
+    }catch(err){
+      console.error('Edit Invoice PDF read error:', err);
+      replaceStatus('Failed to read the PDF: ' + ((err && err.message) || err) + '.' + unchanged, 'error');
+    }
+  }
+  wirePdfDropZone('#invoiceReplaceDropZone', '#invoiceReplaceFile', '#invoiceReplaceStatus', fillReplaceFormFromPdf);
 
   const sendBtn = qs('#pdfImportSendBtn');
   if(sendBtn) sendBtn.addEventListener('click', sendToRegistration);
